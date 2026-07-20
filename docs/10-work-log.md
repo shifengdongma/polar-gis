@@ -63,3 +63,43 @@
 | Backend (FastAPI) | 8000 (内部) | ✅ healthy |
 | Worker | - (内部) | ✅ running |
 | Web (Nginx + Frontend) | 8088 | ✅ running |
+
+---
+
+## 会话 #2 — 修复登录 401 错误
+
+**日期**: 2026-07-20
+**目标**: 诊断并修复 admin 用户登录报 401 Unauthorized 错误
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 诊断登录 401 错误原因 | ✅ 完成 |
+| 2 | 修复数据库中的 admin 账户状态 | ✅ 完成 |
+| 3 | 验证修复结果 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-20 | (数据库) | 修改 | 重置 admin 用户: failed_login_count→0, locked_until→NULL, 更新 password_hash |
+
+### 问题诊断
+
+1. **账户锁定**: admin 用户 failed_login_count=5, locked_until 已设置 — 因多次密码错误被锁定15分钟
+2. **密码可能不匹配**: .env 中 INITIAL_ADMIN_PASSWORD 与数据库中哈希不一致
+3. **429 Too Many Requests**: 锁定后继续尝试导致触发 rate limiting
+
+### 解决方案
+
+直接在 PostgreSQL 中更新 users 表:
+- 重置 `failed_login_count = 0`
+- 清除 `locked_until = NULL`
+- 使用 Argon2 重新哈希密码并更新 `password_hash`
+
+### 知识点
+
+- `.env` 修改后不需要重新构建镜像, `docker compose down && docker compose up -d` 重启即可
+- `ensure_initial_admin()` 仅在用户不存在时创建, 不会更新已存在用户的密码
+- 因此改密码需要同步更新数据库, 或删除用户后重启让系统重建

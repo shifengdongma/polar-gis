@@ -72,4 +72,34 @@
 - 前端: http://localhost:8088
 - API 文档: http://localhost:8088/api/v1/docs (需要后端直接端口)
 - GeoServer: http://localhost:8080/geoserver/
-- 默认管理员: admin / replace-me-now (见 deploy/.env)
+- 默认管理员: admin / 123456 (见 deploy/.env)
+
+---
+
+## 会话 #2 — 修复登录 401 错误
+
+**日期**: 2026-07-20
+**状态**: ✅ 完成
+
+### 修改内容
+
+| 文件 | 修改说明 |
+|------|----------|
+| (数据库 users 表) | 重置 admin 账户锁定状态并更新密码哈希 |
+
+### 实现效果
+
+1. **登录问题修复**
+   - admin 账户因多次失败登录被锁定 → 已解锁
+   - 密码哈希与 .env 同步 → 登录正常
+
+2. **操作说明**
+   - .env 修改不需要重新构建镜像，重启容器即可生效
+   - 但修改 admin 密码需要同步更新数据库（因为 ensure_initial_admin 不会更新已存在的用户）
+
+### 访问地址
+
+- 前端: http://localhost:8088
+- API 文档: http://localhost:8088/api/v1/docs
+- GeoServer: http://localhost:8080/geoserver/
+- 默认管理员: admin / 123456
