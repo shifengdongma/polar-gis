@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+backend/.env
+backend/storage/
+backend/.pytest-storage/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/*.tsbuildinfo
+.playwright-cli/
+output/
+
+# Data and runtime
+storage/
+data/*
+!data/README.md
+*.log
+*.dump
+*.bak
+
+# IDE and OS
+AGENTS.md
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Deployment secrets
+deploy/.env
+deploy/certs/
