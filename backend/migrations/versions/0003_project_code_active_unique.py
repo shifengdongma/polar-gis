@@ -9,13 +9,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_index("ix_projects_code", table_name="projects")
-    op.create_index(
-        "uq_projects_code_active",
-        "projects",
-        ["code"],
-        unique=True,
-        postgresql_where="deleted_at IS NULL",
+    op.drop_index("ix_projects_code", table_name="projects", if_exists=True)
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_code_active "
+        "ON projects (code) WHERE deleted_at IS NULL"
     )
 
 

@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gdal-bin libgdal-dev \
+    && apt-get install -y --no-install-recommends --fix-missing gdal-bin libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
