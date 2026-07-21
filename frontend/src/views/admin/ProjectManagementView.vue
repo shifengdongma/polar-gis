@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { api, apiErrorMessage } from '../../api/client'
 import type {
   Paginated,
@@ -24,7 +24,27 @@ const layerConfigPageSize = ref(15)
 const layerConfigTotal = ref(0)
 const activeProject = ref<Project | null>(null)
 const editableDatasets = ref<EditableDataset[]>([])
+const createFormRef = ref<FormInstance>()
 const form = reactive({ code: '', name: '', description: '', defaultCrs: 'EPSG:3857' })
+
+const formRules: FormRules = {
+  code: [
+    { required: true, message: '请输入项目代码', trigger: 'blur' },
+    { pattern: /^[a-z0-9][a-z0-9_-]*$/, message: '代码必须以小写字母或数字开头，仅允许小写字母、数字、下划线和连字符', trigger: 'blur' },
+    { min: 2, max: 80, message: '代码长度为 2-80 个字符', trigger: 'blur' },
+  ],
+  name: [
+    { required: true, message: '请输入项目名称', trigger: 'blur' },
+    { min: 1, max: 180, message: '名称长度为 1-180 个字符', trigger: 'blur' },
+  ],
+  description: [
+    { max: 4000, message: '说明不超过 4000 个字符', trigger: 'blur' },
+  ],
+  defaultCrs: [
+    { required: true, message: '请选择默认投影', trigger: 'change' },
+  ],
+}
+
 type DatasetDraft = Pick<EditableDataset, 'datasetId' | 'selected' | 'groupName' | 'sortOrder' | 'visibleByDefault' | 'opacity'>
 const datasetDrafts = new Map<string, DatasetDraft>()
 
@@ -36,6 +56,12 @@ async function loadProjects(targetPage = page.value) {
 }
 
 async function createProject() {
+  if (!createFormRef.value) return
+  try {
+    await createFormRef.value.validate()
+  } catch {
+    return // 表单校验未通过，不提交
+  }
   saving.value = true
   try {
     await api.post('/admin/projects', form)
@@ -184,12 +210,23 @@ onMounted(loadProjects)
       </el-table>
       <div v-if="total" class="table-pagination"><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[10, 15, 20, 50, 100]" :total="total" layout="total, sizes, prev, pager, next" @current-change="loadProjects" @size-change="loadProjects(1)" /></div>
     </el-card>
-    <el-dialog v-model="dialogVisible" title="创建项目" width="560px">
-      <el-form label-position="top">
-        <el-form-item label="项目代码"><el-input v-model="form.code" placeholder="例如 arctic-monitoring" /></el-form-item>
-        <el-form-item label="项目名称"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item label="说明"><el-input v-model="form.description" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="默认投影"><el-radio-group v-model="form.defaultCrs"><el-radio-button value="EPSG:3857">常规地图</el-radio-button><el-radio-button value="EPSG:3413">北极投影</el-radio-button></el-radio-group></el-form-item>
+    <el-dialog v-model="dialogVisible" title="创建项目" width="560px" @closed="createFormRef?.resetFields()">
+      <el-form ref="createFormRef" :model="form" :rules="formRules" label-position="top">
+        <el-form-item label="项目代码" prop="code">
+          <el-input v-model="form.code" placeholder="例如 arctic-monitoring（小写字母/数字开头，仅含a-z0-9_-）" />
+        </el-form-item>
+        <el-form-item label="项目名称" prop="name">
+          <el-input v-model="form.name" placeholder="输入项目名称" />
+        </el-form-item>
+        <el-form-item label="说明" prop="description">
+          <el-input v-model="form.description" type="textarea" :rows="3" placeholder="可选，项目说明" />
+        </el-form-item>
+        <el-form-item label="默认投影" prop="defaultCrs">
+          <el-radio-group v-model="form.defaultCrs">
+            <el-radio-button value="EPSG:3857">常规地图 (EPSG:3857)</el-radio-button>
+            <el-radio-button value="EPSG:3413">北极投影 (EPSG:3413)</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="createProject">创建</el-button></template>
     </el-dialog>
