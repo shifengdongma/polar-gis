@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-07-20
+> 最后更新: 2026-07-21
 
 ---
 
@@ -319,3 +319,22 @@ Vue 3 (Composition API + <script setup>)
 - TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (3), `src/router/` (1) = 9
 - 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
 - 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
+
+---
+
+## 7. 文档索引
+
+| 文档 | 用途 |
+|------|------|
+| `docs/01-requirements.md` | 需求规范 (v1.0) |
+| `docs/02-system-design.md` | 系统设计 |
+| `docs/03-data-design.md` | 数据设计 |
+| `docs/04-api-design.md` | API 设计 |
+| `docs/05-ui-ux-design.md` | UI/UX 设计 |
+| `docs/06-development-plan.md` | 开发计划 |
+| `docs/07-testing.md` | 测试与验收 |
+| `docs/08-deployment.md` | 部署说明 |
+| `docs/09-system-architecture.md` | 系统架构文档 (本文件) |
+| `docs/10-work-log.md` | 工作日志 |
+| `docs/11-work-summary.md` | 工作总结 |
+| `docs/12-user-manual.md` | **用户操作使用手册** ⭐ |
