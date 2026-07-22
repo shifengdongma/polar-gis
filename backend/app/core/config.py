@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     gdal_info_command: str = "gdalinfo"
     worker_poll_seconds: float = 2.0
     worker_heartbeat_seconds: int = 30
+    batch_parallel_workers: int = 8
     query_result_limit: int = 1000
     demo_data_enabled: bool = True
     initial_admin_username: str | None = None

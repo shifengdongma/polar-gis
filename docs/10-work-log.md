@@ -187,3 +187,52 @@
 - 校验规则与后端 Schema 保持一致
 - 校验失败时阻止请求发出，在 UI 层直接提示用户
 - 对话框关闭时自动清理校验状态
+
+---
+
+## 会话 #5 — 批量导入性能优化 + 暂停/取消功能
+
+**日期**: 2026-07-22
+**目标**: 解决批量导入188个S-57单元耗时10小时+的性能问题，并新增暂停/取消功能
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 分析批量导入全链路数据流，定位性能瓶颈 | ✅ 完成 |
+| 2 | 优化 `_import_vector_layers`: 单次ogr2ogr替代每图层子进程 | ✅ 完成 |
+| 3 | 优化 GeoServer 发布: 预设 BBox 跳过全表扫描 | ✅ 完成 |
+| 4 | 并行 Cell 处理 (ThreadPoolExecutor) | ✅ 完成 |
+| 5 | 新增暂停/取消/恢复 API 端点 | ✅ 完成 |
+| 6 | Worker 暂停/取消感知 + 防误杀 stale 检测 | ✅ 完成 |
+| 7 | 前端暂停/取消按钮 | ✅ 完成 |
+| 8 | 修复测试用例以适配并行处理 | ✅ 完成 |
+| 9 | 更新文档 | ✅ 完成 |
+
+### 性能瓶颈分析
+
+**三大瓶颈**（详见分析报告）:
+1. **每图层独立 ogr2ogr 子进程**: 188 cells × 40 图层 ≈ 7,520 次子进程调用，每次重新打开文件+新建PG连接 → 2-10小时
+2. **每图层独立 GeoServer REST 发布**: 同数量级的 HTTP 调用，每次GeoServer全表扫描计算BBox → 4-10小时
+3. **Cell 串行处理**: 无法利用多核CPU
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-22 | `backend/app/models.py` | 修改 | JobStatus 枚举新增 PAUSED = "paused" |
+| 2026-07-22 | `backend/app/services/importer.py` | 重写 | `_import_vector_layers`: 临时schema单次ogr2ogr + ALTER TABLE RENAME替代每图层子进程; 新增 `_check_cancelled` 取消感知; publish阶段使用批量发布 |
+| 2026-07-22 | `backend/app/services/geoserver.py` | 修改 | `publish_feature_type`: 预设 nativeBoundingBox 跳过GeoServer全表扫描; 新增 `publish_feature_types_batch` 批量发布方法 |
+| 2026-07-22 | `backend/app/services/s57_batch.py` | 重写 | `process`: ThreadPoolExecutor并行Cell处理; `_process_cell_worker`: 独立Session线程安全处理; `_finalize_batch`: 独立Session隔离; 暂停/取消检测; batch_parallel_workers可配置 |
+| 2026-07-22 | `backend/app/api/datasets.py` | 新增 | pause/resume/cancel 三个API端点 |
+| 2026-07-22 | `backend/app/core/config.py` | 修改 | 新增 `batch_parallel_workers` 配置项 (默认8) |
+| 2026-07-22 | `frontend/src/views/admin/BatchImportView.vue` | 修改 | 新增暂停/继续/取消按钮，动态显示 |
+| 2026-07-22 | `backend/tests/test_s57_batch.py` | 修改 | FakeImportProcessor适配并行处理; create_batch返回session factory; batch_parallel_workers=1 |
+
+### 关键决策
+
+1. **临时 Schema 方案**: 用 `CREATE SCHEMA _imp_{id}` → 单次ogr2ogr → ALTER TABLE SET SCHEMA + RENAME → DROP SCHEMA 模式替代每图层子进程，单Cell的ogr2ogr调用从40次降到1次
+2. **ThreadPoolExecutor 而非 ProcessPoolExecutor**: Cell处理是I/O密集型（ogr2ogr子进程+GeoServer HTTP），线程池足够且避免了跨进程session factory问题
+3. **暂停语义**: 暂停时完成当前正在运行的Cell，不再启动新Cell。未处理的QUEUED items保留。恢复时将batch.status重置为QUEUED，worker重新拾取
+4. **取消语义**: 取消时立即中断，所有QUEUED/RUNNING items标记为CANCELLED
+5. **Session隔离**: 主线程和worker线程使用不同DB session（通过session factory），避免SQLite SERIALIZABLE隔离级别导致的数据不可见问题

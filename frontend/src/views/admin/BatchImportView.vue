@@ -20,10 +20,10 @@ const directoryInput = ref<HTMLInputElement>()
 let timer: number | undefined
 
 const statusLabels: Record<string, string> = {
-  queued: '排队', running: '处理中', succeeded: '成功', partial_failed: '部分失败', failed: '失败',
+  queued: '排队', running: '处理中', succeeded: '成功', partial_failed: '部分失败', failed: '失败', paused: '已暂停', cancelled: '已取消',
 }
 const itemStageLabels: Record<string, string> = {
-  import_base: '导入基础单元', append_updates: '追加更新', up_to_date: '已是最新', completed: '已完成', failed: '失败',
+  import_base: '导入基础单元', append_updates: '追加更新', up_to_date: '已是最新', completed: '已完成', failed: '失败', cancelled: '已取消',
 }
 
 async function loadBatches(targetPage = page.value) {
@@ -33,8 +33,38 @@ async function loadBatches(targetPage = page.value) {
   batches.value = response.data.items
   page.value = response.data.page
   total.value = response.data.total
-  if (detail.value && ['queued', 'running'].includes(detail.value.status)) {
+  if (detail.value && ['queued', 'running', 'paused'].includes(detail.value.status)) {
     detail.value = (await api.get<S57ImportBatchDetail>(`/admin/s57-import-batches/${detail.value.id}`)).data
+  }
+}
+
+async function pauseBatch(batch: S57ImportBatch) {
+  try {
+    await api.post(`/admin/s57-import-batches/${batch.id}/pause`)
+    ElMessage.success('已发送暂停指令')
+    await loadBatches()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '暂停失败'))
+  }
+}
+
+async function resumeBatch(batch: S57ImportBatch) {
+  try {
+    await api.post(`/admin/s57-import-batches/${batch.id}/resume`)
+    ElMessage.success('已恢复处理')
+    await loadBatches()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '恢复失败'))
+  }
+}
+
+async function cancelBatch(batch: S57ImportBatch) {
+  try {
+    await api.post(`/admin/s57-import-batches/${batch.id}/cancel`)
+    ElMessage.success('已取消批次')
+    await loadBatches()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '取消失败'))
   }
 }
 
@@ -123,7 +153,14 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <el-table-column label="单元" width="180"><template #default="{ row }">{{ row.processedCells }}/{{ row.totalCells || '待识别' }} · 成功 {{ row.succeededCells }} · 失败 {{ row.failedCells }}</template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="{ row }"><span :class="['status-pill', row.status]">{{ statusLabels[row.status] || row.status }}</span></template></el-table-column>
         <el-table-column label="创建时间" width="170"><template #default="{ row }">{{ new Date(row.createdAt).toLocaleString('zh-CN') }}</template></el-table-column>
-        <el-table-column label="操作" width="90" align="right"><template #default="{ row }"><el-button link type="primary" @click="viewBatch(row)">详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="220" align="right">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'running'" link type="warning" @click="pauseBatch(row)">暂停</el-button>
+            <el-button v-if="row.status === 'paused'" link type="success" @click="resumeBatch(row)">继续</el-button>
+            <el-button v-if="['queued', 'running', 'paused'].includes(row.status)" link type="danger" @click="cancelBatch(row)">取消</el-button>
+            <el-button link type="primary" @click="viewBatch(row)">详情</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <div v-if="total" class="table-pagination"><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[10, 15, 20, 50, 100]" :total="total" layout="total, sizes, prev, pager, next" @current-change="loadBatches" @size-change="loadBatches(1)" /></div>
     </el-card>

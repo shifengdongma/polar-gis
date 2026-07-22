@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -89,6 +89,8 @@ class ImportProcessor:
             job.progress = 25
             job.heartbeat_at = datetime.now(UTC)
             db.commit()
+            if self._check_cancelled(db, job.id):
+                return
             if dataset.data_type == DatasetType.RASTER.value:
                 imported_layers = self._prepare_raster_layer(db, dataset, version, source_path)
             else:
@@ -96,21 +98,28 @@ class ImportProcessor:
             job.stage = "publish"
             job.progress = 75
             db.commit()
-            for layer in imported_layers:
-                if dataset.data_type == DatasetType.RASTER.value:
+            if self._check_cancelled(db, job.id):
+                return
+            if dataset.data_type == DatasetType.RASTER.value:
+                for layer in imported_layers:
                     self.geoserver.publish_geotiff(
                         str(source_path),
                         layer.geoserver_layer_name or layer.code,
                     )
-                else:
-                    self.geoserver.publish_feature_type(
-                        table_name=(layer.source_table or "").split(".")[-1],
-                        layer_name=layer.geoserver_layer_name or layer.code,
-                        title=layer.name,
-                    )
+                    layer.status = LayerStatus.AVAILABLE.value
+            else:
+                self.geoserver.publish_feature_types_batch([
+                    {
+                        "table_name": (layer.source_table or "").split(".")[-1],
+                        "layer_name": layer.geoserver_layer_name or layer.code,
+                        "title": layer.name,
+                    }
+                    for layer in imported_layers
+                ])
+                for layer in imported_layers:
                     if dataset.data_type == DatasetType.S57.value:
                         self._apply_s57_style(db, layer)
-                layer.status = LayerStatus.AVAILABLE.value
+                    layer.status = LayerStatus.AVAILABLE.value
             self._switch_project_layer_versions(db, version, imported_layers)
             if version.parent_version_id:
                 parent_version = db.get(DatasetVersion, version.parent_version_id)
@@ -131,6 +140,10 @@ class ImportProcessor:
         finally:
             if staged_directory:
                 shutil.rmtree(staged_directory, ignore_errors=True)
+
+    def _check_cancelled(self, db: Session, job_id) -> bool:
+        job = db.get(ImportJob, job_id)
+        return job is not None and job.status == JobStatus.CANCELLED.value
 
     def _fail_job(self, db: Session, job_id, code: str, message: str) -> None:
         db.rollback()
@@ -239,27 +252,27 @@ class ImportProcessor:
         source_layers = inspection.get("layers", [])
         if not source_layers:
             raise AppError("IMPORT_NO_LAYERS", "上传数据不包含可导入图层", 422)
-        imported = []
-        for index, source_layer in enumerate(source_layers):
-            source_name = str(source_layer.get("name") or f"layer_{index + 1}")
-            code = safe_identifier(f"{dataset.code}_{version.version_no}_{source_name}", 90)
-            table_name = safe_identifier(
-                f"ds_{str(dataset.id).replace('-', '')[:8]}_v{version.version_no}_{source_name}",
-                60,
-            )
-            escaped_source_name = source_name.replace('"', '""')
+
+        short_id = str(dataset.id).replace("-", "")[:8]
+        temp_schema = f"_imp_{short_id}_v{version.version_no}"
+        conn_str = self._ogr_connection()
+
+        try:
+            db.execute(text(f"CREATE SCHEMA IF NOT EXISTS {temp_schema}"))
+            db.commit()
+
             command = [
                 self.settings.gdal_ogr2ogr_command,
                 "-f",
                 "PostgreSQL",
-                self._ogr_connection(),
+                conn_str,
                 str(source_path),
-                "-sql",
-                f'SELECT * FROM "{escaped_source_name}"',
-                "-nln",
-                f"geo.{table_name}",
+                "-lco",
+                f"SCHEMA={temp_schema}",
                 "-lco",
                 "GEOMETRY_NAME=geom",
+                "-lco",
+                "PRECISION=NO",
                 "-nlt",
                 "PROMOTE_TO_MULTI",
                 "-overwrite",
@@ -275,32 +288,64 @@ class ImportProcessor:
             if result.returncode != 0:
                 raise AppError(
                     "GDAL_IMPORT_FAILED",
-                    f"图层{source_name}导入失败",
+                    "GDAL 批量导入失败",
                     422,
                     result.stderr[-2000:],
                 )
-            geometry_fields = source_layer.get("geometryFields") or [{}]
-            layer = Layer(
-                dataset_version_id=version.id,
-                code=code,
-                name=source_name,
-                geometry_type=str(geometry_fields[0].get("type", "Unknown")),
-                source_table=f"geo.{table_name}",
-                source_crs=version.source_crs,
-                status=LayerStatus.PROCESSING.value,
-                geoserver_workspace=self.settings.geoserver_workspace,
-                geoserver_layer_name=code,
-                allowed_fields=[
-                    field.get("name")
-                    for field in source_layer.get("fields", [])
-                    if field.get("name")
-                ],
-                metadata_json={"sourceLayer": source_name},
-            )
-            db.add(layer)
-            imported.append(layer)
-        db.flush()
-        return imported
+        except Exception:
+            db.rollback()
+            db.execute(text(f"DROP SCHEMA IF EXISTS {temp_schema} CASCADE"))
+            db.commit()
+            raise
+
+        imported = []
+        try:
+            for index, source_layer in enumerate(source_layers):
+                source_name = str(source_layer.get("name") or f"layer_{index + 1}")
+                code = safe_identifier(f"{dataset.code}_{version.version_no}_{source_name}", 90)
+                table_name = safe_identifier(
+                    f"ds_{short_id}_v{version.version_no}_{source_name}",
+                    60,
+                )
+                escaped_source = source_name.replace('"', '""')
+                db.execute(
+                    text(
+                        f'ALTER TABLE {temp_schema}."{escaped_source}" SET SCHEMA geo'
+                    )
+                )
+                db.execute(
+                    text(
+                        f'ALTER TABLE geo."{escaped_source}" RENAME TO "{table_name}"'
+                    )
+                )
+                geometry_fields = source_layer.get("geometryFields") or [{}]
+                layer = Layer(
+                    dataset_version_id=version.id,
+                    code=code,
+                    name=source_name,
+                    geometry_type=str(geometry_fields[0].get("type", "Unknown")),
+                    source_table=f"geo.{table_name}",
+                    source_crs=version.source_crs,
+                    status=LayerStatus.PROCESSING.value,
+                    geoserver_workspace=self.settings.geoserver_workspace,
+                    geoserver_layer_name=code,
+                    allowed_fields=[
+                        field.get("name")
+                        for field in source_layer.get("fields", [])
+                        if field.get("name")
+                    ],
+                    metadata_json={"sourceLayer": source_name},
+                )
+                db.add(layer)
+                imported.append(layer)
+            db.execute(text(f"DROP SCHEMA IF EXISTS {temp_schema} CASCADE"))
+            db.flush()
+            return imported
+        except Exception:
+            db.rollback()
+            db.execute(text(f"DROP SCHEMA IF EXISTS {temp_schema} CASCADE"))
+            db.commit()
+            raise
 
     def _apply_s57_style(self, db: Session, layer: Layer) -> None:
         source_layer = str(layer.metadata_json.get("sourceLayer", ""))

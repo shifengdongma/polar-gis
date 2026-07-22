@@ -115,8 +115,31 @@ backend/
 | 样式 | `/api/v1/admin/styles` | SLD 样式管理 |
 | 演示 | `/api/v1/demo` | AIS 船舶 + 天气预报数据 |
 | 系统 | `/api/v1/health` | 存活/就绪检查 + 审计日志 |
+| S-57批暂停 | `/api/v1/admin/s57-import-batches/{id}/pause` | 暂停批量导入 |
+| S-57批恢复 | `/api/v1/admin/s57-import-batches/{id}/resume` | 恢复暂停的批量导入 |
+| S-57批取消 | `/api/v1/admin/s57-import-batches/{id}/cancel` | 取消批量导入 |
 
-### 2.4 认证与鉴权
+### 2.4 数据导入架构 (S-57 Batch Import)
+
+**优化后流程** (2026-07-22):
+
+```
+前端上传 → API保存文件 → Worker轮询领取 →
+  └─ 扫描分组 (串行, 快)
+  └─ 并行Cell处理 (ThreadPoolExecutor, 默认8 workers):
+      └─ 每个Cell:
+          1. 单次ogr2ogr (临时schema)  ← 优化: 从N次子进程→1次
+          2. ALTER TABLE SET SCHEMA + RENAME
+          3. GeoServer批量发布 (预设BBox) ← 优化: 跳过全表扫描
+```
+
+**关键优化**:
+- **单次ogr2ogr**: 使用临时 PostgreSQL schema (`_imp_{id}`) 作为中间层，一次 ogr2ogr 导入全部图层，再逐个 ALTER TABLE 移至 geo schema
+- **并行Cell**: `concurrent.futures.ThreadPoolExecutor`，每个Cell独立DB session + 独立ogr2ogr子进程 + 独立GeoServer发布
+- **GeoServer BBox**: 发布时预设 `nativeBoundingBox` 避免GeoServer全表扫描计算
+- **暂停/取消**: Worker在处理每个Cell前检查batch状态，支持优雅暂停（完成当前Cell后停止）和立即取消
+
+### 2.5 认证与鉴权
 
 - **JWT**: HS256 签名, `access_token` (30分钟) + `refresh_token` (7天, HTTP-only Cookie)
 - **密码哈希**: Argon2 (argon2-cffi)

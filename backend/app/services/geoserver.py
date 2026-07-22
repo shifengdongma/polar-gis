@@ -93,6 +93,20 @@ class GeoServerClient:
                 "nativeName": table_name,
                 "title": title,
                 "enabled": True,
+                "nativeBoundingBox": {
+                    "minx": -180,
+                    "maxx": 180,
+                    "miny": -90,
+                    "maxy": 90,
+                    "crs": "EPSG:4326",
+                },
+                "latLonBoundingBox": {
+                    "minx": -180,
+                    "maxx": 180,
+                    "miny": -90,
+                    "maxy": 90,
+                    "crs": "EPSG:4326",
+                },
             }
         }
         self._request(
@@ -100,6 +114,43 @@ class GeoServerClient:
             f"workspaces/{workspace}/datastores/{store_name}/featuretypes",
             json=payload,
         )
+
+    def publish_feature_types_batch(
+        self,
+        layers: list[dict],
+        store_name: str = "postgis",
+    ) -> None:
+        self.ensure_workspace()
+        self.ensure_postgis_store(store_name)
+        workspace = self.settings.geoserver_workspace
+        for spec in layers:
+            payload = {
+                "featureType": {
+                    "name": spec["layer_name"],
+                    "nativeName": spec["table_name"],
+                    "title": spec["title"],
+                    "enabled": True,
+                    "nativeBoundingBox": {
+                        "minx": -180,
+                        "maxx": 180,
+                        "miny": -90,
+                        "maxy": 90,
+                        "crs": "EPSG:4326",
+                    },
+                    "latLonBoundingBox": {
+                        "minx": -180,
+                        "maxx": 180,
+                        "miny": -90,
+                        "maxy": 90,
+                        "crs": "EPSG:4326",
+                    },
+                }
+            }
+            self._request(
+                "POST",
+                f"workspaces/{workspace}/datastores/{store_name}/featuretypes",
+                json=payload,
+            )
 
     def publish_geotiff(self, path: str, layer_name: str) -> None:
         self.ensure_workspace()

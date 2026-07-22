@@ -1,9 +1,13 @@
 import hashlib
+import logging
+import os
 import re
 import shutil
 import socket
 import tempfile
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -12,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.database import SessionLocal
 from app.models import (
     Dataset,
     DatasetType,
@@ -29,6 +34,7 @@ from app.services.s57 import identify_s57_file
 from app.services.storage import LocalStorage
 
 code_pattern = re.compile(r"[^a-z0-9_-]+")
+logger = logging.getLogger("polar_gis.s57_batch")
 
 
 class BatchSourceUnavailableError(Exception):
@@ -72,10 +78,11 @@ def validate_s57_chain(cell_name: str, chain: dict[int, Path]) -> list[int]:
 
 
 class S57BatchProcessor:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, session_factory=None) -> None:
         self.settings = settings
         self.storage = LocalStorage(settings)
         self.importer = ImportProcessor(settings)
+        self._session_factory = session_factory or SessionLocal
 
     def process(self, db: Session, batch: S57ImportBatch) -> None:
         self.settings.temp_root.mkdir(parents=True, exist_ok=True)
@@ -98,53 +105,141 @@ class S57BatchProcessor:
             batch.total_cells = len(groups)
             batch.stage = "import"
             db.commit()
-            for cell_name in sorted(groups):
-                item = S57ImportBatchItem(
-                    batch_id=batch.id,
-                    cell_name=cell_name,
-                    update_count=max(groups[cell_name]),
-                )
-                db.add(item)
-                db.commit()
-                item_id = item.id
-                try:
-                    if cell_name in scan_errors:
-                        self._fail_item(
-                            db,
-                            item,
-                            "S57_BATCH_DUPLICATE_FILE",
-                            scan_errors[cell_name],
-                        )
-                    else:
-                        self._process_cell(db, batch, item, groups[cell_name])
-                except Exception as exc:
-                    db.rollback()
-                    failed_item = db.get(S57ImportBatchItem, item_id)
-                    if failed_item is not None:
-                        self._fail_item(
-                            db, failed_item, "S57_CELL_IMPORT_FAILED", str(exc)[:2000]
-                        )
-                    item = failed_item or item
-                batch = db.get(S57ImportBatch, batch.id) or batch
-                batch.processed_cells += 1
-                if item.status == JobStatus.SUCCEEDED.value:
-                    batch.succeeded_cells += 1
-                else:
-                    batch.failed_cells += 1
-                batch.progress = int(batch.processed_cells * 100 / batch.total_cells)
-                batch.heartbeat_at = datetime.now(UTC)
-                db.commit()
-            batch.status = (
-                JobStatus.SUCCEEDED.value
-                if batch.failed_cells == 0
-                else "partial_failed"
-                if batch.succeeded_cells > 0
-                else JobStatus.FAILED.value
-            )
-            batch.stage = "completed"
-            batch.progress = 100
-            batch.finished_at = datetime.now(UTC)
+
+            existing_items = {
+                item.cell_name: item
+                for item in db.scalars(
+                    select(S57ImportBatchItem).where(
+                        S57ImportBatchItem.batch_id == batch.id
+                    )
+                ).all()
+            }
+
+            cell_names = sorted(groups)
+            for cell_name in cell_names:
+                if cell_name not in existing_items:
+                    item = S57ImportBatchItem(
+                        batch_id=batch.id,
+                        cell_name=cell_name,
+                        update_count=max(groups[cell_name]),
+                    )
+                    db.add(item)
             db.commit()
+
+            items_map = {
+                item.cell_name: item
+                for item in db.scalars(
+                    select(S57ImportBatchItem).where(
+                        S57ImportBatchItem.batch_id == batch.id
+                    )
+                ).all()
+            }
+
+            queued_cells = [
+                (cell_name, groups[cell_name])
+                for cell_name in cell_names
+                if items_map.get(cell_name)
+                and items_map[cell_name].status
+                in (JobStatus.QUEUED.value,)
+            ]
+
+            if not queued_cells:
+                self._finalize_batch(db, batch)
+                return
+
+            progress_lock = threading.Lock()
+            workers = min(
+                getattr(self.settings, "batch_parallel_workers", 8),
+                max(1, os.cpu_count() or 4),
+                len(queued_cells),
+            )
+
+            logger.info(
+                "批量导入 %s: %d 单元, %d 待处理, %d 并行workers",
+                batch.name,
+                batch.total_cells,
+                len(queued_cells),
+                workers,
+            )
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_cell: dict = {}
+                pending = list(queued_cells)
+                stopped = False
+
+                while pending or future_to_cell:
+                    if not stopped:
+                        batch_status = self._batch_status(db, batch.id)
+                        if batch_status == JobStatus.CANCELLED.value:
+                            for f in future_to_cell:
+                                f.cancel()
+                            break
+                        if batch_status == JobStatus.PAUSED.value:
+                            stopped = True
+
+                    if not stopped:
+                        while pending and len(future_to_cell) < workers:
+                            cell_name, chain = pending.pop(0)
+                            future = executor.submit(
+                                self._process_cell_worker,
+                                batch.id,
+                                cell_name,
+                                chain,
+                                scan_errors.get(cell_name),
+                            )
+                            future_to_cell[future] = cell_name
+
+                    done_futures = {
+                        f
+                        for f in future_to_cell
+                        if f.done()
+                    }
+
+                    if not done_futures:
+                        import time
+                        time.sleep(0.5)
+                        continue
+
+                    for future in done_futures:
+                        cell_name = future_to_cell.pop(future)
+                        try:
+                            future.result()
+                        except Exception:
+                            pass
+
+                        with progress_lock:
+                            progress_db = self._session_factory()
+                            try:
+                                progress_batch = progress_db.get(S57ImportBatch, batch.id)
+                                if progress_batch is None:
+                                    continue
+                                progress_item = progress_db.scalar(
+                                    select(S57ImportBatchItem).where(
+                                        S57ImportBatchItem.batch_id == batch.id,
+                                        S57ImportBatchItem.cell_name == cell_name,
+                                    )
+                                )
+                                if progress_item is None:
+                                    continue
+                                progress_batch.processed_cells += 1
+                                if progress_item.status == JobStatus.SUCCEEDED.value:
+                                    progress_batch.succeeded_cells += 1
+                                else:
+                                    progress_batch.failed_cells += 1
+                                progress_batch.progress = (
+                                    int(progress_batch.processed_cells * 100 / progress_batch.total_cells)
+                                    if progress_batch.total_cells
+                                    else 0
+                                )
+                                progress_batch.heartbeat_at = datetime.now(UTC)
+                                progress_db.commit()
+                            finally:
+                                progress_db.close()
+
+                    if stopped and not future_to_cell:
+                        break
+
+            self._finalize_batch(db, batch)
         except BatchSourceUnavailableError as exc:
             self._fail_batch(
                 db,
@@ -156,6 +251,103 @@ class S57BatchProcessor:
             self._fail_batch(db, batch, "S57_BATCH_FAILED", str(exc)[:2000])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _batch_status(self, db: Session, batch_id: UUID) -> str:
+        batch = db.get(S57ImportBatch, batch_id)
+        if batch is None:
+            return JobStatus.FAILED.value
+        return batch.status
+
+    def _batch_is_active(self, db: Session, batch_id: UUID) -> bool:
+        status = self._batch_status(db, batch_id)
+        return status not in (
+            JobStatus.CANCELLED.value,
+            JobStatus.FAILED.value,
+            JobStatus.PAUSED.value,
+        )
+
+    def _process_cell_worker(
+        self,
+        batch_id: UUID,
+        cell_name: str,
+        chain: dict[int, Path],
+        scan_error: str | None,
+    ) -> None:
+        db = self._session_factory()
+        try:
+            batch = db.get(S57ImportBatch, batch_id)
+            if batch is None:
+                return
+            if batch.status in (
+                JobStatus.CANCELLED.value,
+                JobStatus.PAUSED.value,
+            ):
+                logger.info(
+                    "跳过单元 %s: 批次状态为 %s", cell_name, batch.status
+                )
+                return
+
+            item = db.scalar(
+                select(S57ImportBatchItem).where(
+                    S57ImportBatchItem.batch_id == batch_id,
+                    S57ImportBatchItem.cell_name == cell_name,
+                )
+            )
+            if item is None:
+                return
+            if item.status not in (JobStatus.QUEUED.value,):
+                return
+
+            if scan_error:
+                self._fail_item(
+                    db, item, "S57_BATCH_DUPLICATE_FILE", scan_error
+                )
+                return
+
+            self._process_cell(db, batch, item, chain)
+        except Exception as exc:
+            db.rollback()
+            item = db.scalar(
+                select(S57ImportBatchItem).where(
+                    S57ImportBatchItem.batch_id == batch_id,
+                    S57ImportBatchItem.cell_name == cell_name,
+                )
+            )
+            if item is not None and item.status != JobStatus.SUCCEEDED.value:
+                self._fail_item(
+                    db,
+                    item,
+                    "S57_CELL_IMPORT_FAILED",
+                    str(exc)[:2000],
+                )
+        finally:
+            db.close()
+
+    def _finalize_batch(self, db: Session, batch: S57ImportBatch) -> None:
+        final_db = self._session_factory()
+        try:
+            final_batch = final_db.get(S57ImportBatch, batch.id)
+            if final_batch is None:
+                return
+            if final_batch.status in (
+                JobStatus.CANCELLED.value,
+                JobStatus.PAUSED.value,
+                JobStatus.FAILED.value,
+            ):
+                return
+            final_batch.status = (
+                JobStatus.SUCCEEDED.value
+                if final_batch.failed_cells == 0
+                else "partial_failed"
+                if final_batch.succeeded_cells > 0
+                else JobStatus.FAILED.value
+            )
+            final_batch.stage = "completed"
+            final_batch.progress = 100
+            final_batch.finished_at = datetime.now(UTC)
+            final_db.commit()
+        finally:
+            final_db.close()
 
     def _stage_sources(self, db: Session, batch_id: UUID, temp_dir: Path) -> list[Path]:
         records = db.scalars(

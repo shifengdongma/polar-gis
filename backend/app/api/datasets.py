@@ -223,6 +223,100 @@ def get_s57_import_batch(
     )
 
 
+@router.post(
+    "/admin/s57-import-batches/{batch_id}/pause",
+    response_model=S57ImportBatchRead,
+)
+def pause_s57_import_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> S57ImportBatch:
+    batch = db.get(S57ImportBatch, batch_id)
+    if batch is None:
+        raise AppError("S57_BATCH_NOT_FOUND", "批量导入批次不存在", 404)
+    if batch.status not in (JobStatus.RUNNING.value,):
+        raise AppError(
+            "S57_BATCH_CANNOT_PAUSE",
+            "只能暂停正在运行中的批次",
+            409,
+        )
+    batch.status = JobStatus.PAUSED.value
+    batch.stage = "paused"
+    batch.heartbeat_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.post(
+    "/admin/s57-import-batches/{batch_id}/resume",
+    response_model=S57ImportBatchRead,
+)
+def resume_s57_import_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> S57ImportBatch:
+    batch = db.get(S57ImportBatch, batch_id)
+    if batch is None:
+        raise AppError("S57_BATCH_NOT_FOUND", "批量导入批次不存在", 404)
+    if batch.status != JobStatus.PAUSED.value:
+        raise AppError(
+            "S57_BATCH_CANNOT_RESUME",
+            "只能恢复已暂停的批次",
+            409,
+        )
+    batch.status = JobStatus.QUEUED.value
+    batch.stage = "queued"
+    batch.heartbeat_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.post(
+    "/admin/s57-import-batches/{batch_id}/cancel",
+    response_model=S57ImportBatchRead,
+)
+def cancel_s57_import_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> S57ImportBatch:
+    batch = db.get(S57ImportBatch, batch_id)
+    if batch is None:
+        raise AppError("S57_BATCH_NOT_FOUND", "批量导入批次不存在", 404)
+    if batch.status not in (
+        JobStatus.QUEUED.value,
+        JobStatus.RUNNING.value,
+        JobStatus.PAUSED.value,
+    ):
+        raise AppError(
+            "S57_BATCH_CANNOT_CANCEL",
+            "只能取消排队中、运行中或已暂停的批次",
+            409,
+        )
+    batch.status = JobStatus.CANCELLED.value
+    batch.stage = "cancelled"
+    batch.finished_at = datetime.now(UTC)
+    queued_items = db.scalars(
+        select(S57ImportBatchItem).where(
+            S57ImportBatchItem.batch_id == batch.id,
+            S57ImportBatchItem.status.in_(
+                (JobStatus.QUEUED.value, JobStatus.RUNNING.value)
+            ),
+        )
+    ).all()
+    for item in queued_items:
+        item.status = JobStatus.CANCELLED.value
+        item.stage = "cancelled"
+        item.finished_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
 def dataset_to_read(dataset: Dataset) -> DatasetRead:
     return DatasetRead.model_validate(dataset).model_copy(update={"version_count": len(dataset.versions)})
 

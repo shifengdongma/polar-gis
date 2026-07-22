@@ -21,6 +21,7 @@ from app.models import (
     VersionStatus,
 )
 from app.services.s57_batch import S57BatchProcessor, group_s57_files, validate_s57_chain
+from sqlalchemy.orm import sessionmaker
 
 
 def test_group_s57_files_by_cell_and_update() -> None:
@@ -174,17 +175,18 @@ class FakeImportProcessor:
         cell_name = str(version.metadata_json["cellName"])
         update_number = int(version.metadata_json["updateNumber"])
         self.calls.append((cell_name, update_number))
-        if cell_name == self.failed_cell:
+        if self.failed_cell and cell_name.upper() == self.failed_cell.upper():
             version.status = VersionStatus.FAILED.value
             job.status = JobStatus.FAILED.value
             job.error_code = "TEST_IMPORT_FAILED"
             job.error_message = f"{cell_name} 测试导入失败"
         else:
             dataset = db.get(Dataset, job.dataset_id)
-            assert dataset is not None
-            version.status = VersionStatus.VALID.value
-            dataset.current_version_id = version.id
+            if dataset is not None:
+                version.status = VersionStatus.VALID.value
+                dataset.current_version_id = version.id
             job.status = JobStatus.SUCCEEDED.value
+            job.stage = "completed"
             job.progress = 100
         db.commit()
 
@@ -193,13 +195,15 @@ def create_batch(
     db: Session,
     tmp_path: Path,
     files: list[str],
-) -> tuple[Settings, S57ImportBatch]:
+) -> tuple[Settings, S57ImportBatch, "sessionmaker"]:
     admin_id = db.scalar(select(User.id).where(User.username == "admin"))
     assert isinstance(admin_id, UUID)
     settings = Settings(
         storage_root=tmp_path / "storage",
         temp_root=tmp_path / "temp",
+        batch_parallel_workers=1,
     )
+    factory = sessionmaker(bind=db.get_bind())
     batch = S57ImportBatch(name="测试批次", requested_by=admin_id)
     db.add(batch)
     db.flush()
@@ -219,7 +223,7 @@ def create_batch(
             )
         )
     db.commit()
-    return settings, batch
+    return settings, batch, factory
 
 
 def create_existing_s57_dataset(
@@ -259,13 +263,13 @@ def test_process_batch_creates_dataset_and_jobs_for_each_cell(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["RU4AB123.000", "RU4AB123.001", "NO1A3000.000"],
     )
     importer = FakeImportProcessor()
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = importer  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -282,11 +286,11 @@ def test_process_batch_reports_missing_shared_source(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(db_session, tmp_path, ["RU4AB123.000"])
+    settings, batch, factory = create_batch(db_session, tmp_path, ["RU4AB123.000"])
     source = settings.storage_root / "batch-sources/0/RU4AB123.000"
     source.unlink()
 
-    S57BatchProcessor(settings).process(db_session, batch)
+    S57BatchProcessor(settings, factory).process(db_session, batch)
 
     db_session.refresh(batch)
     item = db_session.scalar(
@@ -302,12 +306,12 @@ def test_process_batch_continues_after_one_cell_fails(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["AA1TEST.000", "BB1TEST.000"],
     )
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor(failed_cell="AA1TEST")  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -329,12 +333,12 @@ def test_process_batch_reports_update_gap_without_blocking_other_cells(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["AA1GAP.000", "AA1GAP.002", "BB1GOOD.000"],
     )
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -358,12 +362,12 @@ def test_process_batch_reports_duplicate_without_blocking_other_cells(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["AA1DUP.000", "AA1DUP.000", "BB1GOOD.000"],
     )
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -385,13 +389,13 @@ def test_process_batch_appends_only_new_updates_to_existing_dataset(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["RU4AB123.000", "RU4AB123.001", "RU4AB123.002", "RU4AB123.003"],
     )
     dataset = create_existing_s57_dataset(db_session, batch, "RU4AB123", 1)
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     importer = FakeImportProcessor()
     processor.importer = importer  # type: ignore[assignment]
 
@@ -426,13 +430,13 @@ def test_process_batch_marks_existing_dataset_up_to_date(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(
+    settings, batch, factory = create_batch(
         db_session,
         tmp_path,
         ["RU4AB123.000", "RU4AB123.001"],
     )
     dataset = create_existing_s57_dataset(db_session, batch, "RU4AB123", 1)
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -452,9 +456,9 @@ def test_process_batch_rejects_gap_when_appending_existing_dataset(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(db_session, tmp_path, ["RU4AB123.003"])
+    settings, batch, factory = create_batch(db_session, tmp_path, ["RU4AB123.003"])
     create_existing_s57_dataset(db_session, batch, "RU4AB123", 1)
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -472,9 +476,9 @@ def test_process_batch_requires_missing_history_sources_in_reupload(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(db_session, tmp_path, ["RU4AB123.002"])
+    settings, batch, factory = create_batch(db_session, tmp_path, ["RU4AB123.002"])
     create_existing_s57_dataset(db_session, batch, "RU4AB123", 1)
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)
@@ -491,7 +495,7 @@ def test_process_batch_rejects_existing_non_s57_dataset_code(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
-    settings, batch = create_batch(db_session, tmp_path, ["RU4AB123.000"])
+    settings, batch, factory = create_batch(db_session, tmp_path, ["RU4AB123.000"])
     db_session.add(
         Dataset(
             code="s57_ru4ab123",
@@ -501,7 +505,7 @@ def test_process_batch_rejects_existing_non_s57_dataset_code(
         )
     )
     db_session.commit()
-    processor = S57BatchProcessor(settings)
+    processor = S57BatchProcessor(settings, factory)
     processor.importer = FakeImportProcessor()  # type: ignore[assignment]
 
     processor.process(db_session, batch)

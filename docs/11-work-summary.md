@@ -149,3 +149,63 @@
 - 手册语言使用中文, 与现有文档和用户界面保持一致
 - 不重复已有的设计文档内容, 聚焦于用户操作使用视角
 - 代码示例使用 curl 命令, 便于运维和技术用户直接测试
+
+---
+
+## 会话 #5 — 批量导入性能优化 + 暂停/取消功能
+
+**日期**: 2026-07-22
+**状态**: ✅ 完成
+
+### 修改内容
+
+#### 修改文件
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `backend/app/models.py` | 枚举扩展 | `JobStatus` 新增 `PAUSED = "paused"` |
+| `backend/app/services/importer.py` | 核心优化 | `_import_vector_layers` 重写为临时schema单次ogr2ogr + ALTER TABLE方案；新增取消感知检查点；publish阶段改用 batch publish |
+| `backend/app/services/geoserver.py` | 性能优化 | `publish_feature_type` 预设 BBox 跳过GeoServer全表扫描；新增 `publish_feature_types_batch` 批量发布方法 |
+| `backend/app/services/s57_batch.py` | 架构重构 | `process()` 使用 ThreadPoolExecutor 并行处理 Cell；`_process_cell_worker` 独立 Session 线程安全；`_finalize_batch` 独立 Session 隔离；暂停/取消检测；可配置并行度 |
+| `backend/app/api/datasets.py` | 新增API | pause/resume/cancel 三个批量导入控制端点 |
+| `backend/app/core/config.py` | 新增配置 | `batch_parallel_workers` 并行worker数量 (默认8) |
+| `frontend/src/views/admin/BatchImportView.vue` | UI增强 | 暂停/继续/取消按钮；新增状态标签 |
+| `backend/tests/test_s57_batch.py` | 测试适配 | FakeImportProcessor 适配并行处理；create_batch 返回 session factory |
+
+### 实现效果
+
+1. **性能提升**: 188个S-57单元导入时间从 **10小时+** 预计降至 **5-20分钟**（30-120x 提速）
+   - ogr2ogr 调用数: ~7,520次 → 188次 (40x 减少)
+   - 新增 `-lco PRECISION=NO` 加速导入
+   - GeoServer 发布跳过全表 BBox 计算
+   - Cell 并行处理 (默认8 workers)
+
+2. **新增功能**:
+   - 批量导入支持**暂停**（完成当前Cell后停止，保留进度）
+   - 批量导入支持**恢复**（从断点继续处理未完成的Cell）
+   - 批量导入支持**取消**（立即中断，标记剩余项为已取消）
+
+3. **向后兼容**: 
+   - 已有数据和图层不受影响
+   - 单文件导入流程不变
+   - API 接口不变（仅新增端点）
+   - 所有 46 个已有测试通过
+
+### 关键决策
+
+- 使用**临时 PostgreSQL schema** 而非管道/批处理文件，避免了复杂的表名映射
+- 使用 **ThreadPoolExecutor** 而非 ProcessPoolExecutor（导入是I/O密集型）
+- 暂停/恢复通过重置 batch.status 为 QUEUED 实现，复用现有的 claim 逻辑
+- Worker 进度跟踪使用独立的 DB session 避免事务隔离问题
+- 所有改动保持对 PostgreSQL 生产环境的兼容性
+
+### 重新构建命令（保留现有数据）
+
+```bash
+cd F:/polar-gis/deploy
+docker compose down          # 停止服务 (不删除 volumes)
+docker compose build --no-cache backend worker web  # 重新构建镜像
+docker compose up -d         # 启动服务
+```
+
+**数据安全**: `docker compose down` 不会删除 named volumes (`postgres-data`, `geoserver-data`, `shared-storage`)，已有数据完整保留。切勿使用 `docker compose down -v`。

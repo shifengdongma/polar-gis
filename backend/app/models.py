@@ -57,6 +57,7 @@ class JobStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class LayerStatus(StrEnum):
