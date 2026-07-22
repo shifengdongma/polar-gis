@@ -22,6 +22,7 @@ const layerLoading = ref(false)
 const layerConfigPage = ref(1)
 const layerConfigPageSize = ref(15)
 const layerConfigTotal = ref(0)
+const layerSearch = ref('')
 const activeProject = ref<Project | null>(null)
 const editableDatasets = ref<EditableDataset[]>([])
 const createFormRef = ref<FormInstance>()
@@ -106,6 +107,7 @@ async function configureLayers(project: Project) {
   activeProject.value = project
   layersDialogVisible.value = true
   layerLoading.value = true
+  layerSearch.value = ''
   try {
     datasetDrafts.clear()
     layerConfigPage.value = 1
@@ -132,9 +134,11 @@ async function loadLayerPage(targetPage = layerConfigPage.value, cacheCurrent = 
   if (cacheCurrent) cacheLayerPage()
   layerLoading.value = true
   try {
+    const params: Record<string, string | number> = { page: targetPage, pageSize: layerConfigPageSize.value }
+    if (layerSearch.value.trim()) params.search = layerSearch.value.trim()
     const response = await api.get<Paginated<ProjectDatasetLayer>>(
       `/admin/projects/${activeProject.value?.id}/dataset-layers`,
-      { params: { page: targetPage, pageSize: layerConfigPageSize.value } },
+      { params },
     )
     layerConfigPage.value = response.data.page
     layerConfigTotal.value = response.data.total
@@ -154,6 +158,76 @@ async function loadLayerPage(targetPage = layerConfigPage.value, cacheCurrent = 
   } finally {
     layerLoading.value = false
   }
+}
+
+function selectAllCurrentPage() {
+  for (const dataset of editableDatasets.value) {
+    dataset.selected = true
+    datasetDrafts.set(dataset.datasetId, {
+      datasetId: dataset.datasetId,
+      selected: true,
+      groupName: dataset.groupName,
+      sortOrder: dataset.sortOrder,
+      visibleByDefault: dataset.visibleByDefault,
+      opacity: dataset.opacity,
+    })
+  }
+}
+
+function deselectAllCurrentPage() {
+  for (const dataset of editableDatasets.value) {
+    dataset.selected = false
+    datasetDrafts.set(dataset.datasetId, {
+      datasetId: dataset.datasetId,
+      selected: false,
+      groupName: dataset.groupName,
+      sortOrder: dataset.sortOrder,
+      visibleByDefault: dataset.visibleByDefault,
+      opacity: dataset.opacity,
+    })
+  }
+}
+
+async function selectAllDatasets() {
+  cacheLayerPage()
+  try {
+    const params: Record<string, string> = {}
+    if (layerSearch.value.trim()) params.search = layerSearch.value.trim()
+    const response = await api.get<{ datasetId: string; code: string; name: string }[]>(
+      '/admin/datasets/available-ids',
+      { params },
+    )
+    for (const item of response.data) {
+      const existing = datasetDrafts.get(item.datasetId)
+      datasetDrafts.set(item.datasetId, {
+        datasetId: item.datasetId,
+        selected: true,
+        groupName: existing?.groupName || '默认分组',
+        sortOrder: existing?.sortOrder || 0,
+        visibleByDefault: existing?.visibleByDefault ?? false,
+        opacity: existing?.opacity ?? 1,
+      })
+    }
+    await loadLayerPage(layerConfigPage.value, false)
+    ElMessage.success(`已选中 ${response.data.length} 个数据集`)
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '批量选取失败'))
+  }
+}
+
+function deselectAllDatasets() {
+  for (const [id, draft] of datasetDrafts) {
+    datasetDrafts.set(id, { ...draft, selected: false })
+  }
+  for (const dataset of editableDatasets.value) {
+    dataset.selected = false
+  }
+  ElMessage.success('已取消全部选中')
+}
+
+function onLayerSearchChange() {
+  layerConfigPage.value = 1
+  loadLayerPage(1, true)
 }
 
 async function saveLayers() {
@@ -232,7 +306,16 @@ onMounted(loadProjects)
     </el-dialog>
     <el-dialog v-model="layersDialogVisible" :title="`配置海图数据集 · ${activeProject?.name || ''}`" width="1040px" top="5vh">
       <el-alert title="每行对应一个数据集或 S-57 海图单元。保存时会自动包含其当前版本的内部对象图层，并保留既有 GeoServer 默认样式。" type="info" :closable="false" class="dialog-alert" />
-      <el-table v-loading="layerLoading" :data="editableDatasets" height="62vh" stripe>
+      <div class="layer-toolbar">
+        <el-input v-model="layerSearch" placeholder="搜索数据集名称或代码" clearable style="width: 260px" @input="onLayerSearchChange" @clear="onLayerSearchChange" />
+        <div class="layer-toolbar-actions">
+          <el-button size="small" @click="selectAllCurrentPage">全选本页</el-button>
+          <el-button size="small" @click="deselectAllCurrentPage">取消本页</el-button>
+          <el-button size="small" type="primary" @click="selectAllDatasets">全选全部</el-button>
+          <el-button size="small" type="danger" @click="deselectAllDatasets">取消全部</el-button>
+        </div>
+      </div>
+      <el-table v-loading="layerLoading" :data="editableDatasets" height="55vh" stripe>
         <el-table-column label="启用" width="70"><template #default="{ row }"><el-checkbox v-model="row.selected" /></template></el-table-column>
         <el-table-column label="数据集" min-width="240"><template #default="{ row }"><strong>{{ row.datasetName }}</strong><div><small>{{ row.datasetCode }} · {{ row.dataType }} · 当前版本 {{ row.versionNo }}</small></div></template></el-table-column>
         <el-table-column prop="availableLayerCount" label="内部图层" width="100" />

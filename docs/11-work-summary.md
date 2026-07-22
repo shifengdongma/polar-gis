@@ -209,3 +209,32 @@ docker compose up -d         # 启动服务
 ```
 
 **数据安全**: `docker compose down` 不会删除 named volumes (`postgres-data`, `geoserver-data`, `shared-storage`)，已有数据完整保留。切勿使用 `docker compose down -v`。
+
+---
+
+## 会话 #6 — 项目配置"批量选取"数据集功能
+
+**日期**: 2026-07-22
+**状态**: ✅ 完成
+
+### 修改内容
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `backend/app/api/datasets.py` | 新增端点 | `GET /admin/datasets/available-ids` 返回所有可用数据集的轻量级 ID 列表 (id/code/name)，支持搜索过滤 |
+| `backend/app/api/projects.py` | 功能增强 | `GET /admin/projects/{id}/dataset-layers` 新增 `search` 查询参数，支持按名称/代码过滤 |
+| `frontend/src/views/admin/ProjectManagementView.vue` | UI增强 | 新增搜索框 + 全选本页/取消本页/全选全部/取消全部四个批量操作按钮 |
+
+### 实现效果
+
+1. **搜索过滤**: 输入关键词即时过滤数据集列表，支持名称和代码模糊匹配
+2. **全选本页**: 一键选中当前页所有可见数据集
+3. **取消本页**: 一键取消当前页所有选中
+4. **全选全部**: 通过新端点一次性获取所有匹配数据集 ID，跨页全选（不受分页限制）
+5. **取消全部**: 一键清空所有选中状态
+
+### 技术要点
+
+- `datasetDrafts` Map 跨页跟踪选中状态，批量操作直接写入 Map
+- "全选全部"走独立的轻量端点 `GET /admin/datasets/available-ids`，只返回 id/code/name 三元组，性能高效
+- 搜索联动：输入变化自动重置到第一页

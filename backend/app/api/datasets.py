@@ -554,6 +554,32 @@ def list_datasets(
     )
 
 
+@router.get("/admin/datasets/available-ids")
+def get_available_dataset_ids(
+    search: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> list[dict]:
+    conditions = [
+        Dataset.deleted_at.is_(None),
+        Dataset.current_version_id.is_not(None),
+    ]
+    if search and search.strip():
+        keyword = f"%{search.strip()}%"
+        conditions.append(
+            or_(Dataset.name.ilike(keyword), Dataset.code.ilike(keyword))
+        )
+    rows = db.execute(
+        select(Dataset.id, Dataset.code, Dataset.name)
+        .where(*conditions)
+        .order_by(Dataset.name)
+    ).all()
+    return [
+        {"datasetId": str(row.id), "code": row.code, "name": row.name}
+        for row in rows
+    ]
+
+
 @router.post("/admin/datasets", response_model=DatasetRead, status_code=201)
 def create_dataset(
     payload: DatasetCreate,

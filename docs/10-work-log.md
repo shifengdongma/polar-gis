@@ -236,3 +236,31 @@
 3. **暂停语义**: 暂停时完成当前正在运行的Cell，不再启动新Cell。未处理的QUEUED items保留。恢复时将batch.status重置为QUEUED，worker重新拾取
 4. **取消语义**: 取消时立即中断，所有QUEUED/RUNNING items标记为CANCELLED
 5. **Session隔离**: 主线程和worker线程使用不同DB session（通过session factory），避免SQLite SERIALIZABLE隔离级别导致的数据不可见问题
+
+---
+
+## 会话 #6 — 项目配置"批量选取"数据集功能
+
+**日期**: 2026-07-22
+**目标**: 在项目管理→配置数据集对话框中，增设批量选取/取消数据集的功能
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 后端新增 `GET /admin/datasets/available-ids` 轻量端点 | ✅ 完成 |
+| 2 | 后端 `GET /admin/projects/{id}/dataset-layers` 新增 search 参数 | ✅ 完成 |
+| 3 | 前端新增搜索框 + 批量选取按钮 | ✅ 完成 |
+| 4 | 测试 + 文档更新 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-22 | `backend/app/api/datasets.py` | 新增 | `GET /admin/datasets/available-ids` — 返回所有可用数据集的轻量级 ID 列表 |
+| 2026-07-22 | `backend/app/api/projects.py` | 修改 | `get_project_dataset_layers` 新增 `search` 查询参数；新增 `or_` 导入 |
+| 2026-07-22 | `frontend/src/views/admin/ProjectManagementView.vue` | 修改 | 新增搜索框、全选本页/取消本页/全选全部/取消全部四个批量操作按钮 |
+
+### 关键决策
+- "全选全部"通过新端点一次性获取所有匹配数据集 ID，写入 datasetDrafts Map 实现跨页跟踪
+- 搜索框与后端联动，输入时自动重新加载第一页

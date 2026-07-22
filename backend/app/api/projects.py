@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user, require_admin
@@ -380,6 +380,7 @@ def get_project_dataset_layers(
     project_id: UUID,
     page: int = 1,
     page_size: int = 15,
+    search: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ) -> Paginated[ProjectDatasetLayerRead]:
@@ -401,6 +402,11 @@ def get_project_dataset_layers(
         Dataset.current_version_id.is_not(None),
         available_layer_count > 0,
     ]
+    if search and search.strip():
+        keyword = f"%{search.strip()}%"
+        conditions.append(
+            or_(Dataset.name.ilike(keyword), Dataset.code.ilike(keyword))
+        )
     total = db.scalar(select(func.count()).select_from(Dataset).where(*conditions)) or 0
     datasets = db.execute(
         select(Dataset, DatasetVersion, available_layer_count.label("available_layer_count"))
