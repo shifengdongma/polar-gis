@@ -36,6 +36,9 @@ services:
 
   backend:
     image: polar-gis-backend:latest
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     environment: &backend-env
       APP_ENV: production
@@ -81,6 +84,9 @@ services:
 
   web:
     image: polar-gis-frontend:latest
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
     restart: unless-stopped
     ports:
       - "${PUBLIC_PORT}:80"
