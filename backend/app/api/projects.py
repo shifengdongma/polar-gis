@@ -203,6 +203,7 @@ def get_project_dataset_map_layers(
             ),
             service_layer_name=link.layer.geoserver_layer_name or link.layer.code,
             style_name=link.style.geoserver_style_name if link.style else None,
+            geometry_type=link.layer.geometry_type,
             metadata=link.layer.metadata_json,
         )
         for link in links

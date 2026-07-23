@@ -31,6 +31,7 @@ settings = get_settings()
 table_pattern = re.compile(r"^geo\.[a-z0-9_]+$")
 field_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 operators = {"eq": "=", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+_NON_SPATIAL_TYPES = frozenset({"unknown", "none", "", "无", "无几何", "geometrycollection"})
 
 
 def column_reference(field: str) -> str:
@@ -55,6 +56,12 @@ def safe_source_table(layer: Layer) -> str:
     if not layer.source_table or not table_pattern.fullmatch(layer.source_table):
         raise AppError("LAYER_SOURCE_INVALID", "图层数据源配置无效", 500)
     return layer.source_table
+
+
+def _layer_has_geometry(layer: Layer) -> bool:
+    """Return True if the layer has a usable geometry column."""
+    geom_type = (layer.geometry_type or "").strip().lower()
+    return geom_type not in _NON_SPATIAL_TYPES
 
 
 def allowed_fields(layer: Layer, requested: list[str] | None = None) -> list[str]:
@@ -200,6 +207,8 @@ def identify_feature(
     layer = layer_or_404(db, layer_id, available_only=True)
     if not layer.queryable:
         raise AppError("LAYER_QUERY_DISABLED", "当前图层不允许查询", 403)
+    if not _layer_has_geometry(layer):
+        raise AppError("LAYER_NON_SPATIAL", "非空间图层不支持要素识别", 400)
     table = safe_source_table(layer)
     fields = allowed_fields(layer)
     selected = ", ".join(selected_column(field) for field in fields)
@@ -231,10 +240,11 @@ def search_features(
     total = db.scalar(text(f"SELECT COUNT(*) FROM {table}{where_sql}"), params) or 0
     field_sql = ", ".join(selected_column(field) for field in fields)
     prefix = f"{field_sql}, " if field_sql else ""
+    geom_expr = "ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry" if _layer_has_geometry(layer) else "NULL AS geometry"
     params.update(limit=payload.page_size, offset=(payload.page - 1) * payload.page_size)
     rows = db.execute(
         text(
-            f"SELECT {prefix}ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry "
+            f"SELECT {prefix}{geom_expr} "
             f"FROM {table}{where_sql} LIMIT :limit OFFSET :offset"
         ),
         params,
@@ -263,11 +273,12 @@ def export_features(
     where_sql, params = build_where(layer, payload)
     field_sql = ", ".join(selected_column(field) for field in fields)
     prefix = f"{field_sql}, " if field_sql else ""
+    geom_expr = "ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry" if _layer_has_geometry(layer) else "NULL AS geometry"
     params["limit"] = settings.query_result_limit + 1
     rows = list(
         db.execute(
             text(
-                f"SELECT {prefix}ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry "
+                f"SELECT {prefix}{geom_expr} "
                 f"FROM {table}{where_sql} LIMIT :limit"
             ),
             params,

@@ -306,3 +306,20 @@
 - `column_reference()` 移除小写后新旧数据兼容：旧数据(allowed_fields大写+PostgreSQL列大写)→匹配；新数据(LAUNDER=YES+allowed_fields小写)→匹配
 - 瓦片加载延迟300ms：快速加载的瓦片不触发黄色状态，仅持续加载超过300ms才显示loading
 - AbortController取消前一个请求后再发新请求，避免并发响应的竞态条件
+
+### 补充修复 (同日)
+
+**问题发现**: 修复上线后 DSID 和 C_ASSO 图层仍然"加载失败"且属性表报错。
+
+**根因**: S-57 的 DSID(数据集元数据) 和 C_ASSO(要素关联) 是非空间图层，`ogrinfo` 报告 `geometryType` 为 null，`ogr2ogr` 创建的表**没有 `geom` 列**。后端 SQL 硬编码 `ST_Transform(geom,4326)` 导致 "column geom does not exist"；GeoServer 发布无空间列的表后 WMS 瓦片请求失败。
+
+**补充修改**:
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-23 | `backend/app/api/layers.py` | 修改 | 新增 `_layer_has_geometry()` 辅助函数；`search_features`/`export_features` 对非空间图层使用 `NULL AS geometry`；`identify_feature` 对非空间图层返回 400 |
+| 2026-07-23 | `backend/app/services/importer.py` | 修改 | GeoServer 发布前过滤掉非空间图层(geometry_type 为 unknown/none/空)，仅发布有几何列的表 |
+| 2026-07-23 | `backend/app/schemas.py` | 修改 | `MapLayerConfig` 新增 `geometry_type` 字段 |
+| 2026-07-23 | `backend/app/api/projects.py` | 修改 | 返回 `MapLayerConfig` 时传递 `geometry_type` |
+| 2026-07-23 | `frontend/src/types/index.ts` | 修改 | `MapLayerConfig` 新增 `geometryType` 字段 |
+| 2026-07-23 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | 新增 `isNonSpatial()` 判断；非空间图层跳过 WMS 瓦片加载并显示"属性表"标签 |

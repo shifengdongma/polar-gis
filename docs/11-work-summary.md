@@ -268,3 +268,13 @@ docker compose up -d         # 启动服务
 - 瓦片状态稳定化使用 `window.setTimeout/clearTimeout` 管理定时器，`detachWmsLayer` 中确保清理，防止内存泄漏
 - AbortController 通过 `controller.signal.aborted` 检查避免在已取消的请求中更新UI
 - 搜索联动：输入变化自动重置到第一页
+
+### 补充修复 — 非空间图层(DSID/C_ASSO)属性表加载失败
+
+**问题**: DSID(数据集元数据)和 C_ASSO(要素关联)等 S-57 非空间图层，`ogr2ogr` 导入时不创建 `geom` 列，后端 SQL 硬编码 `ST_Transform(geom,4326)` 导致 "column geom does not exist"；GeoServer 发布无几何列的表后 WMS 瓦片加载失败。
+
+**修改**:
+1. `backend/app/api/layers.py` — 新增 `_layer_has_geometry()` 函数检测非空间图层；`search_features`/`export_features` 对非空间图层使用 `NULL AS geometry`；`identify_feature` 返回 400 错误
+2. `backend/app/services/importer.py` — GeoServer 发布前过滤掉非空间图层(geometry_type 为 unknown/none/空)
+3. `backend/app/schemas.py` + `backend/app/api/projects.py` — `MapLayerConfig` 新增 `geometry_type` 字段
+4. `frontend/src/types/index.ts` + `frontend/src/views/MapWorkspaceView.vue` — 新增 `isNonSpatial()` 判断，非空间图层跳过 WMS 加载显示"属性表"标签

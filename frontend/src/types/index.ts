@@ -40,6 +40,7 @@ export interface MapLayerConfig {
   serviceUrl: string
   serviceLayerName: string
   styleName: string | null
+  geometryType: string | null
   metadata: Record<string, unknown>
 }
 

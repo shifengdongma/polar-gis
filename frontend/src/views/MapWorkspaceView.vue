@@ -292,8 +292,17 @@ async function buildMap() {
   })
 }
 
+function isNonSpatial(layer: MapLayerConfig): boolean {
+  const t = (layer.geometryType || '').toLowerCase()
+  return t === 'unknown' || t === 'none' || t === '' || t === '无'
+}
+
 function attachWmsLayer(runtime: RuntimeLayer) {
   if (!map || wmsLayers.has(runtime.config.id)) return
+  if (isNonSpatial(runtime.config)) {
+    runtime.loadState = 'loaded' // Non-spatial layers don't load tiles
+    return
+  }
   const source = new TileWMS({
     url: browserGeoServerUrl(runtime.config.serviceUrl),
     params: { LAYERS: runtime.config.serviceLayerName, TILED: true, STYLES: runtime.config.styleName || '' },
@@ -678,7 +687,14 @@ onBeforeUnmount(() => {
                   <button :class="['visibility-toggle', { active: runtime.visible }]" type="button" @click="toggleLayer(runtime)"><span></span></button>
                   <div class="layer-name">
                     <strong>{{ s57LayerTitle(runtime.config) }}</strong>
-                    <small><span :class="['layer-state', runtime.loadState]"></span>{{ runtime.config.queryable ? '可查询' : '仅显示' }}<span v-if="runtime.loadState === 'error'"> · 加载失败</span></small>
+                    <small>
+                      <template v-if="isNonSpatial(runtime.config)">
+                        <span class="layer-state loaded"></span>属性表<span v-if="runtime.config.queryable"> · 可查询</span>
+                      </template>
+                      <template v-else>
+                        <span :class="['layer-state', runtime.loadState]"></span>{{ runtime.config.queryable ? '可查询' : '仅显示' }}<span v-if="runtime.loadState === 'error'"> · 加载失败</span>
+                      </template>
+                    </small>
                   </div>
                   <el-popover placement="right-start" :width="230" trigger="click" popper-class="layer-action-popover">
                     <div class="layer-action-title"><strong>{{ s57LayerTitle(runtime.config) }}</strong><span>{{ Math.round(runtime.opacity * 100) }}%</span></div>

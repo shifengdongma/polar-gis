@@ -108,16 +108,21 @@ class ImportProcessor:
                     )
                     layer.status = LayerStatus.AVAILABLE.value
             else:
-                self.geoserver.publish_feature_types_batch([
-                    {
-                        "table_name": (layer.source_table or "").split(".")[-1],
-                        "layer_name": layer.geoserver_layer_name or layer.code,
-                        "title": layer.name,
-                    }
-                    for layer in imported_layers
-                ])
+                spatial_layers = [
+                    layer for layer in imported_layers
+                    if (layer.geometry_type or "").strip().lower() not in ("unknown", "none", "", "无")
+                ]
+                if spatial_layers:
+                    self.geoserver.publish_feature_types_batch([
+                        {
+                            "table_name": (layer.source_table or "").split(".")[-1],
+                            "layer_name": layer.geoserver_layer_name or layer.code,
+                            "title": layer.name,
+                        }
+                        for layer in spatial_layers
+                    ])
                 for layer in imported_layers:
-                    if dataset.data_type == DatasetType.S57.value:
+                    if dataset.data_type == DatasetType.S57.value and layer in spatial_layers:
                         self._apply_s57_style(db, layer)
                     layer.status = LayerStatus.AVAILABLE.value
             self._switch_project_layer_versions(db, version, imported_layers)

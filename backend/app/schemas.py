@@ -133,6 +133,7 @@ class MapLayerConfig(ApiModel):
     service_url: str
     service_layer_name: str
     style_name: str | None = None
+    geometry_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
