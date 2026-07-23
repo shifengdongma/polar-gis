@@ -273,6 +273,8 @@ class ImportProcessor:
                 "GEOMETRY_NAME=geom",
                 "-lco",
                 "PRECISION=NO",
+                "-lco",
+                "LAUNDER=YES",
                 "-nlt",
                 "PROMOTE_TO_MULTI",
                 "-overwrite",
@@ -330,7 +332,7 @@ class ImportProcessor:
                     geoserver_workspace=self.settings.geoserver_workspace,
                     geoserver_layer_name=code,
                     allowed_fields=[
-                        field.get("name")
+                        field.get("name").lower()
                         for field in source_layer.get("fields", [])
                         if field.get("name")
                     ],

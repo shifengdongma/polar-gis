@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -51,6 +51,7 @@ interface RuntimeLayer {
   opacity: number
   loadState: 'idle' | 'loading' | 'loaded' | 'error'
   pendingTiles: number
+  loadStateTimer?: number
 }
 
 interface RuntimeDataset {
@@ -81,6 +82,8 @@ const currentCrs = ref('EPSG:3857')
 const runtimeLayers = ref<RuntimeLayer[]>([])
 const runtimeDatasets = ref<RuntimeDataset[]>([])
 const layerSearch = ref('')
+const layerSearchDebounced = ref('')
+let layerSearchTimer: number | undefined
 const layerPanelCollapsed = ref(false)
 const aisVisible = ref(false)
 const coordinateText = ref('—')
@@ -99,8 +102,10 @@ const attributeTotal = ref(0)
 const attributeAllowedFields = ref<string[]>([])
 const attributeFilterField = ref('')
 const attributeFilterValue = ref('')
+const attributeSearchController = ref<AbortController | null>(null)
 const identifyVisible = ref(false)
 const identifyItems = ref<Record<string, unknown>[]>([])
+const identifyController = ref<AbortController | null>(null)
 const metadataVisible = ref(false)
 const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
@@ -134,8 +139,15 @@ const aisLayer = new VectorLayer({
   }),
 })
 
+watch(layerSearch, () => {
+  window.clearTimeout(layerSearchTimer)
+  layerSearchTimer = window.setTimeout(() => {
+    layerSearchDebounced.value = layerSearch.value
+  }, 200)
+})
+
 const filteredGroups = computed(() => {
-  const keyword = layerSearch.value.trim().toLocaleLowerCase()
+  const keyword = layerSearchDebounced.value.trim().toLocaleLowerCase()
   const groups = new globalThis.Map<string, RuntimeDataset[]>()
   for (const dataset of runtimeDatasets.value) {
     const matchesDataset = [dataset.config.name, dataset.config.code]
@@ -288,15 +300,24 @@ function attachWmsLayer(runtime: RuntimeLayer) {
     crossOrigin: 'anonymous',
   })
   source.on('tileloadstart', () => {
-    if (runtime.pendingTiles === 0) runtime.loadState = 'loading'
     runtime.pendingTiles += 1
+    window.clearTimeout(runtime.loadStateTimer)
+    runtime.loadStateTimer = window.setTimeout(() => {
+      if (runtime.pendingTiles > 0) {
+        runtime.loadState = 'loading'
+      }
+    }, 300)
   })
   source.on('tileloadend', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
-    if (runtime.pendingTiles === 0 && runtime.loadState !== 'error') runtime.loadState = 'loaded'
+    if (runtime.pendingTiles === 0) {
+      window.clearTimeout(runtime.loadStateTimer)
+      if (runtime.loadState !== 'error') runtime.loadState = 'loaded'
+    }
   })
   source.on('tileloaderror', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
+    window.clearTimeout(runtime.loadStateTimer)
     runtime.loadState = 'error'
   })
   const tileLayer = new TileLayer({ source, opacity: runtime.opacity, zIndex: 10 })
@@ -310,8 +331,10 @@ function detachWmsLayer(runtime: RuntimeLayer) {
   map.removeLayer(tileLayer)
   tileLayer.dispose()
   wmsLayers.delete(runtime.config.id)
+  window.clearTimeout(runtime.loadStateTimer)
   runtime.pendingTiles = 0
   runtime.loadState = 'idle'
+  runtime.loadStateTimer = undefined
 }
 
 async function toggleDataset(dataset: RuntimeDataset) {
@@ -442,6 +465,9 @@ async function loadAttributeTable(layer: MapLayerConfig) {
 
 async function searchAttributeRows() {
   if (!attributeLayer.value) return
+  attributeSearchController.value?.abort()
+  const controller = new AbortController()
+  attributeSearchController.value = controller
   attributeLoading.value = true
   try {
     const filters = attributeFilterField.value && attributeFilterValue.value
@@ -451,13 +477,17 @@ async function searchAttributeRows() {
       page: attributePage.value,
       pageSize: 15,
       filters,
-    })
+    }, { signal: controller.signal })
+    if (controller.signal.aborted) return
     attributeRows.value = response.data.items
     attributeTotal.value = response.data.total
   } catch (error) {
+    if (controller.signal.aborted) return
     ElMessage.error(apiErrorMessage(error, '属性表加载失败'))
   } finally {
-    attributeLoading.value = false
+    if (!controller.signal.aborted) {
+      attributeLoading.value = false
+    }
   }
 }
 
@@ -503,11 +533,16 @@ async function identify(coordinate: [number, number]) {
     ElMessage.info('当前没有可查询的可见图层')
     return
   }
+  identifyController.value?.abort()
+  const controller = new AbortController()
+  identifyController.value = controller
   try {
-    const response = await api.post(`/layers/${layer.config.id}/identify`, { coordinate, crs: 'EPSG:4326', tolerance: 12 })
+    const response = await api.post(`/layers/${layer.config.id}/identify`, { coordinate, crs: 'EPSG:4326', tolerance: 12 }, { signal: controller.signal })
+    if (controller.signal.aborted) return
     identifyItems.value = response.data.items
     identifyVisible.value = true
   } catch (error) {
+    if (controller.signal.aborted) return
     ElMessage.error(apiErrorMessage(error, '要素查询失败'))
   }
 }

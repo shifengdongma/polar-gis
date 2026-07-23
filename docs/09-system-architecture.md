@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-07-21
+> 最后更新: 2026-07-23
 
 ---
 
@@ -121,14 +121,14 @@ backend/
 
 ### 2.4 数据导入架构 (S-57 Batch Import)
 
-**优化后流程** (2026-07-22):
+**优化后流程** (2026-07-23):
 
 ```
 前端上传 → API保存文件 → Worker轮询领取 →
   └─ 扫描分组 (串行, 快)
   └─ 并行Cell处理 (ThreadPoolExecutor, 默认8 workers):
       └─ 每个Cell:
-          1. 单次ogr2ogr (临时schema)  ← 优化: 从N次子进程→1次
+          1. 单次ogr2ogr (临时schema, LAUNDER=YES)  ← 优化: 从N次子进程→1次; 统一小写列名
           2. ALTER TABLE SET SCHEMA + RENAME
           3. GeoServer批量发布 (预设BBox) ← 优化: 跳过全表扫描
 ```
@@ -138,6 +138,19 @@ backend/
 - **并行Cell**: `concurrent.futures.ThreadPoolExecutor`，每个Cell独立DB session + 独立ogr2ogr子进程 + 独立GeoServer发布
 - **GeoServer BBox**: 发布时预设 `nativeBoundingBox` 避免GeoServer全表扫描计算
 - **暂停/取消**: Worker在处理每个Cell前检查batch状态，支持优雅暂停（完成当前Cell后停止）和立即取消
+- **LAUNDER=YES** (2026-07-23): ogr2ogr导入时强制小写列名，`allowed_fields`同步小写化，配合 `column_reference()` 保留原始大小写实现新旧数据兼容
+
+### 2.4.1 图层属性查询架构
+
+图层属性查询不通过GeoServer WFS，而是直接查询本地PostgreSQL数据库：
+
+```
+前端 → POST /api/v1/layers/{id}/features/search → 直接SQL查询 geo schema → 返回分页结果
+```
+
+- **字段白名单**: 查询字段必须是 `allowed_fields` 中的字段名（导入时由ogrinfo检测并存储）
+- **SQL注入防护**: `field_pattern` 正则校验 (`^[A-Za-z_][A-Za-z0-9_]*$`) + 白名单检查 + 双引号引用
+- **大小写处理** (2026-07-23): `column_reference()` 保留字段名原始大小写，与PostgreSQL实际列名一致；新导入统一使用LAUNDER=YES小写列名
 
 ### 2.5 认证与鉴权
 

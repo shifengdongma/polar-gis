@@ -1,7 +1,7 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-07-20
+> 最后更新: 2026-07-23
 
 ---
 
@@ -237,4 +237,34 @@ docker compose up -d         # 启动服务
 
 - `datasetDrafts` Map 跨页跟踪选中状态，批量操作直接写入 Map
 - "全选全部"走独立的轻量端点 `GET /admin/datasets/available-ids`，只返回 id/code/name 三元组，性能高效
+
+---
+
+## 会话 #7 — 修复图层属性加载失败 + 地图性能优化
+
+**日期**: 2026-07-23
+**状态**: ✅ 完成
+
+### 修改内容
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `backend/app/api/layers.py` | Bug修复 | `column_reference()` 移除 `.lower()`，保留字段名原始大小写，匹配PostgreSQL实际列名 |
+| `backend/app/services/importer.py` | 增强 | ogr2ogr命令添加 `-lco LAUNDER=YES` 统一小写列名；`allowed_fields` 导入时同步小写化 |
+| `frontend/src/views/MapWorkspaceView.vue` | 性能优化 | 图层搜索添加200ms防抖；瓦片加载状态300ms延迟稳定化；属性查询和要素识别添加AbortController请求取消 |
+
+### 实现效果
+
+1. **修复DSID等S-57字段查询失败**: `column_reference()` 不再强制小写，生成的SQL列名与PostgreSQL实际列名一致，DSID/LNAM/AGENCY等所有大写S-57属性字段查询正常
+2. **新旧数据兼容**: 旧数据(大写列名+大写allowed_fields)→column_reference保留大写匹配；新导入(LAUNDER=YES小写列名+小写allowed_fields)→同样匹配
+3. **消除状态指示灯闪烁**: 瓦片加载添加300ms延迟才显示黄色loading状态，快速加载的瓦片(<300ms)不会触发闪烁
+4. **搜索输入流畅**: 图层搜索200ms防抖，避免每次按键触发filteredGroups重建
+5. **防止竞态条件**: 属性表和要素识别在发送新请求前取消前一个进行中的请求，避免过时响应覆盖新数据
+
+### 技术要点
+
+- `column_reference()` 移除小写是安全的：字段名已通过 `field_pattern` 正则(`^[A-Za-z_][A-Za-z0-9_]*$`)和白名单(`allowed_fields`)双重校验
+- ogr2ogr LAUNDER=YES 确保未来所有导入数据统一小写列名，避免混合大小写的混乱
+- 瓦片状态稳定化使用 `window.setTimeout/clearTimeout` 管理定时器，`detachWmsLayer` 中确保清理，防止内存泄漏
+- AbortController 通过 `controller.signal.aborted` 检查避免在已取消的请求中更新UI
 - 搜索联动：输入变化自动重置到第一页

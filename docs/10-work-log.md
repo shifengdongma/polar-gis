@@ -264,3 +264,45 @@
 ### 关键决策
 - "全选全部"通过新端点一次性获取所有匹配数据集 ID，写入 datasetDrafts Map 实现跨页跟踪
 - 搜索框与后端联动，输入时自动重新加载第一页
+
+---
+
+## 会话 #7 — 修复图层属性加载失败 + 地图性能优化
+
+**日期**: 2026-07-23
+**目标**: 修复S-57图层属性(DSID等)查询失败问题，优化地图瓦片加载性能与状态指示灯闪烁
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 分析图层属性加载失败根因 | ✅ 完成 |
+| 2 | 修复 `column_reference()` 强制小写导致SQL不匹配 | ✅ 完成 |
+| 3 | ogr2ogr 添加 LAUNDER=YES + allowed_fields小写化 | ✅ 完成 |
+| 4 | 图层搜索添加200ms防抖 | ✅ 完成 |
+| 5 | 瓦片加载状态稳定化(300ms延迟+定时器管理) | ✅ 完成 |
+| 6 | 属性表查询/要素识别添加AbortController | ✅ 完成 |
+| 7 | 测试 + 文档更新 | ✅ 完成 |
+
+### 问题诊断
+
+**问题1 — DSID等图层属性加载失败**:
+`column_reference()` 在 `backend/app/api/layers.py` 中强制小写字段名(`field.lower()`)，但GDAL ogr2ogr导入S-57数据时(LAUNDER默认=NO)保留原始大写列名("DSID", "LNAM"等)。生成的SQL `"dsid"` 与PostgreSQL实际列 `"DSID"` 不匹配，导致所有大写S-57字段查询失败。
+
+**问题2 — 地图性能退化与状态闪烁**:
+- 瓦片加载事件(`tileloadstart`/`tileloadend`)直接变更 `loadState`，无任何防抖/稳定化，每次平移/缩放导致所有可见图层的状态指示灯在黄绿间快速闪烁
+- `layerSearch` 无防抖，每次按键触发 `filteredGroups` 重建
+- 属性表查询和要素识别无请求取消机制，过时响应会覆盖新结果
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-23 | `backend/app/api/layers.py` | 修改 | `column_reference()` 移除 `.lower()`，保留字段名原始大小写，匹配PostgreSQL实际列名 |
+| 2026-07-23 | `backend/app/services/importer.py` | 修改 | ogr2ogr命令添加 `-lco LAUNDER=YES`；`allowed_fields` 存储时小写化 |
+| 2026-07-23 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | layerSearch添加200ms防抖(watch+lazyValue)；瓦片loadState添加300ms延迟+定时器清理；searchAttributeRows和identify添加AbortController取消机制 |
+
+### 关键决策
+- `column_reference()` 移除小写后新旧数据兼容：旧数据(allowed_fields大写+PostgreSQL列大写)→匹配；新数据(LAUNDER=YES+allowed_fields小写)→匹配
+- 瓦片加载延迟300ms：快速加载的瓦片不触发黄色状态，仅持续加载超过300ms才显示loading
+- AbortController取消前一个请求后再发新请求，避免并发响应的竞态条件

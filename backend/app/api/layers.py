@@ -34,7 +34,7 @@ operators = {"eq": "=", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<
 
 
 def column_reference(field: str) -> str:
-    return f'"{field.lower()}"'
+    return f'"{field}"'
 
 
 def selected_column(field: str) -> str:
