@@ -1,10 +1,19 @@
 from dataclasses import FrozenInstanceError
+from itertools import combinations
 
 import pytest
 
-from app.services.s57_layer_catalog import classify_s57_layer, has_valid_geometry
+from app.services.s57_layer_catalog import (
+    CORE_CHART,
+    METADATA_QUALITY,
+    NAVIGATION_RECOMMENDED,
+    NON_SPATIAL,
+    OPTIONAL_THEMATIC,
+    classify_s57_layer,
+    has_valid_geometry,
+)
 
-CORE_CHART = {
+EXPECTED_CORE_CHART = {
     "COALNE",
     "LNDARE",
     "DEPARE",
@@ -18,7 +27,7 @@ CORE_CHART = {
     "CTNARE",
     "UNSARE",
 }
-NAVIGATION_RECOMMENDED = {
+EXPECTED_NAVIGATION_RECOMMENDED = {
     "LIGHTS",
     "FOGSIG",
     "BOYCAR",
@@ -44,7 +53,7 @@ NAVIGATION_RECOMMENDED = {
     "HRBARE",
     "SLCONS",
 }
-OPTIONAL_THEMATIC = {
+EXPECTED_OPTIONAL_THEMATIC = {
     "ADMARE",
     "BUAARE",
     "BUISGL",
@@ -72,10 +81,17 @@ OPTIONAL_THEMATIC = {
     "STSLNE",
     "TESARE",
 }
-METADATA_QUALITY = {"M_COVR", "M_CSCL", "M_NPUB", "M_NSYS", "M_QUAL"}
-NON_SPATIAL = {"DSID", "C_AGGR"}
+EXPECTED_METADATA_QUALITY = {"M_COVR", "M_CSCL", "M_NPUB", "M_NSYS", "M_QUAL"}
+EXPECTED_NON_SPATIAL = {"DSID", "C_AGGR"}
 
 EXPECTED_PROFILES = {
+    "core_chart": EXPECTED_CORE_CHART,
+    "navigation_recommended": EXPECTED_NAVIGATION_RECOMMENDED,
+    "optional_thematic": EXPECTED_OPTIONAL_THEMATIC,
+    "metadata_quality": EXPECTED_METADATA_QUALITY,
+    "non_spatial": EXPECTED_NON_SPATIAL,
+}
+PRODUCTION_PROFILES = {
     "core_chart": CORE_CHART,
     "navigation_recommended": NAVIGATION_RECOMMENDED,
     "optional_thematic": OPTIONAL_THEMATIC,
@@ -84,58 +100,16 @@ EXPECTED_PROFILES = {
 }
 
 
-def test_known_catalog_sets_are_exact_and_disjoint() -> None:
-    assert CORE_CHART == {
-        "COALNE",
-        "LNDARE",
-        "DEPARE",
-        "DEPCNT",
-        "SOUNDG",
-        "SEAARE",
-        "ICEARE",
-        "OBSTRN",
-        "WRECKS",
-        "UWTROC",
-        "CTNARE",
-        "UNSARE",
-    }
-    assert NAVIGATION_RECOMMENDED == {
-        "LIGHTS",
-        "FOGSIG",
-        "BOYCAR",
-        "BOYINB",
-        "BOYISD",
-        "BOYSAW",
-        "BOYSPP",
-        "BCNISD",
-        "BCNSPP",
-        "TOPMAR",
-        "RTPBCN",
-        "RDOSTA",
-        "RDOCAL",
-        "RETRFL",
-        "RCRTCL",
-        "RCTLPT",
-        "TSSBND",
-        "TSSLPT",
-        "TSEZNE",
-        "TSSRON",
-        "RESARE",
-        "DMPGRD",
-        "HRBARE",
-        "SLCONS",
-    }
+def test_production_catalog_sets_are_exact_and_disjoint() -> None:
+    assert PRODUCTION_PROFILES == EXPECTED_PROFILES
 
-    profile_sets = list(EXPECTED_PROFILES.values())
-    for index, profile_set in enumerate(profile_sets):
-        for other_set in profile_sets[index + 1 :]:
-            assert profile_set.isdisjoint(other_set)
+    for left, right in combinations(PRODUCTION_PROFILES.values(), 2):
+        assert left.isdisjoint(right)
 
     for profile, codes in EXPECTED_PROFILES.items():
         for code in codes:
             rule = classify_s57_layer(code, "Point", True)
             assert rule.load_profile == profile
-            assert sum(code in values for values in profile_sets) == 1
             assert rule.object_name_zh.strip()
 
 

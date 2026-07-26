@@ -300,6 +300,14 @@ docker compose up -d         # 启动服务
 - 目标 pytest: `8 passed`。
 - 目标 ruff: `All checks passed!`。
 
+### 审查修复
+
+1. 测试现已直接校验生产 `CORE_CHART`、`NAVIGATION_RECOMMENDED`、`OPTIONAL_THEMATIC`、`METADATA_QUALITY`、`NON_SPATIAL` 与独立规格集合精确相等，并对生产集合执行两两互斥检查。
+2. 核心对象成员不再由集合和展示表重复维护；`_CORE_CHART_RULES` 成为单一规范表，公开 `CORE_CHART` 从其键派生。
+3. 删除了无消费者的 `_RESTRICTION_HARBOR`，保留航行推荐分类原有兜底语义。
+4. 测试移除了本地集合自我比较、重复逐成员唯一性计数及对私有规则表名称的实现耦合，规格期望每组仅保留一份。
+5. 架构文档移除易过期的固定测试数量描述。
+
 ### 阶段边界
 
 本次仅完成分类目录基础；未接入 importer、API 或前端。后续任务应直接复用该目录，不再复制分类集合。

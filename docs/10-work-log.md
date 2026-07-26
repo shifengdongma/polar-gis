@@ -364,3 +364,11 @@
 3. 未知有几何对象进入 `optional_other`，未知 `M_` 有几何对象进入 `metadata_quality`，未知无几何对象进入 `non_spatial`。
 4. 几何判断只排除明确无几何值，避免将 `GeometryCollection` 等合法类型错误归为非空间。
 5. 所有分类结果 `default_visible=False`，不改变现有地图懒加载行为。
+
+### 审查修复（2026-07-26）
+
+- **RED**: 更新测试以直接导入生产五组集合、与独立规格集合精确比较并对生产集合执行两两互斥；同时要求核心集合由完整规则表键派生。运行目标 pytest 得到 `1 failed, 7 passed`，失败点为缺少 `_CORE_CHART_RULES`。
+- **GREEN**: 将核心成员与展示元数据统一到 `_CORE_CHART_RULES`，从其键派生公开 `CORE_CHART`，并删除无消费者 `_RESTRICTION_HARBOR`；目标 pytest 恢复为 `8 passed, 1 warning`。
+- **Lint**: 目标 ruff 输出 `All checks passed!`。
+- **测试简化**: 每组期望集合只保留一份，删除本地集合自我等值断言、重复逐成员计数及对私有规则表名称的实现耦合；最终测试仅锁定公开集合与分类行为。
+- **文档维护**: 将架构目录中的固定“40个测试”改为不易过期的“按业务模块组织”。

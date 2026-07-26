@@ -19,22 +19,23 @@ class S57LayerRule:
         return (self.display_priority, self.code)
 
 
-CORE_CHART: Final = frozenset(
+_CORE_CHART_RULES = MappingProxyType(
     {
-        "COALNE",
-        "LNDARE",
-        "DEPARE",
-        "DEPCNT",
-        "SOUNDG",
-        "SEAARE",
-        "ICEARE",
-        "OBSTRN",
-        "WRECKS",
-        "UWTROC",
-        "CTNARE",
-        "UNSARE",
+        "DEPARE": ("bathymetry", 10),
+        "SEAARE": ("bathymetry", 10),
+        "COALNE": ("land_coast", 20),
+        "LNDARE": ("land_coast", 20),
+        "ICEARE": ("land_coast", 20),
+        "DEPCNT": ("depth", 20),
+        "SOUNDG": ("depth", 30),
+        "OBSTRN": ("hazard", 40),
+        "WRECKS": ("hazard", 40),
+        "UWTROC": ("hazard", 40),
+        "CTNARE": ("hazard", 40),
+        "UNSARE": ("hazard", 40),
     }
 )
+CORE_CHART: Final = frozenset(_CORE_CHART_RULES)
 NAVIGATION_RECOMMENDED: Final = frozenset(
     {
         "LIGHTS",
@@ -170,22 +171,6 @@ _OBJECT_NAMES = MappingProxyType(
     }
 )
 
-_CORE_DISPLAY = MappingProxyType(
-    {
-        "DEPARE": ("bathymetry", 10),
-        "SEAARE": ("bathymetry", 10),
-        "COALNE": ("land_coast", 20),
-        "LNDARE": ("land_coast", 20),
-        "ICEARE": ("land_coast", 20),
-        "DEPCNT": ("depth", 20),
-        "SOUNDG": ("depth", 30),
-        "OBSTRN": ("hazard", 40),
-        "WRECKS": ("hazard", 40),
-        "UWTROC": ("hazard", 40),
-        "CTNARE": ("hazard", 40),
-        "UNSARE": ("hazard", 40),
-    }
-)
 _NAVIGATION_AIDS: Final = frozenset(
     {
         "LIGHTS",
@@ -207,7 +192,6 @@ _NAVIGATION_AIDS: Final = frozenset(
     }
 )
 _ROUTING: Final = frozenset({"TSSBND", "TSSLPT", "TSEZNE", "TSSRON"})
-_RESTRICTION_HARBOR: Final = frozenset({"RESARE", "DMPGRD", "HRBARE", "SLCONS"})
 _INVALID_GEOMETRY_TYPES: Final = frozenset(
     {"", "unknown", "none", "null", "n/a", "no geometry", "geometryless", "无", "无几何"}
 )
@@ -227,7 +211,7 @@ def classify_s57_layer(
 
     if normalized_code in CORE_CHART:
         load_profile = "core_chart"
-        display_category, display_priority = _CORE_DISPLAY[normalized_code]
+        display_category, display_priority = _CORE_CHART_RULES[normalized_code]
     elif normalized_code in NAVIGATION_RECOMMENDED:
         load_profile = "navigation_recommended"
         if normalized_code in _NAVIGATION_AIDS:

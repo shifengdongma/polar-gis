@@ -75,7 +75,7 @@ backend/
 ├── migrations/                 # Alembic 数据库迁移
 │   └── versions/               # 迁移脚本 (3个)
 │
-├── tests/                      # pytest 测试套件 (40个测试)
+├── tests/                      # pytest 测试套件（按业务模块组织）
 │
 ├── pyproject.toml              # 项目配置 + 依赖
 ├── alembic.ini                 # 迁移配置
@@ -158,6 +158,7 @@ backend/
 `app/services/s57_layer_catalog.py` 是后端唯一的 S-57 图层分类事实来源，提供不可变的 `S57LayerRule` 和纯函数分类接口，不依赖数据库、FastAPI、GDAL 或 GeoServer。
 
 - **固定加载档案**: `core_chart`、`navigation_recommended`、`optional_thematic`、`metadata_quality`、`non_spatial`、`optional_other`
+- **单向派生**: 核心海图完整展示规则表是成员与展示元数据的单一规范来源，公开 `CORE_CHART` 不可变集合从规则表键派生，避免双处维护
 - **稳定展示分类**: 水深、岸线、危险物、助航、航路、限制/港区、专题、质量元数据和非空间对象分别使用固定分类值与优先级
 - **保守几何判断**: 仅空值及明确的无几何标记视为无效；`GeometryCollection` 等合法 GDAL 几何类型保持可渲染
 - **推荐语义**: 仅核心海图/航行推荐对象且已有样式映射时标记 `recommended=True`
