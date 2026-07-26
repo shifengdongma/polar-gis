@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-07-23
+> 最后更新: 2026-07-26
 
 ---
 
@@ -66,6 +66,7 @@ backend/
 │   │   ├── s57.py              # S-57 文件识别 + GDAL 检测
 │   │   ├── s57_batch.py        # S-57 批次导入处理器
 │   │   ├── s57_styles.py       # S-57 SLD 样式预设 (10种)
+│   │   ├── s57_layer_catalog.py # S-57 图层分类事实来源（纯函数）
 │   │   └── audit.py            # 审计日志写入
 │   │
 │   └── worker/                 # 后台工作进程
@@ -151,6 +152,16 @@ backend/
 - **字段白名单**: 查询字段必须是 `allowed_fields` 中的字段名（导入时由ogrinfo检测并存储）
 - **SQL注入防护**: `field_pattern` 正则校验 (`^[A-Za-z_][A-Za-z0-9_]*$`) + 白名单检查 + 双引号引用
 - **大小写处理** (2026-07-23): `column_reference()` 保留字段名原始大小写，与PostgreSQL实际列名一致；新导入统一使用LAUNDER=YES小写列名
+
+### 2.4.2 S-57 图层分类目录
+
+`app/services/s57_layer_catalog.py` 是后端唯一的 S-57 图层分类事实来源，提供不可变的 `S57LayerRule` 和纯函数分类接口，不依赖数据库、FastAPI、GDAL 或 GeoServer。
+
+- **固定加载档案**: `core_chart`、`navigation_recommended`、`optional_thematic`、`metadata_quality`、`non_spatial`、`optional_other`
+- **稳定展示分类**: 水深、岸线、危险物、助航、航路、限制/港区、专题、质量元数据和非空间对象分别使用固定分类值与优先级
+- **保守几何判断**: 仅空值及明确的无几何标记视为无效；`GeometryCollection` 等合法 GDAL 几何类型保持可渲染
+- **推荐语义**: 仅核心海图/航行推荐对象且已有样式映射时标记 `recommended=True`
+- **懒加载兼容**: 所有规则均保持 `default_visible=False`，分类元数据不改变现有默认加载行为
 
 ### 2.5 认证与鉴权
 
@@ -344,10 +355,10 @@ Vue 3 (Composition API + <script setup>)
 
 ## 6. 文件清单
 
-### 后端 (50 files)
-- Python 源文件: `app/api/` (10), `app/core/` (6), `app/services/` (7), `app/worker/` (2), 根文件 (4) = 29
+### 后端 (52 files)
+- Python 源文件: `app/api/` (10), `app/core/` (6), `app/services/` (8), `app/worker/` (2), 根文件 (4) = 30
 - 迁移文件: `migrations/` (5)
-- 测试文件: `tests/` (8)
+- 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
 ### 前端 (29 source files)

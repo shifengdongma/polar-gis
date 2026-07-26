@@ -1,7 +1,7 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-07-20
+> 最后更新: 2026-07-26
 
 ---
 
@@ -323,3 +323,44 @@
 | 2026-07-23 | `backend/app/api/projects.py` | 修改 | 返回 `MapLayerConfig` 时传递 `geometry_type` |
 | 2026-07-23 | `frontend/src/types/index.ts` | 修改 | `MapLayerConfig` 新增 `geometryType` 字段 |
 | 2026-07-23 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | 新增 `isNonSpatial()` 判断；非空间图层跳过 WMS 瓦片加载并显示"属性表"标签 |
+
+---
+
+## 会话 #8 — 建立后端 S-57 图层分类事实来源
+
+**日期**: 2026-07-26
+**目标**: 为后续导入分类元数据和图层解析 API 建立纯函数、不可变的后端统一分类目录
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 先写精确集合、分类行为、几何判断和不可变性测试 | ✅ 完成 |
+| 2 | 运行目标测试，确认因分类模块缺失进入 RED | ✅ 完成 |
+| 3 | 实现最小 S-57 分类目录并保持无外部依赖 | ✅ 完成 |
+| 4 | 运行目标 pytest 与 ruff，确认 GREEN | ✅ 完成 |
+| 5 | 更新 living docs 并自审变更范围 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-26 | `backend/tests/test_s57_layer_catalog.py` | 新建 | 精确锁定五组已知对象集合，并覆盖分类、推荐、渲染、排序、几何与不可变性 |
+| 2026-07-26 | `backend/app/services/s57_layer_catalog.py` | 新建 | 提供 `S57LayerRule`、代码规范化、保守几何判断和统一分类纯函数 |
+| 2026-07-26 | `docs/09-system-architecture.md` | 修改 | 记录分类服务边界、稳定档案/分类及依赖约束 |
+| 2026-07-26 | `docs/10-work-log.md` | 修改 | 记录 TDD 过程、测试结果与关键决策 |
+| 2026-07-26 | `docs/11-work-summary.md` | 修改 | 汇总本阶段成果与后续使用边界 |
+
+### TDD 证据
+
+- **RED**: `F:/polar-gis/.venv/Scripts/python.exe -m pytest tests/test_s57_layer_catalog.py -v` → 收集阶段按预期失败，`ModuleNotFoundError: No module named 'app.services.s57_layer_catalog'`
+- **GREEN**: 同一 pytest 命令 → `8 passed, 1 warning`
+- **Lint**: `F:/polar-gis/.venv/Scripts/python.exe -m ruff check app/services/s57_layer_catalog.py tests/test_s57_layer_catalog.py` → `All checks passed!`
+
+### 关键决策
+
+1. 分类目录仅使用标准库，不访问数据库、Web 框架、GDAL 或 GeoServer，方便导入流程和 API 后续共同复用。
+2. 已知对象始终保留其固定 `load_profile`；`recommended` 仅由核心/航行档案与 `style_mapped=True` 共同决定。
+3. 未知有几何对象进入 `optional_other`，未知 `M_` 有几何对象进入 `metadata_quality`，未知无几何对象进入 `non_spatial`。
+4. 几何判断只排除明确无几何值，避免将 `GeometryCollection` 等合法类型错误归为非空间。
+5. 所有分类结果 `default_visible=False`，不改变现有地图懒加载行为。
