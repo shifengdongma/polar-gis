@@ -41,6 +41,11 @@ export interface MapLayerConfig {
   serviceLayerName: string
   styleName: string | null
   geometryType: string | null
+  minZoom?: number | null
+  maxZoom?: number | null
+  extent?: number[] | null
+  objectClass?: string | null
+  objectNameZh?: string | null
   metadata: Record<string, unknown>
 }
 
@@ -53,6 +58,7 @@ export interface MapDatasetConfig {
   visibleByDefault: boolean
   opacity: number
   memberLayerCount: number
+  dataType?: string | null
 }
 
 export interface MapConfig {
@@ -240,4 +246,77 @@ export interface ProjectDatasetLayer {
   sortOrder: number
   visibleByDefault: boolean
   opacity: number
+}
+
+// ── Bulk layer resolve ──────────────────────────────────────────────
+
+export type S57LoadProfile = 'core_chart' | 'navigation_recommended' | 'all_spatial'
+
+export interface BulkMapLayerResolveRequest {
+  datasetIds: string[]
+  profile: S57LoadProfile
+  includeMetadata?: boolean
+}
+
+export interface BulkResolvedLayer {
+  id: string
+  code: string
+  name: string
+  objectClass: string | null
+  objectNameZh: string | null
+  geometryType: string | null
+  geoserverWorkspace: string | null
+  geoserverLayerName: string | null
+  serviceUrl: string
+  styleName: string | null
+  opacity: number
+  minZoom: number | null
+  maxZoom: number | null
+  extent: number[] | null
+  featureCount: number | null
+  displayCategory: string
+  loadProfile: string
+  displayPriority: number
+  recommended: boolean
+  renderable: boolean
+  loadable: boolean
+  styleMapped: boolean
+  skipReason: string | null
+  queryable: boolean
+  exportable: boolean
+  groupName: string
+  sortOrder: number
+}
+
+export interface BulkResolvedDataset {
+  datasetId: string
+  datasetCode: string
+  datasetName: string
+  versionNo: number
+  layers: BulkResolvedLayer[]
+}
+
+export interface BulkLayerResolveSummary {
+  datasetCount: number
+  candidateCount: number
+  loadableCount: number
+  metadataSkippedCount: number
+  nonSpatialSkippedCount: number
+  unavailableSkippedCount: number
+  unmappedStyleCount: number
+}
+
+export interface BulkMapLayerResolveResponse {
+  datasets: BulkResolvedDataset[]
+  summary: BulkLayerResolveSummary
+}
+
+export interface BulkLayerProgress {
+  total: number
+  processed: number
+  succeeded: number
+  failed: number
+  skipped: number
+  attachedLayerIds: string[]
+  errors: Array<{ layerId: string; layerName: string; message: string }>
 }

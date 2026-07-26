@@ -371,4 +371,56 @@
 - **GREEN**: 将核心成员与展示元数据统一到 `_CORE_CHART_RULES`，从其键派生公开 `CORE_CHART`，并删除无消费者 `_RESTRICTION_HARBOR`；目标 pytest 恢复为 `8 passed, 1 warning`。
 - **Lint**: 目标 ruff 输出 `All checks passed!`。
 - **测试简化**: 每组期望集合只保留一份，删除本地集合自我等值断言、重复逐成员计数及对私有规则表名称的实现耦合；最终测试仅锁定公开集合与分类行为。
-- **文档维护**: 将架构目录中的固定“40个测试”改为不易过期的“按业务模块组织”。
+- **文档维护**: 将架构目录中的固定”40个测试”改为不易过期的”按业务模块组织”。
+
+---
+
+## 会话 #9 — S-57 海图图层批量加载与智能筛选
+
+**日期**: 2026-07-26
+**目标**: 在保留现有数据集级懒加载机制下，实现 S-57 数据集批量解析、智能筛选、分批加载、取消和精确卸载
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 验证已完成分类目录 | ✅ 完成 |
+| 2 | 导入 metadata 合并 + 非空间过滤 | ✅ 完成 |
+| 3 | 项目级批量图层 resolve API | ✅ 完成 |
+| 4 | 前端类型、API 客户端、批量纯逻辑 | ✅ 完成 |
+| 5 | MapWorkspaceView 批量加载 UI | ✅ 完成 |
+| 6 | S-57 更新链校验增强 | ✅ 完成 |
+| 7 | 文档更新与最终交付 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-26 | `backend/app/services/importer.py` | 修改 | 新增 `merge_s57_layer_metadata()`；S-57 导入合并分类快照 |
+| 2026-07-26 | `backend/app/schemas.py` | 修改 | 新增批量解析 Schema；`MapDatasetConfig` 增加 `dataType` |
+| 2026-07-26 | `backend/app/api/projects.py` | 修改 | 新增 `POST /map-layers/resolve` 端点 |
+| 2026-07-26 | `backend/app/services/s57_batch.py` | 修改 | 新增 `S57ChainValidationError`；区分 base missing vs update gap |
+| 2026-07-26 | `backend/app/api/datasets.py` | 修改 | 批次详情填充 `details.missingUpdates` |
+| 2026-07-26 | `backend/tests/test_importer.py` | 新建 | S-57 metadata 合并测试 (7 tests) |
+| 2026-07-26 | `frontend/src/types/index.ts` | 修改 | 新增批量解析和进度类型 |
+| 2026-07-26 | `frontend/src/api/projects.ts` | 新建 | API 客户端封装 |
+| 2026-07-26 | `frontend/src/api/projects.test.ts` | 新建 | API 测试 (3 tests) |
+| 2026-07-26 | `frontend/src/utils/mapLayerBatch.ts` | 新建 | 批量常量与纯函数 |
+| 2026-07-26 | `frontend/src/utils/mapLayerBatch.test.ts` | 新建 | 批量逻辑测试 (12 tests) |
+| 2026-07-26 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | 批量选择/加载/取消/卸载完整实现 |
+| 2026-07-26 | `frontend/src/styles.css` | 修改 | 批量工具栏紧凑样式 |
+| 2026-07-26 | `docs/*` | 修改 | 更新 02/04/05/09/10/11/12 |
+
+### 验证结果
+
+- **后端**: 61 tests passed, ruff clean
+- **前端**: 22 tests passed, vue-tsc clean, vite build 成功
+- **无数据库迁移**: 所有新增字段使用已有 JSONB 列
+
+### 关键决策
+
+1. 批量加载复用现有 attachWmsLayer/detachWmsLayer，不创建第二套 WMS 实现
+2. 分类事实来源仅在后端维护；前端不复制业务规则
+3. 旧数据无 metadata.s57 时动态分类回退，不强制迁移
+4. 不可变 Set/Map 替换确保 Vue 3 响应式正确触发
+5. 项目无 Playwright 基础，端到端验收留待手工阶段

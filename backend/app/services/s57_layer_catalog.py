@@ -3,7 +3,7 @@ from types import MappingProxyType
 from typing import Final
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=False)
 class S57LayerRule:
     code: str
     object_name_zh: str
@@ -99,7 +99,6 @@ NON_SPATIAL: Final = frozenset({"DSID", "C_AGGR"})
 
 _OBJECT_NAMES = MappingProxyType(
     {
-        "COALNE": "海岸线",
         "LNDARE": "陆地区域",
         "DEPARE": "水深区域",
         "DEPCNT": "等深线",

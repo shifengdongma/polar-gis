@@ -146,12 +146,74 @@ class MapDatasetConfig(ApiModel):
     visible_by_default: bool
     opacity: float
     member_layer_count: int
+    data_type: str | None = None
 
 
 class MapConfig(ApiModel):
     project: ProjectRead
     supported_crs: list[str] = Field(default_factory=lambda: ["EPSG:3857", "EPSG:3413"])
     datasets: list[MapDatasetConfig]
+
+
+# ── Bulk layer resolve ──────────────────────────────────────────────
+
+class BulkMapLayerResolveRequest(ApiModel):
+    dataset_ids: list[UUID] = Field(min_length=1, max_length=100)
+    profile: str = Field(min_length=1, max_length=32)
+    include_metadata: bool = False
+
+
+class BulkResolvedLayer(ApiModel):
+    id: UUID
+    code: str
+    name: str
+    object_class: str | None = None
+    object_name_zh: str | None = None
+    geometry_type: str | None = None
+    geoserver_workspace: str | None = None
+    geoserver_layer_name: str | None = None
+    service_url: str
+    style_name: str | None = None
+    opacity: float = 1.0
+    min_zoom: float | None = None
+    max_zoom: float | None = None
+    extent: list[float] | None = None
+    feature_count: int | None = None
+    display_category: str
+    load_profile: str
+    display_priority: int
+    recommended: bool
+    renderable: bool
+    loadable: bool
+    style_mapped: bool
+    skip_reason: str | None = None
+    queryable: bool
+    exportable: bool
+    group_name: str
+    sort_order: int
+
+
+class BulkResolvedDataset(ApiModel):
+    dataset_id: UUID
+    dataset_code: str
+    dataset_name: str
+    version_no: int
+    layers: list[BulkResolvedLayer]
+
+
+class BulkLayerResolveSummary(ApiModel):
+    dataset_count: int
+    candidate_count: int
+    loadable_count: int
+    metadata_skipped_count: int
+    non_spatial_skipped_count: int
+    unavailable_skipped_count: int
+    unmapped_style_count: int
+
+
+class BulkMapLayerResolveResponse(ApiModel):
+    datasets: list[BulkResolvedDataset]
+    summary: BulkLayerResolveSummary
 
 
 class UploadRead(ApiModel):
@@ -300,6 +362,7 @@ class S57ImportBatchItemRead(ApiModel):
     dataset_id: UUID | None
     error_code: str | None
     error_message: str | None
+    details: dict[str, Any] = Field(default_factory=dict)
     finished_at: datetime | None
 
 

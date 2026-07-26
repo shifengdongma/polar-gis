@@ -321,3 +321,44 @@ docker compose up -d         # 启动服务
 2. `backend/app/services/importer.py` — GeoServer 发布前过滤掉非空间图层(geometry_type 为 unknown/none/空)
 3. `backend/app/schemas.py` + `backend/app/api/projects.py` — `MapLayerConfig` 新增 `geometry_type` 字段
 4. `frontend/src/types/index.ts` + `frontend/src/views/MapWorkspaceView.vue` — 新增 `isNonSpatial()` 判断，非空间图层跳过 WMS 加载显示"属性表"标签
+
+---
+
+## 会话 #9 — S-57 海图图层批量加载与智能筛选
+
+**日期**: 2026-07-26
+**状态**: ✅ 完成
+
+### 修改内容
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `backend/app/services/importer.py` | 增强 | 新增 `merge_s57_layer_metadata()`；S-57 导入时合并分类快照到 metadata_json.s57；非空间过滤替换为 has_valid_geometry() |
+| `backend/app/schemas.py` | 增强 | 新增 BulkMapLayerResolveRequest/Response 系列 Schema；MapDatasetConfig 增加 dataType；S57ImportBatchItemRead 增加 details |
+| `backend/app/api/projects.py` | 新增端点 | POST /map-layers/resolve — 项目级 S-57 图层批量解析，含 profile 筛选和稳定排序 |
+| `backend/app/services/s57_batch.py` | 增强 | 新增 S57ChainValidationError 含 missingUpdates；validate_s57_chain() 区分 S57_BASE_MISSING vs S57_UPDATE_GAP；s57_error_details() 提取结构化详情 |
+| `backend/app/api/datasets.py` | 增强 | 批次详情 API 填充 details.missingUpdates |
+| `backend/tests/test_importer.py` | 新建 | S-57 metadata 合并测试 (7 tests) |
+| `frontend/src/types/index.ts` | 增强 | 新增批量解析类型和 BulkLayerProgress |
+| `frontend/src/api/projects.ts` | 新建 | resolveProjectMapLayers() 等 API 客户端 |
+| `frontend/src/utils/mapLayerBatch.ts` | 新建 | 批量常量、排序/去重/阈值/范围转换纯函数 |
+| `frontend/src/views/MapWorkspaceView.vue` | 增强 | 数据集复选框、批量加载下拉菜单、分批创建、取消、三种卸载方式、进度区域 |
+| `frontend/src/styles.css` | 增强 | 批量工具栏紧凑深色面板样式 |
+| `docs/02,04,05,09,10,11,12` | 修改 | 批量加载功能文档 |
+
+### 实现效果
+
+1. **批量加载能力**: 用户无需展开数据集即可选择 S-57 数据集，一键批量加载核心/推荐/全部海图图层
+2. **智能筛选**: 自动跳过非空间层(DSID/C_AGGR)、未发布层、不可用层和未映射样式层
+3. **分批节奏控制**: 每批 5 层、批间 200ms，不等待瓦片完全加载
+4. **失败隔离**: 单层加载失败不影响其他层
+5. **精确卸载**: 三种卸载方式，不影响底图、AIS、气象、测量
+6. **旧数据零迁移**: 无 metadata.s57 的旧图层由 API 动态分类回退
+7. **更新链诊断**: 区分基础文件缺失与更新间断，提供结构化 missingUpdates
+
+### 验证结果
+
+- 后端: 61 tests passed, ruff clean
+- 前端: 22 tests passed, vue-tsc clean, vite build 成功
+- 无需数据库迁移
+

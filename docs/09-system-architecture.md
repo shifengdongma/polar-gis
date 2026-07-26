@@ -164,6 +164,24 @@ backend/
 - **推荐语义**: 仅核心海图/航行推荐对象且已有样式映射时标记 `recommended=True`
 - **懒加载兼容**: 所有规则均保持 `default_visible=False`，分类元数据不改变现有默认加载行为
 
+### 2.4.3 S-57 图层批量解析 API
+
+`POST /api/v1/projects/{projectId}/map-layers/resolve` 是项目级 S-57 图层批量解析端点，用于地图工作台的批量加载功能。
+
+- **输入**：datasetIds（1-100 项）、profile（core_chart / navigation_recommended / all_spatial）、includeMetadata 标志。
+- **输出**：按数据集分组的图层列表，每层包含分类信息、加载能力和跳过原因；汇总统计。
+- **复用**：`classify_s57_layer()` 分类函数、`preset_for_object_class()` 样式映射、`s57_object_class()` 和 `style_mapped_for_layer()` 兼容旧数据无 s57 元数据的情况。
+- **权限**：仅在当前已发布项目中校验，使用现有 project_or_404 访问边界。
+- **不修改**：不改变 `GET /projects/{projectId}/map-datasets/{datasetId}/layers` 的懒加载语义。
+
+### 2.4.4 S-57 导入分类元数据
+
+导入流程通过 `merge_s57_layer_metadata()` 将 `classify_s57_layer()` 结果并入 `layers.metadata_json["s57"]`。旧数据无此元数据时，resolve API 动态回退分类，不强制数据库迁移。
+
+### 2.4.5 S-57 更新链校验增强
+
+`validate_s57_chain()` 现区分基础文件缺失（`S57_BASE_MISSING`）与更新间断（`S57_UPDATE_GAP`），并通过 `S57ChainValidationError` 传递 `missingUpdates` 列表。`s57_error_details()` 从错误消息提取结构化的 `missingUpdates`，供批次详情 API 的 `details` 字段使用。
+
 ### 2.5 认证与鉴权
 
 - **JWT**: HS256 签名, `access_token` (30分钟) + `refresh_token` (7天, HTTP-only Cookie)

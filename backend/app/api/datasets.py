@@ -55,6 +55,7 @@ from app.schemas import (
 from app.services.audit import write_audit
 from app.services.geoserver import GeoServerClient
 from app.services.s57 import identify_s57_file, validate_s57_update
+from app.services.s57_batch import s57_error_details
 from app.services.storage import LocalStorage
 
 router = APIRouter(tags=["admin-data"])
@@ -217,9 +218,14 @@ def get_s57_import_batch(
         .where(S57ImportBatchItem.batch_id == batch.id)
         .order_by(S57ImportBatchItem.cell_name)
     ).all()
+    item_reads = []
+    for item in items:
+        item_read = S57ImportBatchItemRead.model_validate(item)
+        item_read.details = s57_error_details(item.error_code, item.error_message)
+        item_reads.append(item_read)
     return S57ImportBatchDetail(
         **S57ImportBatchRead.model_validate(batch).model_dump(),
-        items=[S57ImportBatchItemRead.model_validate(item) for item in items],
+        items=item_reads,
     )
 
 

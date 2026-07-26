@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Camera,
   CaretBottom,
   CaretRight,
+  Check,
+  Close,
   DataAnalysis,
   Expand,
   Fold,
@@ -17,6 +19,7 @@ import {
   Operation,
   Printer,
   Search,
+  WarningFilled,
 } from '@element-plus/icons-vue'
 import OlMap from 'ol/Map'
 import View from 'ol/View'
@@ -39,9 +42,28 @@ import { get as getProjection } from 'ol/proj'
 import { register } from 'ol/proj/proj4'
 import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
+import { resolveProjectMapLayers } from '../api/projects'
 import WeatherChart from '../components/WeatherChart.vue'
 import { useProjectsStore } from '../stores/projects'
-import type { BaseMapRecord, LayerRecord, MapConfig, MapDatasetConfig, MapLayerConfig } from '../types'
+import type {
+  BaseMapRecord,
+  BulkLayerProgress,
+  BulkResolvedLayer,
+  LayerRecord,
+  MapConfig,
+  MapDatasetConfig,
+  MapLayerConfig,
+  S57LoadProfile,
+} from '../types'
+import {
+  BULK_ATTACH_BATCH_SIZE,
+  BULK_ATTACH_INTERVAL_MS,
+  BULK_HARD_LIMIT,
+  evaluateBulkThreshold,
+  prepareAttachCandidates,
+  transformLayerExtent,
+  waitForBulkInterval,
+} from '../utils/mapLayerBatch'
 import { parseWgs84Extent } from '../utils/mapExtent'
 import { s57LayerTitle } from '../utils/s57ObjectNames'
 
@@ -52,6 +74,7 @@ interface RuntimeLayer {
   loadState: 'idle' | 'loading' | 'loaded' | 'error'
   pendingTiles: number
   loadStateTimer?: number
+  datasetId?: string
 }
 
 interface RuntimeDataset {
@@ -109,6 +132,51 @@ const identifyController = ref<AbortController | null>(null)
 const metadataVisible = ref(false)
 const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
+
+// ── Batch loading state ────────────────────────────────────────────
+const selectedDatasetIds = ref(new Set<string>())
+const loadedLayerIds = ref(new Set<string>())
+const loadingLayerIds = ref(new Set<string>())
+const failedLayerIds = ref(new Map<string, string>())
+const bulkProgress = ref<BulkLayerProgress | null>(null)
+const bulkCancelled = ref(false)
+const bulkGeneration = ref(0)
+const lastBulkAttachedLayerIds = ref(new Set<string>())
+let bulkAbortController: AbortController | null = null
+
+/** Only S-57 datasets are eligible for batch operations. */
+const isS57Dataset = (dataset: RuntimeDataset) => dataset.config.dataType === 's57'
+
+const selectedDatasetCount = computed(() => selectedDatasetIds.value.size)
+
+const currentFilteredDatasetIds = computed(() => {
+  const ids = new Set<string>()
+  for (const [, datasets] of filteredGroups.value) {
+    for (const dataset of datasets) {
+      ids.add(dataset.config.id)
+    }
+  }
+  return ids
+})
+
+function selectFilteredDatasets() {
+  const next = new Set(selectedDatasetIds.value)
+  for (const id of currentFilteredDatasetIds.value) {
+    next.add(id)
+  }
+  selectedDatasetIds.value = next
+}
+
+function clearDatasetSelection() {
+  selectedDatasetIds.value = new Set()
+}
+
+function toggleDatasetSelection(datasetId: string) {
+  const next = new Set(selectedDatasetIds.value)
+  if (next.has(datasetId)) next.delete(datasetId)
+  else next.add(datasetId)
+  selectedDatasetIds.value = next
+}
 
 proj4.defs('EPSG:3413', '+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +datum=WGS84 +units=m +no_defs')
 register(proj4)
@@ -275,7 +343,12 @@ async function buildMap() {
   const layers: BaseLayer[] = [fallbackBaseLayer, ...(await createConfiguredBaseLayers())]
   map = new OlMap({ target: mapTarget.value, layers, view: createView(currentCrs.value) })
   for (const runtime of runtimeLayers.value) {
-    if (runtime.visible) attachWmsLayer(runtime)
+    if (runtime.visible) {
+      attachWmsLayer(runtime)
+      const next = new Set(loadedLayerIds.value)
+      next.add(runtime.config.id)
+      loadedLayerIds.value = next
+    }
   }
   map.addLayer(measureLayer)
   map.addLayer(aisLayer)
@@ -297,11 +370,16 @@ function isNonSpatial(layer: MapLayerConfig): boolean {
   return t === 'unknown' || t === 'none' || t === '' || t === '无'
 }
 
-function attachWmsLayer(runtime: RuntimeLayer) {
-  if (!map || wmsLayers.has(runtime.config.id)) return
+type AttachResult = 'attached' | 'already-loaded' | 'non-spatial'
+
+function attachWmsLayer(
+  runtime: RuntimeLayer,
+  opts?: { extent?: number[]; minZoom?: number | null; maxZoom?: number | null },
+): AttachResult {
+  if (!map || wmsLayers.has(runtime.config.id)) return 'already-loaded'
   if (isNonSpatial(runtime.config)) {
-    runtime.loadState = 'loaded' // Non-spatial layers don't load tiles
-    return
+    runtime.loadState = 'loaded'
+    return 'non-spatial'
   }
   const source = new TileWMS({
     url: browserGeoServerUrl(runtime.config.serviceUrl),
@@ -329,9 +407,17 @@ function attachWmsLayer(runtime: RuntimeLayer) {
     window.clearTimeout(runtime.loadStateTimer)
     runtime.loadState = 'error'
   })
-  const tileLayer = new TileLayer({ source, opacity: runtime.opacity, zIndex: 10 })
+  const tileLayer = new TileLayer({
+    source,
+    opacity: runtime.opacity,
+    zIndex: 10,
+    extent: opts?.extent,
+    minZoom: opts?.minZoom ?? undefined,
+    maxZoom: opts?.maxZoom ?? undefined,
+  })
   wmsLayers.set(runtime.config.id, tileLayer)
   map.addLayer(tileLayer)
+  return 'attached'
 }
 
 function detachWmsLayer(runtime: RuntimeLayer) {
@@ -358,8 +444,9 @@ async function toggleDataset(dataset: RuntimeDataset) {
       config: layer,
       visible: false,
       opacity: layer.opacity,
-      loadState: 'idle',
+      loadState: 'idle' as const,
       pendingTiles: 0,
+      datasetId: dataset.config.id,
     }))
     runtimeLayers.value.push(...dataset.layers)
     dataset.loaded = true
@@ -373,8 +460,17 @@ async function toggleDataset(dataset: RuntimeDataset) {
 
 function toggleLayer(runtime: RuntimeLayer) {
   runtime.visible = !runtime.visible
-  if (runtime.visible) attachWmsLayer(runtime)
-  else detachWmsLayer(runtime)
+  if (runtime.visible) {
+    attachWmsLayer(runtime)
+    const next = new Set(loadedLayerIds.value)
+    next.add(runtime.config.id)
+    loadedLayerIds.value = next
+  } else {
+    detachWmsLayer(runtime)
+    const next = new Set(loadedLayerIds.value)
+    next.delete(runtime.config.id)
+    loadedLayerIds.value = next
+  }
 }
 
 function updateOpacity(runtime: RuntimeLayer) {
@@ -383,11 +479,305 @@ function updateOpacity(runtime: RuntimeLayer) {
 
 function switchProjection(crs: string) {
   if (!map || crs === currentCrs.value) return
+  // Save currently loaded layer IDs
+  const savedLoadedIds = new Set(loadedLayerIds.value)
+  // Detach all WMS layers in old projection
+  for (const runtime of runtimeLayers.value) {
+    if (wmsLayers.has(runtime.config.id)) {
+      detachWmsLayer(runtime)
+    }
+  }
   currentCrs.value = crs
   applyBaseMapVisibility()
   map.setView(createView(crs))
   fitProjectInitialExtent()
   reloadAisGeometry()
+  // Re-attach only previously loaded layers
+  for (const runtime of runtimeLayers.value) {
+    if (savedLoadedIds.has(runtime.config.id)) {
+      runtime.visible = true
+      const extent = transformLayerExtent(runtime.config.extent, currentCrs.value)
+      attachWmsLayer(runtime, {
+        extent,
+        minZoom: runtime.config.minZoom,
+        maxZoom: runtime.config.maxZoom,
+      })
+    }
+  }
+  // Restore loadedLayerIds (they survive the projection switch)
+  loadedLayerIds.value = savedLoadedIds
+}
+
+// ── Batch loading ──────────────────────────────────────────────────
+
+async function loadSelectedDatasets(profile: S57LoadProfile) {
+  if (!config.value || selectedDatasetIds.value.size === 0) {
+    ElMessage.info('请先选择 S-57 数据集')
+    return
+  }
+  bulkCancelled.value = false
+  bulkGeneration.value += 1
+  const generation = bulkGeneration.value
+  bulkAbortController?.abort()
+  bulkAbortController = new AbortController()
+
+  bulkProgress.value = {
+    total: 0,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    attachedLayerIds: [],
+    errors: [],
+  }
+
+  try {
+    const response = await resolveProjectMapLayers(
+      config.value.project.id,
+      {
+        datasetIds: [...selectedDatasetIds.value],
+        profile,
+        includeMetadata: false,
+      },
+      bulkAbortController.signal,
+    )
+
+    // Merge resolved layers into runtime state
+    const allResolved: BulkResolvedLayer[] = []
+    for (const ds of response.datasets) {
+      const runtimeDs = runtimeDatasets.value.find((d) => d.config.id === ds.datasetId)
+      if (runtimeDs) {
+        for (const rl of ds.layers) {
+          const existing = runtimeDs.layers.find((l) => l.config.id === rl.id)
+          if (existing) {
+            // Merge optional fields
+            existing.config.minZoom = rl.minZoom
+            existing.config.maxZoom = rl.maxZoom
+            existing.config.extent = rl.extent
+            existing.config.objectClass = rl.objectClass
+            existing.config.objectNameZh = rl.objectNameZh
+          } else {
+            const config: MapLayerConfig = {
+              id: rl.id,
+              code: rl.code,
+              name: rl.name,
+              groupName: rl.groupName,
+              sortOrder: rl.sortOrder,
+              visibleByDefault: false,
+              opacity: rl.opacity,
+              queryable: rl.queryable,
+              exportable: rl.exportable,
+              serviceType: 'WMS',
+              serviceUrl: rl.serviceUrl,
+              serviceLayerName: rl.geoserverLayerName ?? rl.code,
+              styleName: rl.styleName,
+              geometryType: rl.geometryType,
+              minZoom: rl.minZoom,
+              maxZoom: rl.maxZoom,
+              extent: rl.extent,
+              objectClass: rl.objectClass,
+              objectNameZh: rl.objectNameZh,
+              metadata: {},
+            }
+            const runtime: RuntimeLayer = {
+              config,
+              visible: false,
+              opacity: rl.opacity,
+              loadState: 'idle' as const,
+              pendingTiles: 0,
+              datasetId: ds.datasetId,
+            }
+            runtimeDs.layers.push(runtime)
+            runtimeLayers.value.push(runtime)
+          }
+        }
+      }
+      allResolved.push(...ds.layers)
+    }
+
+    // Filter and sort candidates
+    const { candidates, skipped } = prepareAttachCandidates(allResolved, loadedLayerIds.value)
+    const { blocked, needsConfirm } = evaluateBulkThreshold(candidates.length)
+
+    if (blocked) {
+      ElMessage.warning(`候选图层 ${candidates.length} 个，超过上限 ${BULK_HARD_LIMIT}，请缩小选择范围`)
+      bulkProgress.value = null
+      return
+    }
+
+    if (needsConfirm) {
+      try {
+        await ElMessageBox.confirm(
+          `即将加载 ${candidates.length} 个图层（已跳过 ${skipped} 个已加载图层），继续吗？`,
+          '批量加载确认',
+          { confirmButtonText: '继续加载', cancelButtonText: '取消', type: 'warning' },
+        )
+      } catch {
+        bulkProgress.value = null
+        return
+      }
+    }
+
+    bulkProgress.value.total = candidates.length
+    bulkProgress.value.skipped = skipped
+    await loadResolvedLayersInBatches(candidates, generation)
+
+    // Completed
+    const p = bulkProgress.value
+    if (p && !bulkCancelled.value) {
+      ElMessage.success(`批量加载完成：成功 ${p.succeeded}，失败 ${p.failed}，跳过 ${p.skipped}`)
+    }
+  } catch (error) {
+    if (bulkAbortController?.signal.aborted) return
+    ElMessage.error(apiErrorMessage(error, '批量图层解析失败'))
+    bulkProgress.value = null
+  }
+}
+
+async function loadResolvedLayersInBatches(
+  candidates: BulkResolvedLayer[],
+  generation: number,
+) {
+  if (!map || !config.value) return
+
+  for (let i = 0; i < candidates.length; i += BULK_ATTACH_BATCH_SIZE) {
+    if (bulkCancelled.value || bulkGeneration.value !== generation) break
+
+    const batch = candidates.slice(i, i + BULK_ATTACH_BATCH_SIZE)
+    for (const resolved of batch) {
+      const runtime = runtimeLayers.value.find((l) => l.config.id === resolved.id)
+      if (!runtime) continue
+
+      const layerId = resolved.id
+      if (loadingLayerIds.value.has(layerId) || loadedLayerIds.value.has(layerId)) {
+        if (bulkProgress.value) bulkProgress.value.skipped++
+        continue
+      }
+
+      const loadingNext = new Set(loadingLayerIds.value)
+      loadingNext.add(layerId)
+      loadingLayerIds.value = loadingNext
+
+      try {
+        const extent = transformLayerExtent(resolved.extent, currentCrs.value)
+        const result = attachWmsLayer(runtime, {
+          extent,
+          minZoom: resolved.minZoom,
+          maxZoom: resolved.maxZoom,
+        })
+        if (result === 'attached') {
+          runtime.visible = true
+          const loadedNext = new Set(loadedLayerIds.value)
+          loadedNext.add(layerId)
+          loadedLayerIds.value = loadedNext
+
+          const attachNext = new Set(lastBulkAttachedLayerIds.value)
+          attachNext.add(layerId)
+          lastBulkAttachedLayerIds.value = attachNext
+
+          if (bulkProgress.value) {
+            bulkProgress.value.succeeded++
+            bulkProgress.value.attachedLayerIds.push(layerId)
+          }
+        } else if (result === 'non-spatial') {
+          if (bulkProgress.value) bulkProgress.value.skipped++
+        } else {
+          if (bulkProgress.value) bulkProgress.value.skipped++
+        }
+      } catch (err) {
+        if (bulkProgress.value) {
+          bulkProgress.value.failed++
+          bulkProgress.value.errors.push({
+            layerId,
+            layerName: resolved.name,
+            message: err instanceof Error ? err.message : '加载失败',
+          })
+        }
+        const failedNext = new Map(failedLayerIds.value)
+        failedNext.set(layerId, err instanceof Error ? err.message : '加载失败')
+        failedLayerIds.value = failedNext
+      } finally {
+        const loadingFinal = new Set(loadingLayerIds.value)
+        loadingFinal.delete(layerId)
+        loadingLayerIds.value = loadingFinal
+        if (bulkProgress.value) bulkProgress.value.processed++
+      }
+    }
+
+    // Wait between batches (unless cancelled or generation changed)
+    if (i + BULK_ATTACH_BATCH_SIZE < candidates.length) {
+      try {
+        await waitForBulkInterval(
+          BULK_ATTACH_INTERVAL_MS,
+          bulkAbortController?.signal ?? new AbortController().signal,
+          generation,
+          () => bulkGeneration.value,
+        )
+      } catch {
+        break
+      }
+    }
+  }
+}
+
+function cancelBulkLoad() {
+  bulkCancelled.value = true
+  bulkAbortController?.abort()
+}
+
+function unloadSelectedDatasets() {
+  if (!config.value || selectedDatasetIds.value.size === 0) return
+  const targetIds = selectedDatasetIds.value
+  for (const runtime of [...runtimeLayers.value]) {
+    if (runtime.datasetId && targetIds.has(runtime.datasetId)) {
+      detachWmsLayer(runtime)
+      const next = new Set(loadedLayerIds.value)
+      next.delete(runtime.config.id)
+      loadedLayerIds.value = next
+    }
+  }
+  ElMessage.success('已卸载所选数据集的图层')
+}
+
+function unloadAllChartLayers() {
+  // Only unload business chart layers (from runtimeLayers), leave base maps,
+  // AIS, weather, measure, highlight layers untouched.
+  for (const runtime of runtimeLayers.value) {
+    detachWmsLayer(runtime)
+  }
+  loadedLayerIds.value = new Set()
+  lastBulkAttachedLayerIds.value = new Set()
+  loadingLayerIds.value = new Set()
+  failedLayerIds.value = new Map()
+  bulkProgress.value = null
+  ElMessage.success('已卸载全部海图图层')
+}
+
+function unloadCurrentFilteredLayers() {
+  const targetDsIds = currentFilteredDatasetIds.value
+  for (const runtime of [...runtimeLayers.value]) {
+    if (runtime.datasetId && targetDsIds.has(runtime.datasetId)) {
+      detachWmsLayer(runtime)
+      const next = new Set(loadedLayerIds.value)
+      next.delete(runtime.config.id)
+      loadedLayerIds.value = next
+    }
+  }
+  ElMessage.success('已卸载当前搜索结果图层')
+}
+
+function unloadLastBulkBatch() {
+  for (const layerId of lastBulkAttachedLayerIds.value) {
+    const runtime = runtimeLayers.value.find((l) => l.config.id === layerId)
+    if (runtime) {
+      detachWmsLayer(runtime)
+      const next = new Set(loadedLayerIds.value)
+      next.delete(layerId)
+      loadedLayerIds.value = next
+    }
+  }
+  lastBulkAttachedLayerIds.value = new Set()
+  ElMessage.success('已卸载本次批量加载的图层')
 }
 
 function zoomToLayer(runtime: RuntimeLayer) {
@@ -634,6 +1024,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
   map?.setTarget(undefined)
   map = null
@@ -666,6 +1057,66 @@ onBeforeUnmount(() => {
           <el-option v-for="baseMap in availableBaseMaps" :key="baseMap.id" :label="`${baseMap.name} · ${baseMap.mapType}`" :value="baseMap.id" />
         </el-select>
         <el-input v-model="layerSearch" :prefix-icon="Search" clearable placeholder="搜索图层、代码或分组" />
+        <div class="batch-toolbar" v-if="runtimeDatasets.some(ds => isS57Dataset(ds))">
+          <div class="batch-select-row">
+            <el-button size="small" text @click="selectFilteredDatasets">全选当前结果</el-button>
+            <el-button size="small" text @click="clearDatasetSelection">清空选择</el-button>
+            <span class="batch-select-count">{{ selectedDatasetCount }} 个数据集</span>
+          </div>
+          <div class="batch-actions">
+            <el-dropdown trigger="click" placement="bottom-start" @command="(profile: string) => loadSelectedDatasets(profile as S57LoadProfile)">
+              <el-button size="small" type="primary" :disabled="selectedDatasetCount === 0 || !!bulkProgress">批量加载<el-icon class="el-icon--right"><CaretBottom /></el-icon></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="core_chart">加载核心海图层</el-dropdown-item>
+                  <el-dropdown-item command="navigation_recommended">加载推荐海图层</el-dropdown-item>
+                  <el-dropdown-item command="all_spatial">加载全部可显示图层</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-dropdown trigger="click" placement="bottom-start" @command="(cmd: string) => {
+              if (cmd === 'selected') unloadSelectedDatasets()
+              else if (cmd === 'filtered') unloadCurrentFilteredLayers()
+              else if (cmd === 'all') unloadAllChartLayers()
+              else if (cmd === 'last_batch') unloadLastBulkBatch()
+            }">
+              <el-button size="small" :disabled="loadedLayerIds.size === 0">批量卸载<el-icon class="el-icon--right"><CaretBottom /></el-icon></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="selected">卸载所选数据集图层</el-dropdown-item>
+                  <el-dropdown-item command="filtered">卸载当前搜索结果图层</el-dropdown-item>
+                  <el-dropdown-item command="all" divided>卸载全部海图图层</el-dropdown-item>
+                  <el-dropdown-item v-if="lastBulkAttachedLayerIds.size > 0" command="last_batch">卸载本次加载</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+          <div class="batch-progress" v-if="bulkProgress">
+            <div class="batch-progress-bar">
+              <span class="batch-progress-text">{{ bulkProgress.processed }} / {{ bulkProgress.total }}</span>
+              <el-progress :percentage="bulkProgress.total ? Math.round(bulkProgress.processed / bulkProgress.total * 100) : 0" :show-text="false" :stroke-width="4" />
+            </div>
+            <div class="batch-progress-stats">
+              <span class="stat-success"><el-icon><Check /></el-icon>{{ bulkProgress.succeeded }}</span>
+              <span class="stat-failed"><el-icon><Close /></el-icon>{{ bulkProgress.failed }}</span>
+              <span class="stat-skipped">{{ bulkProgress.skipped }} 跳过</span>
+            </div>
+            <el-button size="small" text type="danger" @click="cancelBulkLoad" :disabled="bulkCancelled">
+              <el-icon><Close /></el-icon>取消剩余
+            </el-button>
+            <div v-if="bulkProgress.errors.length > 0" class="batch-errors">
+              <el-collapse>
+                <el-collapse-item :title="`${bulkProgress.errors.length} 个失败详情`">
+                  <div v-for="err in bulkProgress.errors" :key="err.layerId" class="batch-error-item">
+                    <el-icon><WarningFilled /></el-icon>
+                    <span>{{ err.layerName }}</span>
+                    <span class="batch-error-msg">{{ err.message }}</span>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="layer-groups">
         <template v-if="hasFilteredLayers">
@@ -673,6 +1124,14 @@ onBeforeUnmount(() => {
             <div class="layer-group-title">{{ groupName }}<span>{{ datasets.length }}</span></div>
             <div v-for="dataset in datasets" :key="dataset.config.id" class="layer-dataset">
               <div class="dataset-summary">
+                <el-checkbox
+                  v-if="isS57Dataset(dataset)"
+                  :model-value="selectedDatasetIds.has(dataset.config.id)"
+                  :disabled="!!bulkProgress"
+                  size="small"
+                  class="dataset-checkbox"
+                  @change="toggleDatasetSelection(dataset.config.id)"
+                />
                 <button class="dataset-expand" type="button" :aria-label="dataset.expanded ? '收起图层' : '展开图层'" @click="toggleDataset(dataset)">
                   <el-icon><CaretBottom v-if="dataset.expanded" /><CaretRight v-else /></el-icon>
                 </button>

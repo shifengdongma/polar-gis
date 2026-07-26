@@ -7,7 +7,7 @@ import socket
 import tempfile
 import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -34,11 +34,36 @@ from app.services.s57 import identify_s57_file
 from app.services.storage import LocalStorage
 
 code_pattern = re.compile(r"[^a-z0-9_-]+")
+_missing_update_pattern = re.compile(r"\.(\d{3})")
 logger = logging.getLogger("polar_gis.s57_batch")
+
+
+def s57_error_details(error_code: str | None, error_message: str | None) -> dict:
+    """Extract structured details from chain validation errors.
+
+    Returns ``{"missingUpdates": [...]}`` when the error involves update-chain gaps.
+    """
+    if not error_code or not error_message:
+        return {}
+    if error_code not in ("S57_UPDATE_GAP", "S57_BASE_MISSING"):
+        return {}
+    matches = _missing_update_pattern.findall(error_message)
+    if not matches:
+        return {}
+    missing = [int(m) for m in matches]
+    return {"missingUpdates": sorted(set(missing))}
+
 
 
 class BatchSourceUnavailableError(Exception):
     pass
+
+
+class S57ChainValidationError(ValueError):
+    def __init__(self, code: str, message: str, missing_updates: list[int]) -> None:
+        super().__init__(message)
+        self.code = code
+        self.missing_updates = tuple(missing_updates)
 
 
 def group_s57_files(paths: list[Path]) -> dict[str, dict[int, Path]]:
@@ -67,13 +92,27 @@ def scan_s57_files(paths: list[Path]) -> tuple[dict[str, dict[int, Path]], dict[
 
 
 def validate_s57_chain(cell_name: str, chain: dict[int, Path]) -> list[int]:
+    max_update = max(chain)
     if 0 not in chain:
-        raise ValueError(f"{cell_name} 缺少 .000 基础单元")
-    expected = list(range(max(chain) + 1))
+        full_expected = list(range(max_update + 1))
+        missing = sorted(n for n in full_expected if n not in chain)
+        formatted = ", ".join(f".{n:03d}" for n in missing)
+        raise S57ChainValidationError(
+            "S57_BASE_MISSING",
+            f"{cell_name} 缺少 .000 基础单元，且更新链不连续，缺少 {formatted}"
+            if missing != full_expected
+            else f"{cell_name} 缺少 .000 基础单元",
+            missing,
+        )
+    expected = list(range(max_update + 1))
     missing = [number for number in expected if number not in chain]
     if missing:
         formatted = ", ".join(f".{number:03d}" for number in missing)
-        raise ValueError(f"{cell_name} 更新链不连续，缺少 {formatted}")
+        raise S57ChainValidationError(
+            "S57_UPDATE_GAP",
+            f"{cell_name} 更新链不连续，缺少 {formatted}",
+            missing,
+        )
     return expected
 
 
@@ -397,6 +436,9 @@ class S57BatchProcessor:
         if dataset is None:
             try:
                 updates = validate_s57_chain(item.cell_name, chain)
+            except S57ChainValidationError as exc:
+                self._fail_item(db, item, exc.code, str(exc))
+                return
             except ValueError as exc:
                 self._fail_item(db, item, "S57_UPDATE_GAP", str(exc))
                 return

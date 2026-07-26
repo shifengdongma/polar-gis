@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.services.geoserver import GeoServerClient
 from app.services.s57 import GdalInspector
+from app.services.s57_layer_catalog import classify_s57_layer, has_valid_geometry
 from app.services.s57_styles import preset_for_object_class
 from app.services.storage import LocalStorage
 
@@ -35,6 +36,43 @@ identifier_pattern = re.compile(r"[^a-z0-9_]+")
 def safe_identifier(value: str, max_length: int = 50) -> str:
     normalized = identifier_pattern.sub("_", value.lower()).strip("_")[:max_length]
     return normalized or "layer"
+
+
+def merge_s57_layer_metadata(
+    existing_metadata: dict,
+    source_layer: dict,
+    geometry_type: str | None,
+    style_mapped: bool,
+) -> dict:
+    """Merge S-57 classification metadata into layer metadata without overwriting existing keys."""
+    source_name = str(source_layer.get("name") or "")
+    rule = classify_s57_layer(source_name, geometry_type, style_mapped)
+
+    feature_count = None
+    raw_count = source_layer.get("featureCount")
+    if isinstance(raw_count, (int, float)) and raw_count >= 0:
+        try:
+            feature_count = int(raw_count)
+        except (ValueError, TypeError):
+            pass
+
+    merged = dict(existing_metadata)
+    s57 = dict(merged.get("s57") or {})
+    s57.update(
+        {
+            "objectClass": rule.code,
+            "objectNameZh": rule.object_name_zh,
+            "displayCategory": rule.display_category,
+            "loadProfile": rule.load_profile,
+            "displayPriority": rule.display_priority,
+            "recommended": rule.recommended,
+            "renderable": rule.renderable,
+            "styleMapped": style_mapped,
+            "featureCount": feature_count,
+        }
+    )
+    merged["s57"] = s57
+    return merged
 
 
 class ImportProcessor:
@@ -110,7 +148,7 @@ class ImportProcessor:
             else:
                 spatial_layers = [
                     layer for layer in imported_layers
-                    if (layer.geometry_type or "").strip().lower() not in ("unknown", "none", "", "无")
+                    if has_valid_geometry(layer.geometry_type)
                 ]
                 if spatial_layers:
                     self.geoserver.publish_feature_types_batch([
@@ -326,11 +364,21 @@ class ImportProcessor:
                     )
                 )
                 geometry_fields = source_layer.get("geometryFields") or [{}]
+                geometry_type = str(geometry_fields[0].get("type", "Unknown"))
+                metadata_json: dict = {"sourceLayer": source_name}
+                if dataset.data_type == DatasetType.S57.value:
+                    style_mapped = preset_for_object_class(source_name) is not None
+                    metadata_json = merge_s57_layer_metadata(
+                        metadata_json,
+                        source_layer,
+                        geometry_type,
+                        style_mapped,
+                    )
                 layer = Layer(
                     dataset_version_id=version.id,
                     code=code,
                     name=source_name,
-                    geometry_type=str(geometry_fields[0].get("type", "Unknown")),
+                    geometry_type=geometry_type,
                     source_table=f"geo.{table_name}",
                     source_crs=version.source_crs,
                     status=LayerStatus.PROCESSING.value,
@@ -341,7 +389,7 @@ class ImportProcessor:
                         for field in source_layer.get("fields", [])
                         if field.get("name")
                     ],
-                    metadata_json={"sourceLayer": source_name},
+                    metadata_json=metadata_json,
                 )
                 db.add(layer)
                 imported.append(layer)
@@ -358,7 +406,13 @@ class ImportProcessor:
         source_layer = str(layer.metadata_json.get("sourceLayer", ""))
         preset = preset_for_object_class(source_layer)
         if preset is None:
-            layer.metadata_json = {**layer.metadata_json, "s57StyleStatus": "unmapped"}
+            s57_meta = dict(layer.metadata_json.get("s57") or {})
+            s57_meta["styleMapped"] = False
+            layer.metadata_json = {
+                **layer.metadata_json,
+                "s57StyleStatus": "unmapped",
+                "s57": s57_meta,
+            }
             return
         style = db.scalar(select(Style).where(Style.code == preset.code))
         if style is None:
@@ -372,11 +426,14 @@ class ImportProcessor:
             db.flush()
         self.geoserver.publish_style(preset.code, preset.render_sld())
         self.geoserver.set_default_style(layer.geoserver_layer_name or layer.code, preset.code)
+        s57_meta = dict(layer.metadata_json.get("s57") or {})
+        s57_meta["styleMapped"] = True
         layer.metadata_json = {
             **layer.metadata_json,
             "recommendedStyleCode": preset.code,
             "recommendedStyleId": str(style.id),
             "s57StyleStatus": "mapped",
+            "s57": s57_meta,
         }
 
     def _switch_project_layer_versions(

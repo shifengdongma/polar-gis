@@ -364,6 +364,33 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .layer-panel .el-input__inner, .layer-panel .el-select__selected-item { color: #dcecf1; }
 .layer-panel .el-input__inner::placeholder, .layer-panel .el-select__placeholder.is-transparent { color: #78929d; }
 .layer-panel .el-input__prefix, .layer-panel .el-input__suffix, .layer-panel .el-select__caret { color: #7897a3; }
+
+/* ── Batch toolbar ──────────────────────────────────────────────── */
+.batch-toolbar { display: flex; flex-direction: column; gap: 5px; margin-bottom: 7px; padding: 5px 5px; border: 1px solid rgba(104, 193, 207, .22); border-radius: 5px; background: rgba(2, 14, 22, .32); }
+.batch-select-row { display: flex; align-items: center; gap: 4px; }
+.batch-select-row .el-button { font-size: 10px; padding: 2px 6px; }
+.batch-select-count { margin-left: auto; color: #81a5b3; font-size: 10px; }
+.batch-actions { display: flex; gap: 5px; }
+.batch-actions .el-button { font-size: 10px; padding: 4px 8px; min-height: 26px; }
+.batch-progress { display: flex; flex-direction: column; gap: 4px; padding-top: 3px; border-top: 1px solid rgba(151, 190, 201, .12); }
+.batch-progress-bar { display: flex; align-items: center; gap: 6px; }
+.batch-progress-text { color: #aac3cc; font-size: 10px; min-width: 44px; }
+.batch-progress-bar .el-progress { flex: 1; }
+.batch-progress-stats { display: flex; gap: 10px; font-size: 10px; }
+.stat-success { color: var(--success); display: inline-flex; align-items: center; gap: 2px; }
+.stat-failed { color: var(--danger); display: inline-flex; align-items: center; gap: 2px; }
+.stat-skipped { color: #7896a4; }
+.batch-errors { margin-top: 2px; }
+.batch-errors .el-collapse { border: 0; --el-collapse-header-height: 24px; }
+.batch-errors .el-collapse-item__header { color: #e89b27; font-size: 10px; padding: 2px 0; border: 0; background: transparent; }
+.batch-errors .el-collapse-item__wrap { border: 0; background: transparent; }
+.batch-error-item { display: flex; align-items: center; gap: 5px; padding: 2px 0; color: #ccc; font-size: 10px; }
+.batch-error-msg { color: #8c9faa; }
+.dataset-checkbox { margin-right: 1px; flex-shrink: 0; }
+.dataset-checkbox .el-checkbox__inner { width: 13px; height: 13px; border-radius: 2px; }
+/* Expand summary grid for checkbox */
+.dataset-summary:has(.dataset-checkbox) { grid-template-columns: 16px 20px minmax(0, 1fr) auto; }
+
 .layer-groups { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0 -4px; padding: 0 4px; scrollbar-color: #587985 transparent; scrollbar-width: thin; }
 .layer-groups::-webkit-scrollbar { width: 6px; }
 .layer-groups::-webkit-scrollbar-track { background: transparent; }

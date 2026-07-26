@@ -102,8 +102,85 @@
 | GET | `/projects/{projectId}` | 已发布项目详情 |
 | GET | `/projects/{projectId}/map-config` | 地图、投影、底图和数据集摘要 |
 | GET | `/projects/{projectId}/map-datasets/{datasetId}/layers` | 读取一个数据集当前有效版本的项目图层目录 |
+| **POST** | **`/projects/{projectId}/map-layers/resolve`** | **✨ 批量解析 S-57 图层** |
 
 查询参数包括 `search`、`sort=createdAt` 和 `order`。
+
+#### 批量图层解析接口
+
+**请求**：`POST /api/v1/projects/{projectId}/map-layers/resolve`
+
+```json
+{
+  "datasetIds": ["uuid1", "uuid2"],
+  "profile": "navigation_recommended",
+  "includeMetadata": false
+}
+```
+
+- `datasetIds`：1–100 个数据集 UUID（仅允许当前项目已关联的 S-57 数据集）。
+- `profile`：`core_chart` | `navigation_recommended` | `all_spatial`。
+- `includeMetadata`：是否包含元数据/质量图层（默认 `false`）。
+
+**响应**：`BulkMapLayerResolveResponse`
+
+```json
+{
+  "datasets": [
+    {
+      "datasetId": "uuid",
+      "datasetCode": "DK20925C",
+      "datasetName": "S-57 海图 DK20925C",
+      "versionNo": 1,
+      "layers": [
+        {
+          "id": "layer-uuid",
+          "code": "dk20925c_v1_depare",
+          "objectClass": "DEPARE",
+          "objectNameZh": "水深区域",
+          "displayCategory": "bathymetry",
+          "loadProfile": "core_chart",
+          "displayPriority": 10,
+          "recommended": true,
+          "renderable": true,
+          "loadable": true,
+          "styleMapped": true,
+          "skipReason": null,
+          "extent": [-10.0, 60.0, 10.0, 75.0],
+          "featureCount": 923,
+          "minZoom": null,
+          "maxZoom": null
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "datasetCount": 1,
+    "candidateCount": 22,
+    "loadableCount": 18,
+    "metadataSkippedCount": 2,
+    "nonSpatialSkippedCount": 1,
+    "unavailableSkippedCount": 0,
+    "unmappedStyleCount": 1
+  }
+}
+```
+
+**筛选规则**：
+- `core_chart`：仅已映射样式的核心海图层（12 种对象类）。
+- `navigation_recommended`：核心 + 航行推荐（36 种对象类）。
+- `all_spatial`：所有有几何且可渲染的图层（含未映射样式图层）。
+- `includeMetadata=false`：排除 metadata_quality 图层。
+- non_spatial（DSID、C_AGGR）始终不可加载，仅计入 `nonSpatialSkippedCount`。
+- 未映射样式的核心/推荐图层在对应档案中 `loadable=false`、`skipReason="unmapped_style"`。
+
+**错误码**：
+- `BULK_LAYER_DATASET_LIMIT_EXCEEDED`（超 100 个 datasetIds）
+- `PROJECT_DATASET_NOT_FOUND`（数据集不属于当前项目）
+- `NO_LOADABLE_LAYERS`（无匹配的可加载图层）
+- `INVALID_LAYER_PROFILE`（profile 不合法）
+
+**兼容性**：不改变 `GET /projects/{projectId}/map-datasets/{datasetId}/layers` 的语义。
 
 ### 6.2 管理员
 

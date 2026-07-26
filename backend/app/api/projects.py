@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.errors import AppError
 from app.models import (
     Dataset,
+    DatasetType,
     DatasetVersion,
     Layer,
     LayerStatus,
@@ -21,6 +22,11 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    BulkLayerResolveSummary,
+    BulkMapLayerResolveRequest,
+    BulkMapLayerResolveResponse,
+    BulkResolvedDataset,
+    BulkResolvedLayer,
     MapConfig,
     MapDatasetConfig,
     MapLayerConfig,
@@ -34,6 +40,8 @@ from app.schemas import (
     ProjectUpdate,
 )
 from app.services.audit import write_audit
+from app.services.s57_layer_catalog import classify_s57_layer
+from app.services.s57_styles import preset_for_object_class
 
 public_router = APIRouter(prefix="/projects", tags=["projects"])
 admin_router = APIRouter(prefix="/admin/projects", tags=["admin-projects"])
@@ -155,6 +163,7 @@ def get_map_config(
                 visible_by_default=first_link.visible_by_default,
                 opacity=float(first_link.opacity),
                 member_layer_count=len(dataset_links),
+                data_type=dataset.data_type,
             )
         )
     return MapConfig(project=project_to_read(project), datasets=dataset_configs)
@@ -208,6 +217,280 @@ def get_project_dataset_map_layers(
         )
         for link in links
     ]
+
+
+# ── Resolve helpers ──────────────────────────────────────────────────
+
+VALID_RESOLVE_PROFILES = frozenset({"core_chart", "navigation_recommended", "all_spatial"})
+MAX_RESOLVE_DATASET_IDS = 100
+
+
+def _s57_object_class(layer: Layer) -> str:
+    """Extract the S-57 object class from layer metadata, with fallbacks."""
+    s57_meta = (layer.metadata_json or {}).get("s57")
+    if isinstance(s57_meta, dict) and s57_meta.get("objectClass"):
+        return str(s57_meta["objectClass"])
+    source = (layer.metadata_json or {}).get("sourceLayer")
+    if source and isinstance(source, str) and source.strip():
+        return source.strip()
+    return layer.name or layer.code
+
+
+def _style_mapped_for_layer(layer: Layer) -> bool:
+    """Check if layer has a mapped S-57 style."""
+    s57_meta = (layer.metadata_json or {}).get("s57")
+    if isinstance(s57_meta, dict) and "styleMapped" in s57_meta:
+        return bool(s57_meta["styleMapped"])
+    status = (layer.metadata_json or {}).get("s57StyleStatus")
+    if status == "mapped":
+        return True
+    if status == "unmapped":
+        return False
+    return preset_for_object_class(_s57_object_class(layer)) is not None
+
+
+def _build_resolved_layer(
+    link: ProjectLayer,
+    layer: Layer,
+    object_class: str,
+    style_mapped: bool,
+    rule: object | None = None,
+) -> BulkResolvedLayer:
+    """Build a BulkResolvedLayer from a ProjectLayer + Layer with classification."""
+    if rule is None:
+        rule_obj = classify_s57_layer(object_class, layer.geometry_type, style_mapped)
+    else:
+        rule_obj = rule  # type: ignore[assignment]
+
+    workspace = layer.geoserver_workspace or settings.geoserver_workspace
+    service_url = (
+        f"{settings.geoserver_public_url.rstrip('/')}/{workspace}/wms"
+    )
+
+    # Determine extent from metadata (EPSG:4326)
+    extent = None
+    s57_meta = (layer.metadata_json or {}).get("s57")
+    if isinstance(s57_meta, dict):
+        raw_extent = s57_meta.get("extent")
+        if isinstance(raw_extent, list) and len(raw_extent) == 4:
+            try:
+                extent = [float(v) for v in raw_extent]
+            except (ValueError, TypeError):
+                pass
+
+    # Determine feature count
+    feature_count = None
+    if isinstance(s57_meta, dict):
+        fc = s57_meta.get("featureCount")
+        if isinstance(fc, int):
+            feature_count = fc
+
+    # Determine loadability
+    geoserver_layer_name = layer.geoserver_layer_name or layer.code
+    published = bool(workspace and geoserver_layer_name)
+    loadable = rule_obj.renderable and published
+
+    skip_reason = None
+    if not rule_obj.renderable:
+        skip_reason = "non_spatial"
+    elif not style_mapped and rule_obj.load_profile in {"core_chart", "navigation_recommended"}:
+        skip_reason = "unmapped_style"
+    elif not published:
+        skip_reason = "unpublished"
+
+    return BulkResolvedLayer(
+        id=layer.id,
+        code=layer.code,
+        name=layer.name,
+        object_class=rule_obj.code,
+        object_name_zh=rule_obj.object_name_zh,
+        geometry_type=layer.geometry_type,
+        geoserver_workspace=workspace,
+        geoserver_layer_name=geoserver_layer_name,
+        service_url=service_url,
+        style_name=(
+            link.style.geoserver_style_name
+            if link.style
+            else (layer.metadata_json or {}).get("recommendedStyleCode")
+        ),
+        opacity=float(link.opacity),
+        min_zoom=float(link.min_zoom) if link.min_zoom else None,
+        max_zoom=float(link.max_zoom) if link.max_zoom else None,
+        extent=extent,
+        feature_count=feature_count,
+        display_category=rule_obj.display_category,
+        load_profile=rule_obj.load_profile,
+        display_priority=rule_obj.display_priority,
+        recommended=rule_obj.recommended,
+        renderable=rule_obj.renderable,
+        loadable=loadable,
+        style_mapped=style_mapped,
+        skip_reason=skip_reason,
+        queryable=bool(layer.queryable),
+        exportable=bool(layer.exportable),
+        group_name=link.group_name,
+        sort_order=link.sort_order,
+    )
+
+
+# ── Bulk resolve endpoint ────────────────────────────────────────────
+
+
+@public_router.post("/{project_id}/map-layers/resolve", response_model=BulkMapLayerResolveResponse)
+def resolve_project_map_layers(
+    project_id: UUID,
+    payload: BulkMapLayerResolveRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BulkMapLayerResolveResponse:
+    project = project_or_404(db, project_id, include_unpublished=False)
+
+    # Validate profile
+    if payload.profile not in VALID_RESOLVE_PROFILES:
+        raise AppError(
+            "INVALID_LAYER_PROFILE",
+            f"profile 必须为 {', '.join(sorted(VALID_RESOLVE_PROFILES))} 之一",
+            422,
+        )
+
+    # Validate dataset count
+    requested_ids = list(dict.fromkeys(payload.dataset_ids))  # dedup preserving order
+    if len(requested_ids) > MAX_RESOLVE_DATASET_IDS:
+        raise AppError(
+            "BULK_LAYER_DATASET_LIMIT_EXCEEDED",
+            f"数据集数量不得超过 {MAX_RESOLVE_DATASET_IDS}",
+            422,
+        )
+
+    # Fetch all ProjectLayer links with eager-loaded relationships
+    links = db.scalars(
+        select(ProjectLayer)
+        .where(ProjectLayer.project_id == project.id)
+        .options(
+            selectinload(ProjectLayer.layer)
+            .selectinload(Layer.dataset_version)
+            .selectinload(DatasetVersion.dataset),
+            selectinload(ProjectLayer.style),
+        )
+        .order_by(ProjectLayer.sort_order)
+    ).all()
+
+    # Build lookup: dataset_id → list of (ProjectLayer, Layer)
+    dataset_links: dict[UUID, list[tuple[ProjectLayer, Layer]]] = {}
+    for link in links:
+        layer = link.layer
+        if layer.deleted_at is not None:
+            continue
+        dataset = layer.dataset_version.dataset
+        if dataset.current_version_id != layer.dataset_version_id:
+            continue
+        if dataset.deleted_at is not None:
+            continue
+        dataset_links.setdefault(dataset.id, []).append((link, layer))
+
+    # Verify all requested dataset IDs belong to the project
+    missing = [str(did) for did in requested_ids if did not in dataset_links]
+    if missing:
+        raise AppError(
+            "PROJECT_DATASET_NOT_FOUND",
+            f"以下数据集不属于当前项目: {', '.join(missing)}",
+            404,
+            {"missingDatasetIds": missing},
+        )
+
+    profile = payload.profile
+    include_metadata = payload.include_metadata
+
+    # Build response datasets
+    datasets_result: list[BulkResolvedDataset] = []
+    stats = BulkLayerResolveSummary(
+        dataset_count=0,
+        candidate_count=0,
+        loadable_count=0,
+        metadata_skipped_count=0,
+        non_spatial_skipped_count=0,
+        unavailable_skipped_count=0,
+        unmapped_style_count=0,
+    )
+
+    for dataset_id in requested_ids:
+        pair_list = dataset_links[dataset_id]
+        if not pair_list:
+            continue
+
+        dataset = pair_list[0][1].dataset_version.dataset
+        version_no = pair_list[0][1].dataset_version.version_no
+
+        # Only resolve S-57 datasets
+        if dataset.data_type != DatasetType.S57.value:
+            continue
+
+        resolved_layers: list[BulkResolvedLayer] = []
+
+        for link, layer in pair_list:
+            if layer.status != LayerStatus.AVAILABLE.value:
+                stats.unavailable_skipped_count += 1
+                stats.candidate_count += 1
+                continue
+
+            object_class = _s57_object_class(layer)
+            style_mapped = _style_mapped_for_layer(layer)
+            rule = classify_s57_layer(object_class, layer.geometry_type, style_mapped)
+            stats.candidate_count += 1
+
+            # Profile filtering
+            is_core = rule.load_profile == "core_chart"
+            is_nav = rule.load_profile == "navigation_recommended"
+            is_meta = rule.load_profile == "metadata_quality"
+            is_non_spatial = rule.load_profile == "non_spatial"
+
+            if is_non_spatial:
+                stats.non_spatial_skipped_count += 1
+                continue
+
+            if is_meta:
+                stats.metadata_skipped_count += 1
+                if not include_metadata:
+                    continue
+
+            if profile == "core_chart" and not is_core:
+                continue
+            if profile == "navigation_recommended" and not (is_core or is_nav):
+                continue
+
+            if not style_mapped and profile != "all_spatial":
+                stats.unmapped_style_count += 1
+
+            resolved_layer = _build_resolved_layer(link, layer, object_class, style_mapped, rule)
+            resolved_layers.append(resolved_layer)
+            if resolved_layer.loadable:
+                stats.loadable_count += 1
+
+        # Stable sort within dataset
+        resolved_layers.sort(key=lambda r: (r.display_priority, r.object_class or "", str(r.id)))
+
+        if resolved_layers:
+            datasets_result.append(
+                BulkResolvedDataset(
+                    dataset_id=dataset.id,
+                    dataset_code=dataset.code,
+                    dataset_name=dataset.name,
+                    version_no=version_no,
+                    layers=resolved_layers,
+                )
+            )
+
+    stats.dataset_count = len(datasets_result)
+
+    if not datasets_result:
+        raise AppError(
+            "NO_LOADABLE_LAYERS",
+            "所选数据集中没有可加载的图层",
+            404,
+            {"summary": stats.model_dump(by_alias=True)},
+        )
+
+    return BulkMapLayerResolveResponse(datasets=datasets_result, summary=stats)
 
 
 @admin_router.get("", response_model=Paginated[ProjectRead])
