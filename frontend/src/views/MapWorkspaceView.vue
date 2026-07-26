@@ -374,7 +374,7 @@ type AttachResult = 'attached' | 'already-loaded' | 'non-spatial'
 
 function attachWmsLayer(
   runtime: RuntimeLayer,
-  opts?: { extent?: number[]; minZoom?: number | null; maxZoom?: number | null },
+  opts?: { extent?: number[]; minZoom?: number | null; maxZoom?: number | null; visible?: boolean },
 ): AttachResult {
   if (!map || wmsLayers.has(runtime.config.id)) return 'already-loaded'
   if (isNonSpatial(runtime.config)) {
@@ -385,6 +385,7 @@ function attachWmsLayer(
     url: browserGeoServerUrl(runtime.config.serviceUrl),
     params: { LAYERS: runtime.config.serviceLayerName, TILED: true, STYLES: runtime.config.styleName || '' },
     crossOrigin: 'anonymous',
+    transition: 0,
   })
   source.on('tileloadstart', () => {
     runtime.pendingTiles += 1
@@ -414,6 +415,7 @@ function attachWmsLayer(
     extent: opts?.extent,
     minZoom: opts?.minZoom ?? undefined,
     maxZoom: opts?.maxZoom ?? undefined,
+    visible: opts?.visible ?? true,
   })
   wmsLayers.set(runtime.config.id, tileLayer)
   map.addLayer(tileLayer)
@@ -622,15 +624,23 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
     bulkProgress.value.skipped = skipped
     await loadResolvedLayersInBatches(candidates, generation)
 
-    // Completed
+    // Completed — make all new layers visible at once, then reset UI state
     const p = bulkProgress.value
-    if (p && !bulkCancelled.value) {
-      ElMessage.success(`批量加载完成：成功 ${p.succeeded}，失败 ${p.failed}，跳过 ${p.skipped}`)
+    if (p) {
+      for (const layerId of p.attachedLayerIds) {
+        wmsLayers.get(layerId)?.setVisible(true)
+      }
+      if (!bulkCancelled.value) {
+        ElMessage.success(`批量加载完成：成功 ${p.succeeded}，失败 ${p.failed}，跳过 ${p.skipped}`)
+      }
     }
+    bulkProgress.value = null
+    bulkCancelled.value = false
   } catch (error) {
     if (bulkAbortController?.signal.aborted) return
     ElMessage.error(apiErrorMessage(error, '批量图层解析失败'))
     bulkProgress.value = null
+    bulkCancelled.value = false
   }
 }
 
@@ -664,6 +674,7 @@ async function loadResolvedLayersInBatches(
           extent,
           minZoom: resolved.minZoom,
           maxZoom: resolved.maxZoom,
+          visible: false,
         })
         if (result === 'attached') {
           runtime.visible = true
@@ -723,6 +734,13 @@ async function loadResolvedLayersInBatches(
 function cancelBulkLoad() {
   bulkCancelled.value = true
   bulkAbortController?.abort()
+  // Make any already-attached (invisible) layers visible so user sees partial results
+  if (bulkProgress.value) {
+    for (const layerId of bulkProgress.value.attachedLayerIds) {
+      wmsLayers.get(layerId)?.setVisible(true)
+    }
+  }
+  bulkProgress.value = null
 }
 
 function unloadSelectedDatasets() {
