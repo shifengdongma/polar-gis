@@ -60,14 +60,18 @@ const itemStageLabels: Record<string, string> = {
 }
 
 async function loadBatches(targetPage = page.value) {
-  const response = await api.get<Paginated<S57ImportBatch>>('/admin/s57-import-batches', {
-    params: { page: targetPage, pageSize: pageSize.value },
-  })
-  batches.value = response.data.items
-  page.value = response.data.page
-  total.value = response.data.total
-  if (detail.value && ['queued', 'running', 'paused'].includes(detail.value.status)) {
-    detail.value = (await api.get<S57ImportBatchDetail>(`/admin/s57-import-batches/${detail.value.id}`)).data
+  try {
+    const response = await api.get<Paginated<S57ImportBatch>>('/admin/s57-import-batches', {
+      params: { page: targetPage, pageSize: pageSize.value },
+    })
+    batches.value = response.data?.items || []
+    page.value = response.data?.page || 1
+    total.value = response.data?.total || 0
+    if (detail.value && ['queued', 'running', 'paused'].includes(detail.value.status)) {
+      detail.value = (await api.get<S57ImportBatchDetail>(`/admin/s57-import-batches/${detail.value.id}`)).data
+    }
+  } catch {
+    // auto-poll may fail transiently; keep previous data
   }
 }
 

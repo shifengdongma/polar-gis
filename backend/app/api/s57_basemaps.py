@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,8 +27,7 @@ from app.models import (
     Upload,
     User,
 )
-from app.schemas import S57ImportBatchDetail, S57ImportBatchItemRead, S57ImportBatchRead
-from app.schemas import S57ImportBatchDetail, S57ImportBatchItemRead, S57ImportBatchRead
+from app.schemas import ApiModel, S57ImportBatchDetail, S57ImportBatchItemRead, S57ImportBatchRead
 from app.services.s57_basemap import (
     ERR_IMPORT_ALREADY_RUNNING,
     ERR_MANIFEST_CHANGED,
@@ -48,13 +47,13 @@ router = APIRouter(prefix="/admin/s57-basemaps", tags=["admin-s57-basemaps"])
 
 # ── request / response schemas ───────────────────────────────────────
 
-class PreflightRequest(BaseModel):
+class PreflightRequest(ApiModel):
     profile_code: str = Field(default="global_overview_v1", min_length=1, max_length=64)
     source_type: str = Field(default="server_directory", pattern=r"^(server_directory|upload)$")
     upload_id: UUID | None = None
 
 
-class ImportRequest(BaseModel):
+class ImportRequest(ApiModel):
     profile_code: str = Field(default="global_overview_v1", min_length=1, max_length=64)
     manifest_hash: str = Field(min_length=1, max_length=256)
     source_type: str = Field(default="server_directory", pattern=r"^(server_directory|upload)$")
@@ -65,7 +64,7 @@ class ImportRequest(BaseModel):
     warm_low_zoom_cache: bool = False
 
 
-class ProfileRead(BaseModel):
+class ProfileRead(ApiModel):
     code: str
     name: str
     usage_band: int
@@ -74,7 +73,7 @@ class ProfileRead(BaseModel):
     description: str
 
 
-class PreflightResponse(BaseModel):
+class PreflightResponse(ApiModel):
     profile_code: str
     profile_name: str
     manifest_hash: str
@@ -96,7 +95,7 @@ class PreflightResponse(BaseModel):
     ignored_files: list[str]
 
 
-class ImportResponse(BaseModel):
+class ImportResponse(ApiModel):
     batch_id: UUID
     profile_code: str
     status: str
