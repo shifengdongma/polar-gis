@@ -40,7 +40,6 @@ const basemapAdvanced = ref({
   warmLowZoom: false,
 })
 const basemapSourceMode = ref<'server_directory' | 'upload'>('server_directory')
-const basemapUploadFiles = ref<File[]>([])
 const basemapRunDetail = ref<BasemapRunDetail | null>(null)
 const basemapRunVisible = ref(false)
 
@@ -212,7 +211,7 @@ async function startBasemapImport() {
       buildWmts3413: basemapAdvanced.value.buildWmts3413,
       warmLowZoomCache: basemapAdvanced.value.warmLowZoom,
     }
-    const resp = (await api.post('/admin/s57-basemaps/import', body)).data
+    await api.post('/admin/s57-basemaps/import', body)
     ElMessage.success('底图导入已启动')
     basemapPreflightVisible.value = false
     await loadBatches()
@@ -221,6 +220,10 @@ async function startBasemapImport() {
   } finally {
     basemapImporting.value = false
   }
+}
+
+const actionLabels: Record<string, string> = {
+  create: '新建', append_updates: '追加更新', skip_current: '已是最新', blocked: '阻塞',
 }
 
 async function viewBasemapRun(batchId: string) {
@@ -391,7 +394,7 @@ function formatBytes(bytes: number): string {
           <el-table-column prop="cellName" label="Cell" width="130" />
           <el-table-column label="更新号" width="80"><template #default="{ row }">.000-.{{ String(row.expectedMaxUpdate).padStart(3, '0') }}</template></el-table-column>
           <el-table-column label="发现" width="70"><template #default="{ row }">{{ row.discoveredUpdates?.length || 0 }}</template></el-table-column>
-          <el-table-column label="操作" width="110"><template #default="{ row }"><span :class="['pf-action', row.action]">{{ { create: '新建', append_updates: '追加更新', skip_current: '已是最新', blocked: '阻塞' }[row.action] }}</span></template></el-table-column>
+          <el-table-column label="操作" width="110"><template #default="{ row }"><span :class="['pf-action', row.action]">{{ actionLabels[row.action] || row.action }}</span></template></el-table-column>
           <el-table-column label="用途等级" width="80"><template #default="{ row }">{{ row.usageBand ?? '-' }}</template></el-table-column>
           <el-table-column label="DB更新" width="80"><template #default="{ row }">{{ row.databaseCurrentUpdate !== null ? `.${String(row.databaseCurrentUpdate).padStart(3, '0')}` : '无' }}</template></el-table-column>
           <el-table-column label="错误" min-width="180"><template #default="{ row }"><span v-if="row.errors?.length" class="error-text">{{ row.errors.join('; ') }}</span><span v-else>—</span></template></el-table-column>
