@@ -385,8 +385,38 @@ class S57BatchProcessor:
             final_batch.progress = 100
             final_batch.finished_at = datetime.now(UTC)
             final_db.commit()
+
+            # basemap post-processing hook
+            if final_batch.purpose == "basemap" and final_batch.status in (
+                JobStatus.SUCCEEDED.value,
+                "partial_failed",
+            ):
+                self._run_basemap_postprocess(final_db, final_batch)
         finally:
             final_db.close()
+
+    def _run_basemap_postprocess(
+        self, db: Session, batch: S57ImportBatch
+    ) -> None:
+        """Run GeoServer layer group + GWC + base map registration."""
+        try:
+            from app.services.s57_basemap import BasemapPostProcessor
+            from app.services.geoserver import GeoServerClient
+
+            geoserver = GeoServerClient(self.settings)
+            post_proc = BasemapPostProcessor(self.settings)
+            post_proc.post_process(db, batch, geoserver)
+        except Exception:
+            logger.exception(
+                "Basemap post-process failed for batch %s", batch.id
+            )
+            # update metadata to reflect failure
+            meta = dict(batch.metadata_json.get("basemap", {}))
+            meta["postProcessStatus"] = "failed"
+            meta["warnings"] = meta.get("warnings", [])
+            meta["warnings"].append("后处理失败，请手动重试底图发布")
+            batch.metadata_json = {**batch.metadata_json, "basemap": meta}
+            db.commit()
 
     def _stage_sources(self, db: Session, batch_id: UUID, temp_dir: Path) -> list[Path]:
         records = db.scalars(

@@ -227,6 +227,8 @@ class S57ImportBatch(Base):
     processed_cells: Mapped[int] = mapped_column(Integer, default=0)
     succeeded_cells: Mapped[int] = mapped_column(Integer, default=0)
     failed_cells: Mapped[int] = mapped_column(Integer, default=0)
+    purpose: Mapped[str] = mapped_column(String(32), default="standard", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     worker_id: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

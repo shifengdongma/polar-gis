@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.api import auth, base_maps, datasets, demo, layers, projects, styles, system, users
+from app.api import auth, base_maps, datasets, demo, layers, projects, s57_basemaps, styles, system, users
 from app.core.config import get_settings
 from app.core.database import SessionLocal, init_database
 from app.core.errors import AppError, app_error_handler, validation_error_handler
@@ -70,6 +70,7 @@ app.include_router(base_maps.public_router, prefix=api)
 app.include_router(base_maps.admin_router, prefix=api)
 app.include_router(styles.router, prefix=api)
 app.include_router(demo.router, prefix=api)
+app.include_router(s57_basemaps.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)
 

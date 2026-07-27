@@ -165,6 +165,8 @@ export interface S57ImportBatch {
   processedCells: number
   succeededCells: number
   failedCells: number
+  purpose: string
+  metadataJson: Record<string, unknown>
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
@@ -319,4 +321,67 @@ export interface BulkLayerProgress {
   skipped: number
   attachedLayerIds: string[]
   errors: Array<{ layerId: string; layerName: string; message: string }>
+}
+
+// ── S-57 Basemap types ──────────────────────────────────────────────
+
+export interface BasemapProfile {
+  code: string
+  name: string
+  usageBand: number
+  cellCount: number
+  fileCount: number
+  description: string
+}
+
+export interface BasemapPreflightCell {
+  cellName: string
+  expectedMaxUpdate: number
+  discoveredUpdates: number[]
+  editionNumber: string | null
+  usageBand: number | null
+  compilationScale: number | null
+  databaseCurrentUpdate: number | null
+  action: 'create' | 'append_updates' | 'skip_current' | 'blocked'
+  errors: string[]
+}
+
+export interface BasemapPreflightResponse {
+  profileCode: string
+  profileName: string
+  manifestHash: string
+  expectedCellCount: number
+  expectedFileCount: number
+  discoveredCellCount: number
+  selectedFileCount: number
+  ignoredFileCount: number
+  createCellCount: number
+  updateCellCount: number
+  skipCellCount: number
+  blockedCellCount: number
+  totalSizeBytes: number
+  coverageExtent: number[]
+  coverageVerified: boolean
+  coverageMessage: string
+  canStart: boolean
+  cells: BasemapPreflightCell[]
+  ignoredFiles: string[]
+}
+
+export interface BasemapImportResponse {
+  batchId: string
+  profileCode: string
+  status: string
+  selectedCellCount: number
+  selectedFileCount: number
+}
+
+export interface BasemapRunDetail extends S57ImportBatchDetail {
+  postProcessStatus: string | null
+  layerGroupStatus: string | null
+  wmts3857Status: string | null
+  wmts3413Status: string | null
+  cacheWarmStatus: string | null
+  baseMapIds: string[]
+  warnings: string[]
 }

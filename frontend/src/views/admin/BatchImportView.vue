@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, computed } from 'vue'
 import { ElMessage, type UploadFile } from 'element-plus'
 import { api, apiErrorMessage } from '../../api/client'
-import type { Paginated, S57ImportBatch, S57ImportBatchDetail } from '../../types'
+import type {
+  Paginated, S57ImportBatch, S57ImportBatchDetail,
+  BasemapProfile, BasemapPreflightResponse, BasemapRunDetail,
+} from '../../types'
+
+// ── standard batch state ──────────────────────────────────────────
 
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
@@ -18,6 +23,35 @@ const total = ref(0)
 const detail = ref<S57ImportBatchDetail | null>(null)
 const directoryInput = ref<HTMLInputElement>()
 let timer: number | undefined
+
+// ── basemap state ──────────────────────────────────────────────────
+
+const basemapProfiles = ref<BasemapProfile[]>([])
+const basemapSelectedProfile = ref('global_overview_v1')
+const basemapPreflightResult = ref<BasemapPreflightResponse | null>(null)
+const basemapPreflightVisible = ref(false)
+const basemapPreflighting = ref(false)
+const basemapImporting = ref(false)
+const basemapShowAdvanced = ref(false)
+const basemapAdvanced = ref({
+  includeBand2: false,
+  setAsDefault: false,
+  buildWmts3413: true,
+  warmLowZoom: false,
+})
+const basemapSourceMode = ref<'server_directory' | 'upload'>('server_directory')
+const basemapUploadFiles = ref<File[]>([])
+const basemapRunDetail = ref<BasemapRunDetail | null>(null)
+const basemapRunVisible = ref(false)
+
+const basemapStatusText = computed(() => {
+  const r = basemapPreflightResult.value
+  if (!r) return '未导入'
+  if (basemapImporting.value) return '导入中'
+  if (r.skipCellCount === r.expectedCellCount) return '已是最新'
+  if (r.updateCellCount > 0 || r.createCellCount > 0) return '有可用更新'
+  return '未导入'
+})
 
 const statusLabels: Record<string, string> = {
   queued: '排队', running: '处理中', succeeded: '成功', partial_failed: '部分失败', failed: '失败', paused: '已暂停', cancelled: '已取消',
@@ -134,21 +168,149 @@ async function viewBatch(batch: S57ImportBatch) {
 
 onMounted(() => {
   loadBatches()
+  loadBasemapProfiles()
   timer = window.setInterval(loadBatches, 3000)
 })
 onBeforeUnmount(() => window.clearInterval(timer))
+
+// ── basemap functions ──────────────────────────────────────────────
+
+async function loadBasemapProfiles() {
+  try {
+    basemapProfiles.value = (await api.get<BasemapProfile[]>('/admin/s57-basemaps/profiles')).data
+  } catch { /* silently fail */ }
+}
+
+async function runBasemapPreflight() {
+  basemapPreflighting.value = true
+  try {
+    const body: Record<string, unknown> = {
+      profileCode: basemapSelectedProfile.value,
+      sourceType: basemapSourceMode.value,
+    }
+    basemapPreflightResult.value = (await api.post<BasemapPreflightResponse>(
+      '/admin/s57-basemaps/preflight', body,
+    )).data
+    basemapPreflightVisible.value = true
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '预检失败'))
+  } finally {
+    basemapPreflighting.value = false
+  }
+}
+
+async function startBasemapImport() {
+  if (!basemapPreflightResult.value?.canStart) return
+  basemapImporting.value = true
+  try {
+    const body = {
+      profileCode: basemapSelectedProfile.value,
+      manifestHash: basemapPreflightResult.value.manifestHash,
+      sourceType: basemapSourceMode.value,
+      setAsDefault: basemapAdvanced.value.setAsDefault,
+      buildWmts3857: true,
+      buildWmts3413: basemapAdvanced.value.buildWmts3413,
+      warmLowZoomCache: basemapAdvanced.value.warmLowZoom,
+    }
+    const resp = (await api.post('/admin/s57-basemaps/import', body)).data
+    ElMessage.success('底图导入已启动')
+    basemapPreflightVisible.value = false
+    await loadBatches()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '导入启动失败'))
+  } finally {
+    basemapImporting.value = false
+  }
+}
+
+async function viewBasemapRun(batchId: string) {
+  try {
+    basemapRunDetail.value = (await api.get<BasemapRunDetail>(
+      `/admin/s57-basemaps/runs/${batchId}`,
+    )).data
+    basemapRunVisible.value = true
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '加载运行详情失败'))
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`
+  return `${(bytes / 1073741824).toFixed(2)} GB`
+}
 </script>
 
 <template>
   <div class="page-stack">
     <section class="page-intro compact">
-      <div><span class="eyebrow">S-57 BATCH IMPORT</span><h2>批量导入</h2><p>按海图单元识别基础单元与连续更新，并跟踪每个单元的处理结果。</p></div>
+      <div><span class="eyebrow">S-57 BATCH IMPORT</span><h2>批量导入</h2><p>按海图单元识别基础单元与连续更新，或一键导入全球海图概览底图。</p></div>
       <div class="header-actions"><el-button type="primary" @click="openDialog">新建批量导入</el-button></div>
     </section>
+
+    <!-- ═══ Basemap Section ═══ -->
+    <el-card shadow="never" class="data-card basemap-card">
+      <div class="basemap-header">
+        <div class="basemap-info">
+          <span class="basemap-title">🌐 全球海图概览底图</span>
+          <span class="basemap-sub">
+            当前数据包：{{ basemapPreflightResult?.expectedCellCount || basemapProfiles[0]?.cellCount || 18 }} 个概览Cell
+            / {{ basemapPreflightResult?.expectedFileCount || basemapProfiles[0]?.fileCount || 29 }} 个文件
+            <template v-if="basemapPreflightResult?.totalSizeBytes">
+              · {{ formatBytes(basemapPreflightResult.totalSizeBytes) }}
+            </template>
+          </span>
+          <span class="basemap-sub">
+            覆盖范围：{{ basemapPreflightResult?.coverageMessage || '待预检' }}
+          </span>
+          <span :class="['status-pill', basemapImporting ? 'running' : basemapPreflightResult?.canStart ? 'succeeded' : '']">
+            {{ basemapStatusText }}
+          </span>
+        </div>
+        <div class="basemap-actions">
+          <el-button :loading="basemapPreflighting" @click="runBasemapPreflight">
+            {{ basemapPreflightResult ? '重新预检数据包' : '预检数据包' }}
+          </el-button>
+          <el-button
+            type="primary"
+            :disabled="!basemapPreflightResult?.canStart || basemapPreflightResult?.blockedCellCount > 0"
+            :loading="basemapImporting"
+            @click="startBasemapImport"
+          >
+            {{ basemapPreflightResult?.skipCellCount === basemapPreflightResult?.expectedCellCount && basemapPreflightResult?.createCellCount === 0 ? '重建底图发布' : '一键导入/更新' }}
+          </el-button>
+          <el-button
+            v-if="basemapRunDetail"
+            link
+            type="primary"
+            @click="basemapRunVisible = true"
+          >查看最近任务</el-button>
+          <el-button link type="info" @click="basemapShowAdvanced = !basemapShowAdvanced">
+            高级选项 {{ basemapShowAdvanced ? '▴' : '▾' }}
+          </el-button>
+        </div>
+      </div>
+
+      <div v-if="basemapShowAdvanced" class="basemap-advanced">
+        <el-checkbox v-model="basemapAdvanced.includeBand2">
+          导入用途等级2区域增强数据
+        </el-checkbox>
+        <span class="hint-text">将额外处理71个Cell、776个文件。区域增强数据不会合并到默认概览WMTS底图。</span>
+        <br />
+        <el-checkbox v-model="basemapAdvanced.setAsDefault">导入后设为默认底图</el-checkbox>
+        <br />
+        <el-checkbox v-model="basemapAdvanced.buildWmts3413">创建EPSG:3413 WMTS</el-checkbox>
+        <br />
+        <el-checkbox v-model="basemapAdvanced.warmLowZoom">预热低缩放级别缓存</el-checkbox>
+      </div>
+    </el-card>
+
+    <!-- ═══ Standard batch table ═══ -->
     <el-card shadow="never" class="data-card">
       <div class="catalog-table-head"><div><strong>导入批次</strong><span>共 {{ total }} 个批次</span></div></div>
       <el-table :data="batches" stripe empty-text="暂无批量导入记录">
-        <el-table-column prop="name" label="批次" min-width="190" />
+        <el-table-column prop="name" label="批次" min-width="190"><template #default="{ row }"><span>{{ row.name }}</span><el-tag v-if="row.purpose === 'basemap'" size="small" type="warning" effect="plain" style="margin-left:6px">底图</el-tag></template></el-table-column>
         <el-table-column label="进度" min-width="220"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'failed' ? 'exception' : row.status === 'succeeded' ? 'success' : undefined" /></template></el-table-column>
         <el-table-column label="单元" width="180"><template #default="{ row }">{{ row.processedCells }}/{{ row.totalCells || '待识别' }} · 成功 {{ row.succeededCells }} · 失败 {{ row.failedCells }}</template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="{ row }"><span :class="['status-pill', row.status]">{{ statusLabels[row.status] || row.status }}</span></template></el-table-column>
@@ -185,6 +347,112 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <el-table-column label="状态" width="100"><template #default="{ row }"><span :class="['status-pill', row.status]">{{ statusLabels[row.status] || row.status }}</span></template></el-table-column>
         <el-table-column label="失败原因" min-width="220"><template #default="{ row }"><span v-if="row.errorMessage" class="error-text">{{ row.errorMessage }}</span><span v-else>—</span></template></el-table-column>
       </el-table>
+    </el-drawer>
+
+    <!-- ═══ Basemap Preflight Dialog ═══ -->
+    <el-dialog v-model="basemapPreflightVisible" title="预检结果 — 全球海图概览底图" width="720px">
+      <template v-if="basemapPreflightResult">
+        <div class="preflight-grid">
+          <div class="pf-item"><strong>Profile</strong><span>{{ basemapPreflightResult.profileName }}</span></div>
+          <div class="pf-item"><strong>数据源</strong><span>{{ basemapSourceMode === 'server_directory' ? '服务器目录' : '上传' }}</span></div>
+          <div class="pf-item"><strong>预期Cell数</strong><span>{{ basemapPreflightResult.expectedCellCount }}</span></div>
+          <div class="pf-item"><strong>发现Cell数</strong><span>{{ basemapPreflightResult.discoveredCellCount }}</span></div>
+          <div class="pf-item"><strong>选中文件数</strong><span>{{ basemapPreflightResult.selectedFileCount }}</span></div>
+          <div class="pf-item"><strong>忽略文件数</strong><span>{{ basemapPreflightResult.ignoredFileCount }}</span></div>
+          <div class="pf-item"><strong>新建Cell</strong><span class="pf-create">{{ basemapPreflightResult.createCellCount }}</span></div>
+          <div class="pf-item"><strong>更新Cell</strong><span class="pf-update">{{ basemapPreflightResult.updateCellCount }}</span></div>
+          <div class="pf-item"><strong>已是最新</strong><span class="pf-skip">{{ basemapPreflightResult.skipCellCount }}</span></div>
+          <div class="pf-item"><strong>阻塞</strong><span :class="basemapPreflightResult.blockedCellCount > 0 ? 'pf-blocked' : ''">{{ basemapPreflightResult.blockedCellCount }}</span></div>
+          <div class="pf-item"><strong>文件总大小</strong><span>{{ formatBytes(basemapPreflightResult.totalSizeBytes) }}</span></div>
+          <div class="pf-item"><strong>覆盖验证</strong><span>{{ basemapPreflightResult.coverageVerified ? '已验证' : '未验证全球无缝覆盖' }}</span></div>
+        </div>
+        <el-alert
+          v-if="basemapPreflightResult.blockedCellCount > 0"
+          title="存在阻塞的Cell，无法启动导入"
+          type="error"
+          :closable="false"
+          style="margin-top:12px"
+        />
+        <el-alert
+          v-if="basemapPreflightResult.ignoredFiles.length > 0"
+          :title="`已忽略 ${basemapPreflightResult.ignoredFileCount} 个文件（用途等级2/3或非S-57文件，前100项）`"
+          type="warning"
+          :closable="false"
+          style="margin-top:12px"
+        />
+        <el-table
+          v-if="basemapPreflightResult.cells.length > 0"
+          :data="basemapPreflightResult.cells"
+          stripe
+          size="small"
+          style="margin-top:12px"
+          max-height="300"
+        >
+          <el-table-column prop="cellName" label="Cell" width="130" />
+          <el-table-column label="更新号" width="80"><template #default="{ row }">.000-.{{ String(row.expectedMaxUpdate).padStart(3, '0') }}</template></el-table-column>
+          <el-table-column label="发现" width="70"><template #default="{ row }">{{ row.discoveredUpdates?.length || 0 }}</template></el-table-column>
+          <el-table-column label="操作" width="110"><template #default="{ row }"><span :class="['pf-action', row.action]">{{ { create: '新建', append_updates: '追加更新', skip_current: '已是最新', blocked: '阻塞' }[row.action] }}</span></template></el-table-column>
+          <el-table-column label="用途等级" width="80"><template #default="{ row }">{{ row.usageBand ?? '-' }}</template></el-table-column>
+          <el-table-column label="DB更新" width="80"><template #default="{ row }">{{ row.databaseCurrentUpdate !== null ? `.${String(row.databaseCurrentUpdate).padStart(3, '0')}` : '无' }}</template></el-table-column>
+          <el-table-column label="错误" min-width="180"><template #default="{ row }"><span v-if="row.errors?.length" class="error-text">{{ row.errors.join('; ') }}</span><span v-else>—</span></template></el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="basemapPreflightVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="!basemapPreflightResult?.canStart"
+          :loading="basemapImporting"
+          @click="startBasemapImport"
+        >
+          {{ basemapPreflightResult?.skipCellCount === basemapPreflightResult?.expectedCellCount && basemapPreflightResult?.createCellCount === 0 ? '重建底图发布' : '一键导入/更新' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ═══ Basemap Run Detail Drawer ═══ -->
+    <el-drawer v-model="basemapRunVisible" title="底图导入运行详情" size="760px">
+      <template v-if="basemapRunDetail">
+        <div class="basemap-run-summary">
+          <el-progress
+            :percentage="basemapRunDetail.progress"
+            :status="basemapRunDetail.status === 'failed' ? 'exception' : basemapRunDetail.status === 'succeeded' ? 'success' : undefined"
+          />
+          <span>成功 {{ basemapRunDetail.succeededCells }}，失败 {{ basemapRunDetail.failedCells }}，共 {{ basemapRunDetail.totalCells }} 个单元</span>
+        </div>
+        <div v-if="basemapRunDetail.postProcessStatus" class="run-meta">
+          <el-tag :type="basemapRunDetail.postProcessStatus === 'completed' ? 'success' : basemapRunDetail.postProcessStatus === 'failed' ? 'danger' : 'warning'">
+            后处理: {{ basemapRunDetail.postProcessStatus }}
+          </el-tag>
+          <el-tag v-if="basemapRunDetail.layerGroupStatus" :type="basemapRunDetail.layerGroupStatus === 'published' ? 'success' : 'danger'" style="margin-left:8px">
+            Layer Group: {{ basemapRunDetail.layerGroupStatus }}
+          </el-tag>
+          <el-tag v-if="basemapRunDetail.wmts3857Status" :type="basemapRunDetail.wmts3857Status === 'registered' ? 'success' : 'danger'" style="margin-left:8px">
+            WMTS 3857: {{ basemapRunDetail.wmts3857Status }}
+          </el-tag>
+          <el-tag v-if="basemapRunDetail.wmts3413Status" :type="basemapRunDetail.wmts3413Status === 'registered' ? 'success' : 'danger'" style="margin-left:8px">
+            WMTS 3413: {{ basemapRunDetail.wmts3413Status }}
+          </el-tag>
+        </div>
+        <div v-if="basemapRunDetail.warnings?.length" style="margin-top:12px">
+          <el-alert
+            v-for="(w, i) in basemapRunDetail.warnings"
+            :key="i"
+            :title="w"
+            type="warning"
+            :closable="false"
+            style="margin-bottom:4px"
+          />
+        </div>
+        <el-table :data="basemapRunDetail.items || []" stripe style="margin-top:12px">
+          <el-table-column prop="cellName" label="海图单元" min-width="130" />
+          <el-table-column label="更新链" width="120"><template #default="{ row }">.000 - .{{ String(row.updateCount).padStart(3, '0') }}</template></el-table-column>
+          <el-table-column label="当前更新" width="100"><template #default="{ row }">.{{ String(row.currentUpdate).padStart(3, '0') }}</template></el-table-column>
+          <el-table-column label="结果" width="120"><template #default="{ row }">{{ itemStageLabels[row.stage] || row.stage }}</template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="{ row }"><span :class="['status-pill', row.status]">{{ statusLabels[row.status] || row.status }}</span></template></el-table-column>
+          <el-table-column label="失败原因" min-width="220"><template #default="{ row }"><span v-if="row.errorMessage" class="error-text">{{ row.errorMessage }}</span><span v-else>—</span></template></el-table-column>
+        </el-table>
+      </template>
     </el-drawer>
   </div>
 </template>

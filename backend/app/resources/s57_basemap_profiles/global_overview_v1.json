@@ -1,0 +1,27 @@
+{
+  "code": "global_overview_v1",
+  "name": "全球海图概览底图",
+  "description": "当前数据包主要覆盖北极、北半球高纬度及部分全球概览区域，实际覆盖以预检结果为准。",
+  "usage_band": 1,
+  "load_profile": "core_chart",
+  "expected_cells": {
+    "C110408A": 0,
+    "GB1AH000": 0,
+    "GB1DD000": 0,
+    "GB1DE000": 0,
+    "GB1DM000": 0,
+    "GB1DN000": 0,
+    "GB1FS000": 0,
+    "GB1GB000": 0,
+    "GB1GK000": 0,
+    "JP14CCM8": 0,
+    "JP15AT88": 0,
+    "JP15ATBC": 0,
+    "NO1A3000": 3,
+    "US1AK90M": 1,
+    "US1BS01M": 1,
+    "US1BS02M": 1,
+    "US1BS03M": 5,
+    "US1BS04M": 0
+  }
+}

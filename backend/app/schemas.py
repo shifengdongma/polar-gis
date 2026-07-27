@@ -345,6 +345,8 @@ class S57ImportBatchRead(ApiModel):
     processed_cells: int
     succeeded_cells: int
     failed_cells: int
+    purpose: str = "standard"
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

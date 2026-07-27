@@ -362,3 +362,41 @@ docker compose up -d         # 启动服务
 - 前端: 22 tests passed, vue-tsc clean, vite build 成功
 - 无需数据库迁移
 
+---
+
+## 会话 #10 — 一键导入全球海图底图 (2026-07-27)
+
+### 功能概述
+在现有S-57批量导入、GeoServer发布、S-57图层分类和底图管理功能之上，实现一键导入全球海图概览底图。默认选取18个用途等级1(概览)海图Cell共29个文件，通过预检→导入→GeoServer Layer Group→GWC→BaseMap注册的完整流程生成WMTS底图。
+
+### 新增API
+- `GET /api/v1/admin/s57-basemaps/profiles` — 列出可用底图profile
+- `POST /api/v1/admin/s57-basemaps/preflight` — 预检数据包
+- `POST /api/v1/admin/s57-basemaps/import` — 启动一键导入
+- `GET /api/v1/admin/s57-basemaps/runs/{batchId}` — 运行状态
+
+### 数据库变更
+- `s57_import_batches` 新增 `purpose VARCHAR(32)` 和 `metadata_json JSONB`
+- Alembic 迁移: `0004_add_purpose_metadata_to_s57_batches.py`
+
+### Worker 变化
+- `_finalize_batch()` 增加 basemap 后处理钩子
+- 后处理: 收集图层 → Layer Group → GWC → BaseMap 幂等登记
+- 后处理失败不回滚已导入数据，旧底图保持可用
+
+### Layer Group
+- 名称: `polar_global_enc_overview`
+- 仅包含 core_chart + style_mapped 的图层
+- 稳定排序: SEAARE → DEPARE → ICEARE → LNDARE → COALNE → ...
+
+### 前端交互
+- BatchImportView 增加底图功能区（预检数据包/一键导入/查看最近任务）
+- 预检结果对话框显示18 Cell的创建/更新/跳过/阻塞状态
+- 高级选项: 用途等级2区域增强/默认底图/EPSG:3413 WMTS/预热缓存
+- 运行详情抽屉显示后处理状态和警告
+
+### 验证结果
+- 后端: 87 tests passed (61 现有 + 26 新增)
+- 数据库迁移已创建，兼容旧数据
+- Profile 配置验证: 18 Cell, 29 文件与文件清单一致
+

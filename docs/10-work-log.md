@@ -424,3 +424,35 @@
 3. 旧数据无 metadata.s57 时动态分类回退，不强制迁移
 4. 不可变 Set/Map 替换确保 Vue 3 响应式正确触发
 5. 项目无 Playwright 基础，端到端验收留待手工阶段
+
+---
+
+## 会话 #10 — 一键导入全球海图底图
+
+**日期**: 2026-07-27
+**目标**: 在现有S-57批量导入功能之上，增加一键导入全球海图概览底图
+
+### 新增文件
+- `backend/app/resources/s57_basemap_profiles/global_overview_v1.json` — 18 Cell profile
+- `backend/app/services/s57_basemap.py` — 预检 + 后处理服务 (~320行)
+- `backend/app/api/s57_basemaps.py` — 管理员 API (profiles/preflight/import/runs)
+- `backend/migrations/versions/0004_add_purpose_metadata_to_s57_batches.py` — 迁移
+- `backend/tests/test_s57_basemap.py` — 19 测试
+- `backend/tests/test_s57_basemap_api.py` — 7 测试
+- `北极海图_文件清单.txt` — 1188 文件清单
+
+### 修改文件
+- `backend/app/models.py` — S57ImportBatch 新增 purpose + metadata_json
+- `backend/app/schemas.py` — 扩展 schema
+- `backend/app/core/config.py` — 新增 basemap 配置
+- `backend/app/main.py` — 注册路由
+- `backend/app/services/geoserver.py` — Layer Group / GWC 方法
+- `backend/app/services/s57_batch.py` — basemap 后处理钩子
+- `frontend/src/views/admin/BatchImportView.vue` — 底图功能区
+- `frontend/src/types/index.ts` — 新类型
+- `deploy/.env.example` — 配置项
+
+### 测试结果
+- 全部 87 个测试通过 (61 现有 + 26 新增)
+- 预检服务 19 测试覆盖 profile 加载、DSID 提取、更新链校验、文件计数
+- API 7 测试覆盖访问控制和空源预检

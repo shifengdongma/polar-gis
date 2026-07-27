@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     batch_parallel_workers: int = 8
     query_result_limit: int = 1000
     demo_data_enabled: bool = True
+    s57_basemap_source_root: str = "/data/s57-basemaps"
+    s57_basemap_profile: str = "global_overview_v1"
+    s57_basemap_allow_local_source: bool = True
     initial_admin_username: str | None = None
     initial_admin_password: str | None = Field(default=None, repr=False)
 
