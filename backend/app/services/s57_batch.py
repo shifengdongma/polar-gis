@@ -546,6 +546,7 @@ class S57BatchProcessor:
                 return
             updates = [number for number in sorted(chain) if number > current_update]
             if not updates:
+                item.dataset_id = dataset.id
                 item.current_update = current_update
                 item.status = JobStatus.SUCCEEDED.value
                 item.stage = "up_to_date"
