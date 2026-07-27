@@ -226,17 +226,6 @@ const actionLabels: Record<string, string> = {
   create: '新建', append_updates: '追加更新', skip_current: '已是最新', blocked: '阻塞',
 }
 
-async function viewBasemapRun(batchId: string) {
-  try {
-    basemapRunDetail.value = (await api.get<BasemapRunDetail>(
-      `/admin/s57-basemaps/runs/${batchId}`,
-    )).data
-    basemapRunVisible.value = true
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '加载运行详情失败'))
-  }
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
