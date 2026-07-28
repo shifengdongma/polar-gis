@@ -400,3 +400,68 @@ docker compose up -d         # 启动服务
 - 数据库迁移已创建，兼容旧数据
 - Profile 配置验证: 18 Cell, 29 文件与文件清单一致
 
+---
+
+## 会话 #11 — 海图批量加载性能优化（2026-07-28）
+
+### 优化目标
+解决用户批量选择和加载 S-57 海图数据集后浏览器卡顿、交互响应慢、瓦片长时间空白、部分瓦片加载失败或缓慢的问题。
+
+### 核心成果
+
+#### 根因分析（10 项瓶颈）
+1. 无视口裁剪 → 40+ 图层同时请求瓦片，超过浏览器 6 连接/源限制
+2. 无比例尺过滤 → 高密度图层在所有缩放级别渲染
+3. 无并发控制 → 队头阻塞和超时级联
+4. 业务图层未使用 GWC → 每次直接渲染而非缓存命中
+5. GeoServer 硬编码全球 bbox → 北极数据扫描范围过大
+6. SLD 无比例尺规则 → 所有样式在所有缩放级别渲染
+7. 无空间索引 + ANALYZE → 导入后查询计划劣化
+8. Nginx 无优化 → 缺少 HTTP/2、gzip、keepalive
+9. GeoServer 无 JVM 调优 → 内存和 GC 未配置
+10. 投影切换全量重建 → 长时间地图全白
+
+#### 新增文件
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `frontend/src/utils/mapRenderScheduler.ts` | ~350 | 纯函数渲染调度器 |
+| `frontend/src/utils/mapRenderScheduler.test.ts` | ~470 | 32 个单元测试 |
+| `docs/plans/polar-gis功能优化提示词.md` | 1068 | 优化需求规格 (28 节) |
+
+#### 前端优化
+- **状态分离**: selectedLayerIds / attachedLayerIds / activeLayerIds / warmingLayerIds / suspendedLayerIds / manuallyForcedLayerIds / failedLayerIds 七状态模型
+- **智能调度**: `buildRenderPlan()` 视口裁剪 + 比例尺过滤 + warming 预算 (≤3) + active 预算 (≤20) + LRU 驱逐
+- **三种模式**: standard (完全向后兼容) / smart (智能调度) / overview (仅概览 WMTS)
+- **性能统计**: PerLayerStatsManager 追踪瓦片加载耗时/失败数/P95
+- **UI 增强**: 图层状态文字、模式切换、活动/休眠/等待统计、性能详情面板
+- **DEFAULT_SCALE_HINTS**: 集中维护 30+ S-57 对象类的比例尺规则，与后端 `_SCALE_RULES` 同步
+- **Nginx**: perf 日志格式、gzip、upstream keepalive、缓存头穿透
+
+#### 后端优化
+- **GWC 传输提示**: resolve API 返回 `render_transport` (gwc_wms/wms)、`tile_service_url`、`cacheable`
+- **比例尺提示**: `_SCALE_RULES` 字典 (SOUNDG minScale=25000, nav-aids minScale=50000 等)
+- **S57LayerRule 扩展**: 新增 min_scale_denominator / max_scale_denominator / low_zoom_visible / render_cost
+- **向后兼容**: 所有新增 API 字段为可选字段
+
+#### 部署修复
+- Dockerfile: 阿里云 PyPI/npm 镜像 + pip timeout 120s
+- compose.yml: S-57 底图卷挂载从绝对路径 `/data/s57-basemaps` 改为相对路径 `../data/s57-basemaps`
+- Nginx: HTTP/2 支持
+
+#### 测试结果
+- **后端**: 87 tests passed (零新增失败)
+- **前端**: 59 tests passed (27 已有 + 32 新增)
+- **TypeScript**: vue-tsc 零错误
+- **Python**: pytest 零错误
+
+#### 关键设计决策
+1. 纯函数调度器：buildRenderPlan 无副作用，充分可测试
+2. 比例尺规则单源：DEFAULT_SCALE_HINTS (前端) 与 _SCALE_RULES (后端) 保持一致
+3. standard 模式 = 完全向后兼容，一键回退到优化前行为
+4. LRU 保护清单：底图/WMTS/AIS/气象/测量/选择高亮/编辑图层/属性查询 永不驱逐
+5. 保守 fallback：null extent = 视口内，未知 objectClass = 无比例尺限制
+
+#### 待完成（阶段五-六）
+- 阶段五: SLD 比例尺规则 (s57_styles.py)、PostGIS GiST 索引 + ANALYZE、EPSG:3413 GWC GridSet、GeoServer JVM 调优
+- 阶段六: 性能测试场景 A-D 验收、回归测试、文档更新
+- 可选: 低缩放简化视图 (ST_SimplifyPreserveTopology)

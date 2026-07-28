@@ -372,6 +372,57 @@ Vue 3 (Composition API + <script setup>)
 
 ---
 
+## 5.5 智能渲染调度器 (会话 #11 新增)
+
+在 `frontend/src/utils/mapRenderScheduler.ts` 中实现了纯函数渲染调度器，解决批量加载海图后浏览器性能问题。
+
+### 状态模型
+```
+selectedLayerIds → 用户选择 (开关控制)
+    ↓
+attachedLayerIds → OpenLayers TileLayer 已创建
+    ↓
+activeLayerIds → 可见并允许请求瓦片
+warmingLayerIds → 等待首块瓦片 (≤3 并发)
+suspendedLayerIds → 视口外/比例尺外/预算不足 暂时休眠
+manuallyForcedLayerIds → 用户强制显示 (免疫智能休眠)
+failedLayerIds → 加载失败
+```
+
+### RenderPlan 算法
+`buildRenderPlan(input) → RenderPlan` 为纯函数，接收当前地图状态快照，返回五类操作：
+- **attach[]**: 创建 OpenLayers TileLayer (进入 warming)
+- **activate[]**: setVisible(true) 恢复休眠图层
+- **suspend[]**: setVisible(false) 休眠 (原因: 视口外/比例尺外/预算)
+- **detach[]**: layer.dispose() LRU 卸载
+- **remainActive[]**: 无需变更
+
+### 三种渲染模式
+| 模式 | 行为 | 用途 |
+|------|------|------|
+| `standard` | 完全保持原有行为，所有选中图层创建独立 WMS | 向后兼容、强制显示全部 |
+| `smart` | 视口裁剪 + 比例尺过滤 + warming 预算 + LRU | 批量加载默认推荐 |
+| `overview` | 仅显示全球概览 WMTS，不创建业务 WMS | 大范围浏览、快速定位 |
+
+### 比例尺规则单源
+`DEFAULT_SCALE_HINTS` (前端) 与 `_SCALE_RULES` (后端 s57_layer_catalog.py) 保持同步：
+- SOUNDG: minScale=25,000 (仅大比例尺)
+- LIGHTS/BOY*/BCN*/TOPMAR: minScale=50,000
+- WRECKS/OBSTRN/UWTROC: minScale=100,000
+- DEPCNT: minScale=500,000
+- COALNE/LNDARE/DEPARE/SEAARE: 始终可见
+
+### 可配置常量
+```
+SMART_MAX_ACTIVE_WMS_LAYERS = 20  (活动图层预算)
+SMART_MAX_WARMING_LAYERS = 3      (同时 warming 上限)
+SMART_MAX_ATTACHED_WMS_LAYERS = 40 (内存中对象上限)
+SMART_SUSPEND_EVICT_DELAY_MS = 30000 (LRU 驱逐延迟)
+SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
+```
+
+---
+
 ## 6. 文件清单
 
 ### 后端 (52 files)
@@ -380,9 +431,9 @@ Vue 3 (Composition API + <script setup>)
 - 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
-### 前端 (29 source files)
+### 前端 (31 source files)
 - Vue 组件: `src/views/` (11), `src/components/` (1), `src/layouts/` (1) = 13
-- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (3), `src/router/` (1) = 9
+- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (5), `src/router/` (1) = 11
 - 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
 - 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
 
@@ -404,3 +455,4 @@ Vue 3 (Composition API + <script setup>)
 | `docs/10-work-log.md` | 工作日志 |
 | `docs/11-work-summary.md` | 工作总结 |
 | `docs/12-user-manual.md` | **用户操作使用手册** ⭐ |
+| `docs/plans/` | 优化方案文档 (global enc 导入 / 批量加载性能优化) |

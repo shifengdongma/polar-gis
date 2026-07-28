@@ -456,3 +456,89 @@
 - 全部 87 个测试通过 (61 现有 + 26 新增)
 - 预检服务 19 测试覆盖 profile 加载、DSID 提取、更新链校验、文件计数
 - API 7 测试覆盖访问控制和空源预检
+
+---
+
+## 会话 #11 — 海图批量加载性能优化（阶段一至四）
+
+**日期**: 2026-07-28
+**目标**: 解决批量加载S-57海图后浏览器卡顿、瓦片空白、交互响应慢等问题
+
+### 根因分析
+
+1. **无视口裁剪** — 所有已加载图层的 TileWMS 源在每次平移/缩放时同时请求瓦片，40+ 图层产生 320-640 并发请求，超过浏览器 6 连接/源限制
+2. **无比例尺过滤** — 高密度图层 (SOUNDG/LIGHTS/BOY*/BCN*) 在所有缩放级别请求瓦片，产生大量几乎透明的瓦片
+3. **无并发控制** — 所有图层同时发起瓦片请求，导致队头阻塞和超时级联
+4. **业务图层未使用 GWC** — 直接访问 GeoServer WMS，每次平移/缩放重新渲染
+5. **GeoServer 硬编码全球范围** — `publish_feature_type()` bbox 为 (-180,-90,180,90)，北极数据扫描范围远大于实际
+6. **SLD 无比例尺规则** — 10 个样式预设无 MinScaleDenominator/MaxScaleDenominator
+7. **无空间索引** — `importer.py` 未创建 GIST 索引和 ANALYZE
+8. **Nginx 无优化** — 无 HTTP/2、gzip、upstream keepalive、缓存头
+9. **GeoServer 无 JVM 调优** — compose.yml 无 JAVA_OPTS
+10. **投影切换全量重建** — `switchProjection()` 先全部销毁再全部重建
+
+### 第一阶段 — 性能诊断（不改渲染行为）
+
+#### 新增文件
+- `frontend/src/utils/mapRenderScheduler.ts` — 纯函数渲染调度器 (~350行)
+- `frontend/src/utils/mapRenderScheduler.test.ts` — 32 个单元测试
+
+#### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/types/index.ts` | 新增 MapTilePerformanceStats、ChartRenderMode 类型；BulkResolvedLayer 扩展 8 个可选 GWC/scale 字段 |
+| `frontend/src/utils/mapLayerBatch.ts` | 新增 SMART_* 配置常量 (10个)；新增 PerLayerStatsManager 类 |
+| `frontend/src/views/MapWorkspaceView.vue` | 接入瓦片加载耗时统计 (tileloadstart/end/error)；map-status 增加性能展示+可折叠调试面板 |
+| `deploy/nginx/default.conf` | 增加 perf 日志格式 ($request_time/$upstream_response_time)；gzip；upstream keepalive；缓存头穿透 |
+| `frontend/src/styles.css` | 性能统计样式、图层状态文字样式、batch-mode-row |
+
+### 第二阶段 — 视口裁剪 + 比例尺 + RenderPlan 纯函数
+
+- 实现 `buildRenderPlan()` 核心调度算法，输出 activate/attach/suspend/detach/warming 五类操作
+- `isLayerInViewport()`: extent→当前投影转换 + 20% buffer + intersects 判断；null extent 保守放行
+- `isLayerInScaleRange()`: 显式 zoom/minScaleDenom → 回退 DEFAULT_SCALE_HINTS (30+ S-57 对象类)
+- `sortRenderCandidates()`: 手动强制优先 → displayPriority ASC → objectClass → id
+- DEFAULT_SCALE_HINTS 集中维护：SOUNDG minScale=25000，导航标志 minScale=50000，危险物 minScale=100000 等
+- resolutionToScaleDenom/scaleDenomToResolution 转换函数
+- 32 个单元测试覆盖：视口裁剪/比例尺过滤/warming 预算/活动预算/LRU/模式语义/边界情况
+
+### 第三阶段 — 状态分离 + reconcileRenderPlan + 智能模式调度
+
+- 单 `loadedLayerIds` 拆分为 7 个状态集：selectedLayerIds / attachedLayerIds / activeLayerIds / warmingLayerIds / suspendedLayerIds / manuallyForcedLayerIds / failedLayerIds
+- `toggleLayer()` 控制 selectedLayerIds，scheduler 决定何时 attach/activate
+- `attachWmsLayer`/`detachWmsLayer` 同步更新所有状态集
+- `reconcileRenderPlan()`: moveend 150ms 防抖调用 buildRenderPlan → 执行 plan
+- `runLruEviction()`: 30s 后清理非选中/非强制休眠图层（保护底图/WMTS/AIS/气象/测量/属性表）
+- 批量工具栏增加模式切换、活动/休眠/等待统计、清理休眠按钮
+- 图层行增加状态文字（已显示/加载中/视口外休眠/等待加载/加载失败）
+- `switchProjection()` 使用 renderGeneration + reconcileRenderPlan
+
+### 第四阶段 — 后端 GWC 传输提示 + 比例尺提示
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/schemas.py` | BulkResolvedLayer 新增 render_transport/tile_service_url/grid_set/cacheable/min_scale_denominator/max_scale_denominator/render_cost |
+| `backend/app/services/s57_layer_catalog.py` | S57LayerRule 新增 4 个 scale 字段；新增 `_SCALE_RULES` 字典 (30+ 对象类)；classify_s57_layer() 应用 scale hints |
+| `backend/app/api/projects.py` | `_build_resolved_layer()` 计算 GWC cacheable → render_transport=gwc_wms/wms；返回 tile_service_url + scale hints |
+
+### 部署修复
+
+- `backend/Dockerfile` & `frontend/Dockerfile`: 配置阿里云 PyPI/npm 镜像，pip timeout 120s
+- `deploy/compose.yml`: S-57 底图卷挂载从绝对路径 `/data/s57-basemaps` 改为相对路径 `../data/s57-basemaps`
+- `deploy/nginx/default.conf`: HTTP/2 支持完成
+
+### 测试结果
+
+- 后端 87 个测试全部通过
+- 前端 59 个测试全部通过 (27 已有 + 32 新增)
+- TypeScript vue-tsc 零错误
+- Python pytest 零错误
+
+### 关键决策
+
+1. 状态分离：selected ≠ attached ≠ active ≠ warming ≠ suspended，各司其职
+2. 纯函数调度：buildRenderPlan 无副作用，仅依赖 extent/proj 工具
+3. 比例尺规则单源：DEFAULT_SCALE_HINTS (前端) 与 _SCALE_RULES (后端) 保持同步
+4. standard 模式 = 完全向后兼容，一键回退
+5. LRU 保护清单：底图/WMTS/AIS/气象/测量/选择高亮/编辑图层/属性查询图层 永不驱逐
+6. 新增 API 字段全部可选，旧客户端不受影响
