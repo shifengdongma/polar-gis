@@ -13,6 +13,11 @@ class S57LayerRule:
     recommended: bool
     renderable: bool
     default_visible: bool
+    # Phase 4: scale-dependent rendering hints
+    min_scale_denominator: float | None = None
+    max_scale_denominator: float | None = None
+    low_zoom_visible: bool = True
+    render_cost: int = 1
 
     @property
     def sort_key(self) -> tuple[int, str]:
@@ -191,6 +196,47 @@ _NAVIGATION_AIDS: Final = frozenset(
     }
 )
 _ROUTING: Final = frozenset({"TSSBND", "TSSLPT", "TSEZNE", "TSSRON"})
+
+# Phase 4: Per-object-class scale-dependent rendering hints.
+# These are the single source of truth shared between frontend scheduler and backend SLD.
+_SCALE_RULES: Final[dict[str, dict[str, float | None | bool | int]]] = {
+    # Always-visible reference layers
+    "COALNE": {"min_scale_denom": None, "low_zoom_visible": True, "render_cost": 1},
+    "LNDARE": {"min_scale_denom": None, "low_zoom_visible": True, "render_cost": 1},
+    "DEPARE": {"min_scale_denom": None, "low_zoom_visible": True, "render_cost": 1},
+    "SEAARE": {"min_scale_denom": None, "low_zoom_visible": True, "render_cost": 1},
+    "ICEARE": {"min_scale_denom": None, "low_zoom_visible": True, "render_cost": 1},
+    # Contours — hide fine lines at small scales
+    "DEPCNT": {"min_scale_denom": 500_000.0, "low_zoom_visible": False, "render_cost": 2},
+    # High-density point layers — only at large scales
+    "SOUNDG": {"min_scale_denom": 25_000.0, "low_zoom_visible": False, "render_cost": 4},
+    # Navigation aids — medium+ scales
+    "LIGHTS": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "FOGSIG": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYCAR": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYINB": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYISD": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYLAT": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYSAW": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BOYSPP": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BCNCAR": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BCNISD": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BCNLAT": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BCNSAW": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "BCNSPP": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    "TOPMAR": {"min_scale_denom": 50_000.0, "low_zoom_visible": False, "render_cost": 3},
+    # Danger objects — medium+ scales
+    "WRECKS": {"min_scale_denom": 100_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "OBSTRN": {"min_scale_denom": 100_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "UWTROC": {"min_scale_denom": 100_000.0, "low_zoom_visible": False, "render_cost": 2},
+    # Mid-zoom layers
+    "UNSARE": {"min_scale_denom": 200_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "CTNARE": {"min_scale_denom": 200_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "RESARE": {"min_scale_denom": 200_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "HRBARE": {"min_scale_denom": 200_000.0, "low_zoom_visible": False, "render_cost": 2},
+    "SLCONS": {"min_scale_denom": 200_000.0, "low_zoom_visible": False, "render_cost": 2},
+}
+
 _INVALID_GEOMETRY_TYPES: Final = frozenset(
     {"", "unknown", "none", "null", "n/a", "no geometry", "geometryless", "无", "无几何"}
 )
@@ -239,6 +285,12 @@ def classify_s57_layer(
     recommended = load_profile in {"core_chart", "navigation_recommended"} and bool(style_mapped)
     object_name_zh = _OBJECT_NAMES.get(normalized_code, normalized_code or "未命名对象")
 
+    # Phase 4: apply scale-dependent rendering hints
+    scale_hints = _SCALE_RULES.get(normalized_code, {})
+    min_scale = scale_hints.get("min_scale_denom", None)
+    low_zoom = scale_hints.get("low_zoom_visible", True)
+    rcost = scale_hints.get("render_cost", 1)
+
     return S57LayerRule(
         code=normalized_code,
         object_name_zh=object_name_zh,
@@ -248,4 +300,8 @@ def classify_s57_layer(
         recommended=recommended,
         renderable=renderable,
         default_visible=False,
+        min_scale_denominator=min_scale,
+        max_scale_denominator=None,
+        low_zoom_visible=low_zoom,
+        render_cost=rcost,
     )

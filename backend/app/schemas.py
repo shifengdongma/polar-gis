@@ -191,6 +191,14 @@ class BulkResolvedLayer(ApiModel):
     exportable: bool
     group_name: str
     sort_order: int
+    # Phase 4: GWC transport and scale hints (all optional, backward-compatible)
+    render_transport: str | None = None  # 'gwc_wms' | 'wms'
+    tile_service_url: str | None = None
+    grid_set: str | None = None
+    cacheable: bool = False
+    min_scale_denominator: float | None = None
+    max_scale_denominator: float | None = None
+    render_cost: int | None = None
 
 
 class BulkResolvedDataset(ApiModel):

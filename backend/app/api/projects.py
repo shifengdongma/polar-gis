@@ -298,6 +298,16 @@ def _build_resolved_layer(
     elif not published:
         skip_reason = "unpublished"
 
+    # Phase 4: determine GWC transport and cacheability
+    # Core/navigation layers published to GeoServer are likely cacheable via GWC
+    cacheable = loadable and rule_obj.load_profile in {"core_chart", "navigation_recommended"}
+    render_transport = "gwc_wms" if cacheable else "wms"
+    tile_service_url = (
+        f"{settings.geoserver_public_url.rstrip('/')}/gwc/service/wms"
+        if cacheable
+        else service_url
+    )
+
     return BulkResolvedLayer(
         id=layer.id,
         code=layer.code,
@@ -330,6 +340,14 @@ def _build_resolved_layer(
         exportable=bool(layer.exportable),
         group_name=link.group_name,
         sort_order=link.sort_order,
+        # Phase 4: GWC transport and scale hints
+        render_transport=render_transport,
+        tile_service_url=tile_service_url,
+        grid_set=None,
+        cacheable=cacheable,
+        min_scale_denominator=rule_obj.min_scale_denominator,
+        max_scale_denominator=rule_obj.max_scale_denominator,
+        render_cost=rule_obj.render_cost,
     )
 
 
