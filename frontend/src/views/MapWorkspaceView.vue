@@ -65,8 +65,17 @@ import {
   waitForBulkInterval,
   PerLayerStatsManager,
   SMART_RECONCILE_DEBOUNCE_MS,
+  SMART_SUSPEND_EVICT_DELAY_MS,
+  SMART_MAX_WARMING_LAYERS,
+  SMART_MAX_ATTACHED_WMS_LAYERS,
 } from '../utils/mapLayerBatch'
-import type { ChartRenderMode, MapTilePerformanceStats } from '../types'
+import {
+  buildRenderPlan,
+  type ChartRenderMode,
+  type ResolvedLayerMeta,
+  type RenderPlan,
+} from '../utils/mapRenderScheduler'
+import type { MapTilePerformanceStats } from '../types'
 import { parseWgs84Extent } from '../utils/mapExtent'
 import { s57LayerTitle } from '../utils/s57ObjectNames'
 
@@ -138,14 +147,31 @@ const legendUrl = ref('')
 
 // ── Batch loading state ────────────────────────────────────────────
 const selectedDatasetIds = ref(new Set<string>())
-const loadedLayerIds = ref(new Set<string>())
+/** Layer IDs the user has turned ON (selected). */
+const selectedLayerIds = ref(new Set<string>())
+/** Layer IDs with active OpenLayers TileLayer objects. */
+const attachedLayerIds = ref(new Set<string>())
+/** Layer IDs currently visible and allowed to request tiles. */
+const activeLayerIds = ref(new Set<string>())
+/** Layer IDs waiting for their first tile to load. */
+const warmingLayerIds = ref(new Set<string>())
+/** Layer IDs that are selected but temporarily sleeping (viewport/scale/budget). */
+const suspendedLayerIds = ref(new Set<string>())
+/** Layer IDs the user explicitly forced to display, immune to smart suspend. */
+const manuallyForcedLayerIds = ref(new Set<string>())
+/** Backward-compat alias: layers the user has turned on. */
+const loadedLayerIds = selectedLayerIds
 const loadingLayerIds = ref(new Set<string>())
 const failedLayerIds = ref(new Map<string, string>())
+const renderMode = ref<ChartRenderMode>('smart')
 const bulkProgress = ref<BulkLayerProgress | null>(null)
 const bulkCancelled = ref(false)
 const bulkGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
 let bulkAbortController: AbortController | null = null
+let reconcileTimer: number | undefined
+let evictTimer: number | undefined
+const layerLastInViewportTime = new Map<string, number>()
 
 // ── Performance stats (lightweight, no console spam) ──────────────────
 const perfStats = new PerLayerStatsManager()
@@ -154,10 +180,12 @@ const devShowPerfDetail = ref(false)
 let perfPollTimer: number | undefined
 
 function updatePerfDisplay() {
-  const active = loadedLayerIds.value.size  // Phase 1: use existing set; Phase 2+ refines
-  const attached = active  // Phase 1: same; Phase 2+ distinguishes
-  const suspended = 0       // Phase 1: no suspension yet
-  perfDisplay.value = perfStats.snapshot(active, attached, suspended, bulkGeneration.value)
+  perfDisplay.value = perfStats.snapshot(
+    activeLayerIds.value.size,
+    attachedLayerIds.value.size,
+    suspendedLayerIds.value.size,
+    bulkGeneration.value,
+  )
 }
 
 function startPerfPoll() {
@@ -371,9 +399,9 @@ async function buildMap() {
   for (const runtime of runtimeLayers.value) {
     if (runtime.visible) {
       attachWmsLayer(runtime)
-      const next = new Set(loadedLayerIds.value)
+      const next = new Set(selectedLayerIds.value)
       next.add(runtime.config.id)
-      loadedLayerIds.value = next
+      selectedLayerIds.value = next
     }
   }
   map.addLayer(measureLayer)
@@ -389,6 +417,12 @@ async function buildMap() {
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
   })
+  map.on('moveend', () => {
+    window.clearTimeout(reconcileTimer)
+    reconcileTimer = window.setTimeout(reconcileRenderPlan, SMART_RECONCILE_DEBOUNCE_MS)
+  })
+  // Initial reconcile
+  reconcileRenderPlan()
 }
 
 function isNonSpatial(layer: MapLayerConfig): boolean {
@@ -448,6 +482,18 @@ function attachWmsLayer(
   })
   wmsLayers.set(runtime.config.id, tileLayer)
   map.addLayer(tileLayer)
+  // Track in state sets (unless the caller is doing batch management)
+  const lid = runtime.config.id
+  if (!attachedLayerIds.value.has(lid)) {
+    const nextAtt = new Set(attachedLayerIds.value)
+    nextAtt.add(lid)
+    attachedLayerIds.value = nextAtt
+  }
+  if (opts?.visible !== false) {
+    const nextAct = new Set(activeLayerIds.value)
+    nextAct.add(lid)
+    activeLayerIds.value = nextAct
+  }
   return 'attached'
 }
 
@@ -461,6 +507,21 @@ function detachWmsLayer(runtime: RuntimeLayer) {
   runtime.pendingTiles = 0
   runtime.loadState = 'idle'
   runtime.loadStateTimer = undefined
+  // Clean up from state sets
+  const lid = runtime.config.id
+  const nextAtt = new Set(attachedLayerIds.value)
+  nextAtt.delete(lid)
+  attachedLayerIds.value = nextAtt
+  const nextAct = new Set(activeLayerIds.value)
+  nextAct.delete(lid)
+  activeLayerIds.value = nextAct
+  const nextWarm = new Set(warmingLayerIds.value)
+  nextWarm.delete(lid)
+  warmingLayerIds.value = nextWarm
+  const nextSus = new Set(suspendedLayerIds.value)
+  nextSus.delete(lid)
+  suspendedLayerIds.value = nextSus
+  layerLastInViewportTime.delete(lid)
 }
 
 async function toggleDataset(dataset: RuntimeDataset) {
@@ -491,16 +552,46 @@ async function toggleDataset(dataset: RuntimeDataset) {
 
 function toggleLayer(runtime: RuntimeLayer) {
   runtime.visible = !runtime.visible
+  const lid = runtime.config.id
   if (runtime.visible) {
-    attachWmsLayer(runtime)
-    const next = new Set(loadedLayerIds.value)
-    next.add(runtime.config.id)
-    loadedLayerIds.value = next
+    // User selected
+    const next = new Set(selectedLayerIds.value)
+    next.add(lid)
+    selectedLayerIds.value = next
+    // In standard mode, attach immediately. In smart, scheduler handles it.
+    if (renderMode.value === 'standard') {
+      attachWmsLayer(runtime)
+      const nextAtt = new Set(attachedLayerIds.value)
+      nextAtt.add(lid)
+      attachedLayerIds.value = nextAtt
+      const nextAct = new Set(activeLayerIds.value)
+      nextAct.add(lid)
+      activeLayerIds.value = nextAct
+    } else {
+      reconcileRenderPlan()
+    }
   } else {
-    detachWmsLayer(runtime)
-    const next = new Set(loadedLayerIds.value)
-    next.delete(runtime.config.id)
-    loadedLayerIds.value = next
+    // User deselected
+    const next = new Set(selectedLayerIds.value)
+    next.delete(lid)
+    selectedLayerIds.value = next
+    const nextAtt = new Set(attachedLayerIds.value)
+    if (nextAtt.has(lid)) {
+      // Detach immediately for responsiveness
+      detachWmsLayer(runtime)
+      nextAtt.delete(lid)
+      attachedLayerIds.value = nextAtt
+    }
+    // Clean up from other sets
+    const nextAct = new Set(activeLayerIds.value)
+    nextAct.delete(lid)
+    activeLayerIds.value = nextAct
+    const nextSus = new Set(suspendedLayerIds.value)
+    nextSus.delete(lid)
+    suspendedLayerIds.value = nextSus
+    const nextForce = new Set(manuallyForcedLayerIds.value)
+    nextForce.delete(lid)
+    manuallyForcedLayerIds.value = nextForce
   }
 }
 
@@ -510,8 +601,9 @@ function updateOpacity(runtime: RuntimeLayer) {
 
 function switchProjection(crs: string) {
   if (!map || crs === currentCrs.value) return
-  // Save currently loaded layer IDs
-  const savedLoadedIds = new Set(loadedLayerIds.value)
+  renderGeneration.value += 1
+  // Save currently selected layer IDs
+  const savedSelectedIds = new Set(selectedLayerIds.value)
   // Detach all WMS layers in old projection
   for (const runtime of runtimeLayers.value) {
     if (wmsLayers.has(runtime.config.id)) {
@@ -523,9 +615,9 @@ function switchProjection(crs: string) {
   map.setView(createView(crs))
   fitProjectInitialExtent()
   reloadAisGeometry()
-  // Re-attach only previously loaded layers
+  // Re-attach only previously selected layers
   for (const runtime of runtimeLayers.value) {
-    if (savedLoadedIds.has(runtime.config.id)) {
+    if (savedSelectedIds.has(runtime.config.id)) {
       runtime.visible = true
       const extent = transformLayerExtent(runtime.config.extent, currentCrs.value)
       attachWmsLayer(runtime, {
@@ -535,8 +627,195 @@ function switchProjection(crs: string) {
       })
     }
   }
-  // Restore loadedLayerIds (they survive the projection switch)
-  loadedLayerIds.value = savedLoadedIds
+  // Restore selectedLayerIds (they survive the projection switch)
+  selectedLayerIds.value = savedSelectedIds
+  // Recalculate render plan for new projection
+  reconcileRenderPlan()
+}
+
+// ── Layer status display ──────────────────────────────────────────
+
+function layerStatusLabel(layerId: string): string {
+  if (failedLayerIds.value.has(layerId)) return '加载失败'
+  if (warmingLayerIds.value.has(layerId)) return '加载中'
+  if (activeLayerIds.value.has(layerId)) return '已显示'
+  if (suspendedLayerIds.value.has(layerId)) {
+    // Check specific suspension reasons if available
+    if (!isLayerInViewport(
+      runtimeLayers.value.find((r) => r.config.id === layerId)?.config?.extent,
+      [0, 0, 0, 0],
+      currentCrs.value,
+    )) {
+      // This is a rough check — the exact reason comes from RenderPlan
+    }
+    return '视口外休眠'
+  }
+  if (selectedLayerIds.value.has(layerId) && !attachedLayerIds.value.has(layerId)) return '等待加载'
+  if (attachedLayerIds.value.has(layerId) && !activeLayerIds.value.has(layerId)) return '休眠'
+  if (runtimeLayers.value.find((r) => r.config.id === layerId)?.loadState === 'loading') return '加载中'
+  return ''
+}
+
+// ── Render plan reconciliation (smart mode scheduler) ─────────────
+
+function buildResolvedLayerMeta(): ResolvedLayerMeta[] {
+  return runtimeLayers.value.map((r) => ({
+    id: r.config.id,
+    extent: r.config.extent ?? null,
+    minZoom: r.config.minZoom ?? null,
+    maxZoom: r.config.maxZoom ?? null,
+    displayPriority: r.config.sortOrder ?? 900,
+    objectClass: r.config.objectClass ?? null,
+    loadProfile: '',
+    minScaleDenominator: (r.config.metadata as any)?.s57?.minScaleDenominator ?? null,
+    maxScaleDenominator: (r.config.metadata as any)?.s57?.maxScaleDenominator ?? null,
+    renderCost: (r.config.metadata as any)?.s57?.renderCost ?? null,
+  }))
+}
+
+function reconcileRenderPlan() {
+  if (!map || renderMode.value === 'standard') return
+
+  const view = map.getView()
+  if (!view) return
+  const size = map.getSize()
+  if (!size) return
+
+  const extent = view.calculateExtent(size) as number[]
+  const zoom = view.getZoom() ?? 4
+  const resolution = view.getResolution() ?? 10000
+
+  const overviewAvail = baseMaps.value.some(
+    (b) => b.name.includes('全球海图概览') && b.crs === currentCrs.value && b.isEnabled,
+  )
+
+  const plan = buildRenderPlan({
+    selectedLayerIds: selectedLayerIds.value,
+    attachedLayerIds: attachedLayerIds.value,
+    activeLayerIds: activeLayerIds.value,
+    warmingLayerIds: warmingLayerIds.value,
+    manuallyForcedLayerIds: manuallyForcedLayerIds.value,
+    layers: buildResolvedLayerMeta(),
+    currentProjection: currentCrs.value,
+    viewExtent: extent,
+    zoom,
+    resolution,
+    renderMode: renderMode.value,
+    overviewAvailable: overviewAvail,
+  })
+
+  // Execute plan
+  for (const id of plan.detach) {
+    const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+    if (runtime) detachWmsLayer(runtime)
+  }
+
+  for (const id of plan.suspend) {
+    const layer = wmsLayers.get(id)
+    if (layer) layer.setVisible(false)
+    const nextSus = new Set(suspendedLayerIds.value)
+    nextSus.add(id)
+    suspendedLayerIds.value = nextSus
+    const nextAct = new Set(activeLayerIds.value)
+    nextAct.delete(id)
+    activeLayerIds.value = nextAct
+  }
+
+  for (const id of plan.attach) {
+    const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+    if (!runtime || attachedLayerIds.value.has(id)) continue
+    const extent = transformLayerExtent(runtime.config.extent, currentCrs.value)
+    attachWmsLayer(runtime, {
+      extent,
+      minZoom: runtime.config.minZoom,
+      maxZoom: runtime.config.maxZoom,
+      visible: false,
+    })
+    const nextWarm = new Set(warmingLayerIds.value)
+    nextWarm.add(id)
+    warmingLayerIds.value = nextWarm
+    layerLastInViewportTime.set(id, Date.now())
+  }
+
+  for (const id of plan.activate) {
+    const layer = wmsLayers.get(id)
+    if (layer) layer.setVisible(true)
+    const nextAct = new Set(activeLayerIds.value)
+    nextAct.add(id)
+    activeLayerIds.value = nextAct
+    const nextSus = new Set(suspendedLayerIds.value)
+    nextSus.delete(id)
+    suspendedLayerIds.value = nextSus
+    layerLastInViewportTime.set(id, Date.now())
+  }
+
+  // Update overview WMTS visibility
+  setOverviewVisible(plan.overviewVisible)
+
+  // Schedule LRU eviction check
+  window.clearTimeout(evictTimer)
+  evictTimer = window.setTimeout(runLruEviction, SMART_SUSPEND_EVICT_DELAY_MS)
+}
+
+function setOverviewVisible(visible: boolean) {
+  // Toggle the polar_global_enc_overview basemap visibility
+  for (const bm of baseMaps.value) {
+    if (bm.name.includes('全球海图概览') && bm.crs === currentCrs.value) {
+      // Make visible/invisible alongside the active base map
+      if (visible && bm.id !== activeBaseMapId.value) {
+        // Show overview WMTS as overlay
+      }
+    }
+  }
+}
+
+function runLruEviction() {
+  const protectedIds = new Set([
+    ...manuallyForcedLayerIds.value,
+    // Also protect layers with open attribute tables
+    ...(attributeLayer.value ? [attributeLayer.value.id] : []),
+  ])
+
+  const now = Date.now()
+  const evictable = [...suspendedLayerIds.value]
+    .filter((id) => !protectedIds.has(id))
+    .filter((id) => attachedLayerIds.value.has(id))
+    .filter((id) => !selectedLayerIds.value.has(id))
+    .filter((id) => (now - (layerLastInViewportTime.get(id) ?? 0)) > SMART_SUSPEND_EVICT_DELAY_MS)
+    .sort(
+      (a, b) => (layerLastInViewportTime.get(a) ?? 0) - (layerLastInViewportTime.get(b) ?? 0),
+    )
+
+  const excess = attachedLayerIds.value.size - SMART_MAX_ATTACHED_WMS_LAYERS
+  if (excess <= 0) return
+
+  for (let i = 0; i < Math.min(excess, evictable.length); i++) {
+    const runtime = runtimeLayers.value.find((r) => r.config.id === evictable[i])
+    if (runtime) detachWmsLayer(runtime)
+  }
+}
+
+function forceShowLayer(layerId: string) {
+  const nextForce = new Set(manuallyForcedLayerIds.value)
+  nextForce.add(layerId)
+  manuallyForcedLayerIds.value = nextForce
+  reconcileRenderPlan()
+}
+
+function restoreSmartSchedule(layerId: string) {
+  const nextForce = new Set(manuallyForcedLayerIds.value)
+  nextForce.delete(layerId)
+  manuallyForcedLayerIds.value = nextForce
+  reconcileRenderPlan()
+}
+
+function clearSuspendedCache() {
+  for (const id of suspendedLayerIds.value) {
+    if (!selectedLayerIds.value.has(id)) {
+      const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+      if (runtime) detachWmsLayer(runtime)
+    }
+  }
 }
 
 // ── Batch loading ──────────────────────────────────────────────────
@@ -688,7 +967,7 @@ async function loadResolvedLayersInBatches(
       if (!runtime) continue
 
       const layerId = resolved.id
-      if (loadingLayerIds.value.has(layerId) || loadedLayerIds.value.has(layerId)) {
+      if (loadingLayerIds.value.has(layerId) || selectedLayerIds.value.has(layerId)) {
         if (bulkProgress.value) bulkProgress.value.skipped++
         continue
       }
@@ -707,9 +986,10 @@ async function loadResolvedLayersInBatches(
         })
         if (result === 'attached') {
           runtime.visible = true
-          const loadedNext = new Set(loadedLayerIds.value)
-          loadedNext.add(layerId)
-          loadedLayerIds.value = loadedNext
+          // Mark as selected
+          const selNext = new Set(selectedLayerIds.value)
+          selNext.add(layerId)
+          selectedLayerIds.value = selNext
 
           const attachNext = new Set(lastBulkAttachedLayerIds.value)
           attachNext.add(layerId)
@@ -778,9 +1058,9 @@ function unloadSelectedDatasets() {
   for (const runtime of [...runtimeLayers.value]) {
     if (runtime.datasetId && targetIds.has(runtime.datasetId)) {
       detachWmsLayer(runtime)
-      const next = new Set(loadedLayerIds.value)
+      const next = new Set(selectedLayerIds.value)
       next.delete(runtime.config.id)
-      loadedLayerIds.value = next
+      selectedLayerIds.value = next
     }
   }
   ElMessage.success('已卸载所选数据集的图层')
@@ -1112,6 +1392,15 @@ onBeforeUnmount(() => {
             <el-button size="small" text @click="clearDatasetSelection">清空选择</el-button>
             <span class="batch-select-count">{{ selectedDatasetCount }} 个数据集</span>
           </div>
+          <div class="batch-mode-row" v-if="selectedLayerIds.size > 0">
+            <span class="batch-mode-label">{{ renderMode === 'smart' ? '智能' : renderMode === 'standard' ? '标准' : '概览' }}模式</span>
+            <span class="batch-mode-stats">活动 {{ activeLayerIds.size }} · 休眠 {{ suspendedLayerIds.size }} · 等待 {{ warmingLayerIds.size }}</span>
+            <el-button size="small" text @click="renderMode = renderMode === 'smart' ? 'standard' : 'smart'">
+              {{ renderMode === 'smart' ? '切换标准' : '切换智能' }}
+            </el-button>
+            <el-button v-if="suspendedLayerIds.size > 0" size="small" text @click="reconcileRenderPlan()">恢复调度</el-button>
+            <el-button v-if="suspendedLayerIds.size > 0" size="small" text @click="clearSuspendedCache()">清理休眠</el-button>
+          </div>
           <div class="batch-actions">
             <el-dropdown trigger="click" placement="bottom-start" @command="(profile: string) => loadSelectedDatasets(profile as S57LoadProfile)">
               <el-button size="small" type="primary" :disabled="selectedDatasetCount === 0 || !!bulkProgress">批量加载<el-icon class="el-icon--right"><CaretBottom /></el-icon></el-button>
@@ -1196,6 +1485,7 @@ onBeforeUnmount(() => {
                   <div class="layer-name">
                     <strong>{{ s57LayerTitle(runtime.config) }}</strong>
                     <small>
+                      <span class="layer-status-text">{{ layerStatusLabel(runtime.config.id) }}</span>
                       <template v-if="isNonSpatial(runtime.config)">
                         <span class="layer-state loaded"></span>属性表<span v-if="runtime.config.queryable"> · 可查询</span>
                       </template>

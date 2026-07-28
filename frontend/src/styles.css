@@ -437,6 +437,10 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .map-status { right: 8px; bottom: 8px; padding: 4px 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 4px; font-size: 9px; }
 .perf-stat { font-size: 9px; color: #88aeba; }
 .perf-stat.perf-failed { color: #d94b4b; }
+.layer-status-text { font-size: 8px; color: #88aeba; margin-right: 6px; white-space: nowrap; }
+.batch-mode-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 9px; color: #88aeba; border-bottom: 1px solid rgba(104,193,207,.12); }
+.batch-mode-label { color: var(--ice-500); font-weight: 600; }
+.batch-mode-stats { margin-left: auto; }
 .perf-toggle { background: none; border: none; color: #88aeba; cursor: pointer; font-size: 9px; padding: 0 2px; }
 .perf-toggle:hover { color: #d7e8ef; }
 .perf-detail { position: absolute; right: 20px; bottom: 36px; z-index: 15; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; padding: 6px 10px; background: rgba(7,25,37,.92); border: 1px solid rgba(104,193,207,.22); border-radius: 4px; font-size: 9px; color: #d7e8ef; min-width: 160px; }
