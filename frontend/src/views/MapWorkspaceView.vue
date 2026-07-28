@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -67,6 +67,8 @@ import {
   SMART_RECONCILE_DEBOUNCE_MS,
   SMART_SUSPEND_EVICT_DELAY_MS,
   SMART_MAX_ATTACHED_WMS_LAYERS,
+  TILE_RETRY_MAX_ATTEMPTS,
+  TILE_RETRY_BASE_DELAY_MS,
 } from '../utils/mapLayerBatch'
 import {
   buildRenderPlan,
@@ -145,22 +147,22 @@ const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
 
 // ── Batch loading state ────────────────────────────────────────────
-const selectedDatasetIds = ref(new Set<string>())
+const selectedDatasetIds = shallowRef(new Set<string>())
 /** Layer IDs the user has turned ON (selected). */
-const selectedLayerIds = ref(new Set<string>())
+const selectedLayerIds = shallowRef(new Set<string>())
 /** Layer IDs with active OpenLayers TileLayer objects. */
-const attachedLayerIds = ref(new Set<string>())
+const attachedLayerIds = shallowRef(new Set<string>())
 /** Layer IDs currently visible and allowed to request tiles. */
-const activeLayerIds = ref(new Set<string>())
+const activeLayerIds = shallowRef(new Set<string>())
 /** Layer IDs waiting for their first tile to load. */
-const warmingLayerIds = ref(new Set<string>())
+const warmingLayerIds = shallowRef(new Set<string>())
 /** Layer IDs that are selected but temporarily sleeping (viewport/scale/budget). */
-const suspendedLayerIds = ref(new Set<string>())
+const suspendedLayerIds = shallowRef(new Set<string>())
 /** Layer IDs the user explicitly forced to display, immune to smart suspend. */
-const manuallyForcedLayerIds = ref(new Set<string>())
+const manuallyForcedLayerIds = shallowRef(new Set<string>())
 /** Backward-compat alias: layers the user has turned on. */
 const loadedLayerIds = selectedLayerIds
-const loadingLayerIds = ref(new Set<string>())
+const loadingLayerIds = shallowRef(new Set<string>())
 const failedLayerIds = ref(new Map<string, string>())
 const renderMode = ref<ChartRenderMode>('smart')
 const bulkProgress = ref<BulkLayerProgress | null>(null)
@@ -432,6 +434,68 @@ function isNonSpatial(layer: MapLayerConfig): boolean {
 
 type AttachResult = 'attached' | 'already-loaded' | 'non-spatial'
 
+/**
+ * Compute a stable zIndex for WMS tile layers based on S-57 object class semantics.
+ * Fill layers draw at the bottom, point features and aids draw on top.
+ */
+function layerZIndex(objectClass: string | null | undefined): number {
+  const code = (objectClass ?? '').toUpperCase()
+  if (['DEPARE', 'LNDARE', 'ICEARE', 'SEAARE'].includes(code)) return 10
+  if (['DEPCNT'].includes(code)) return 20
+  if (['COALNE', 'NAVLNE', 'FAIRWY'].includes(code)) return 25
+  if (['WRECKS', 'OBSTRN', 'UWTROC'].includes(code)) return 30
+  if (['SOUNDG'].includes(code)) return 35
+  if (['LIGHTS', 'BOYSPP', 'BOYLAT', 'BOYCAR', 'BCNSPP', 'BCNLAT', 'BCNCAR'].includes(code)) return 40
+  return 15
+}
+
+/**
+ * Create a tileLoadFunction that retries recoverable HTTP errors
+ * (429, 502, 503, 504) and network failures with exponential backoff.
+ * Uses the existing TILE_RETRY_MAX_ATTEMPTS / TILE_RETRY_BASE_DELAY_MS constants.
+ */
+function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, src: string) => void {
+  return (tile, src) => {
+    const img = tile.getImage() as HTMLImageElement
+    let attempts = 0
+
+    const tryLoad = () => {
+      attempts++
+      fetch(src, { mode: 'cors' })
+        .then((response) => {
+          if (response.ok) {
+            return response.blob()
+          }
+          if (
+            [429, 502, 503, 504].includes(response.status) &&
+            attempts <= TILE_RETRY_MAX_ATTEMPTS
+          ) {
+            stats.recordRetry()
+            const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
+            setTimeout(tryLoad, delay)
+            return null
+          }
+          throw new Error(`HTTP ${response.status}`)
+        })
+        .then((blob) => {
+          if (blob) {
+            const objectUrl = URL.createObjectURL(blob)
+            img.onload = () => URL.revokeObjectURL(objectUrl)
+            img.src = objectUrl
+          }
+        })
+        .catch(() => {
+          if (attempts <= TILE_RETRY_MAX_ATTEMPTS) {
+            stats.recordRetry()
+            const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
+            setTimeout(tryLoad, delay)
+          }
+        })
+    }
+    tryLoad()
+  }
+}
+
 function attachWmsLayer(
   runtime: RuntimeLayer,
   opts?: { extent?: number[]; minZoom?: number | null; maxZoom?: number | null; visible?: boolean },
@@ -446,6 +510,7 @@ function attachWmsLayer(
     params: { LAYERS: runtime.config.serviceLayerName, TILED: true, STYLES: runtime.config.styleName || '' },
     crossOrigin: 'anonymous',
     transition: 0,
+    tileLoadFunction: createRetryTileLoadFunction(perfStats),
   })
   source.on('tileloadstart', () => {
     runtime.pendingTiles += 1
@@ -474,7 +539,7 @@ function attachWmsLayer(
   const tileLayer = new TileLayer({
     source,
     opacity: runtime.opacity,
-    zIndex: 10,
+    zIndex: layerZIndex(runtime.config.objectClass),
     extent: opts?.extent,
     minZoom: opts?.minZoom ?? undefined,
     maxZoom: opts?.maxZoom ?? undefined,

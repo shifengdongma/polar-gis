@@ -18,13 +18,13 @@ export const BULK_HARD_LIMIT = 120
 // ── Smart render mode constants ─────────────────────────────────────
 
 /** Maximum number of concurrently active (tile-requesting) WMS layers in smart mode. */
-export const SMART_MAX_ACTIVE_WMS_LAYERS = 20
+export const SMART_MAX_ACTIVE_WMS_LAYERS = 30
 
 /** Maximum number of layers entering the warming (first-tile) phase simultaneously. */
-export const SMART_MAX_WARMING_LAYERS = 3
+export const SMART_MAX_WARMING_LAYERS = 10
 
 /** Maximum number of attached (in-memory) WMS layer objects in smart mode. */
-export const SMART_MAX_ATTACHED_WMS_LAYERS = 40
+export const SMART_MAX_ATTACHED_WMS_LAYERS = 60
 
 /** Delay before a suspended layer is eligible for LRU eviction. */
 export const SMART_SUSPEND_EVICT_DELAY_MS = 30_000

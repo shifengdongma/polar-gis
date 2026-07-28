@@ -1,9 +1,53 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-07-26
+> 最后更新: 2026-07-28
 
 ---
+
+## 会话 #12 — 海图批量加载前端显示性能优化
+
+**日期**: 2026-07-28
+**目标**: 分析批量导入 S-57 海图图层后页面加载缓慢和地图卡顿的根因，在不改变现有功能和代码结构的基础上优化前端显示性能
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 调整智能调度器预算常量 (SMART_MAX_*) | ✅ 完成 |
+| 2 | Set 状态改用 shallowRef 减少响应式开销 | ✅ 完成 |
+| 3 | WMS 图层动态 zIndex 排序 | ✅ 完成 |
+| 4 | 实现 tileLoadFunction 瓦片加载重试 | ✅ 完成 |
+| 5 | nginx 启用 HTTP/2 | ✅ 完成 |
+| 6 | nginx WMS 瓦片 proxy_cache | ✅ 完成 |
+| 7 | 静态资源缓存头 (Cache-Control) | ✅ 完成 |
+| 8 | 导入后创建 PostGIS 空间索引 + ANALYZE | ✅ 完成 |
+| 9 | 标准导入自动启用 GWC 瓦片缓存 | ✅ 完成 |
+| 10 | GeoServer JVM 调优 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-07-28 | `frontend/src/utils/mapLayerBatch.ts` | 修改 | 调度器常量调整: SMART_MAX_WARMING_LAYERS 3→10, SMART_MAX_ACTIVE_WMS_LAYERS 20→30, SMART_MAX_ATTACHED_WMS_LAYERS 40→60 |
+| 2026-07-28 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | (1) 7个 Set 状态从 ref() 改为 shallowRef() 减少深层响应式追踪开销; (2) 新增 layerZIndex() 函数按 S-57 对象类分类设置图层 zIndex; (3) 新增 createRetryTileLoadFunction() 用 fetch+指数退避实现瓦片加载重试 |
+| 2026-07-28 | `deploy/nginx/default.conf` | 修改 | (1) listen 增加 http2 启用 HTTP/2 多路复用; (2) 新增 proxy_cache_path + proxy_cache 指令缓存 GeoServer 瓦片; (3) 新增静态资源 Cache-Control 头 (hashed资源1y immutable, index.html no-cache) |
+| 2026-07-28 | `deploy/compose.yml` | 修改 | GeoServer 添加 INITIAL_MEMORY/MAXIMUM_MEMORY/JAVA_OPTS JVM 调优环境变量 |
+| 2026-07-28 | `backend/app/services/importer.py` | 修改 | (1) 导入后为每张 geo.* 表创建 GiST 空间索引并运行 ANALYZE; (2) 发布阶段自动调用 ensure_gwc_layer() 启用瓦片缓存; (3) 添加 logging 模块 |
+
+### 问题分析与发现
+
+通过前端、后端、部署三个维度的全面审查，确认了以下核心瓶颈:
+
+1. **前端**: TileWMS 源未设置 tileLoadFunction 导致瓦片加载无重试; 所有图层 zIndex: 10 导致绘制顺序不稳定; ref(new Set()) 对每个元素深层追踪产生不必要的响应式开销; 暖机预算 3 层过保守
+2. **基础设施**: nginx 无 HTTP/2 (浏览器 6 连接限制成为瓦片加载天花板); 无 nginx 瓦片缓存; 静态资源无缓存头
+3. **后端**: 导入后无 PostGIS 空间索引 (GeoServer 顺序扫描); GWC 未自动启用; GeoServer 无 JVM 调优
+
+### 关键决策
+
+1. 优化原则: 不改变现有功能、代码结构和加载原理; 批量解析→候选过滤→分批附加流程不变; 三种渲染模式不变
+2. 优先前端 + 基础设施改动 (直接改善瓦片加载体验)
+3. Layer zIndex 基于 S-57 对象类语义分层: 填充层(10)→等深线(20)→岸线(25)→危险物(30)→水深点(35)→助航标志(40)
 
 ## 会话 #1 — 项目初始化与环境配置
 

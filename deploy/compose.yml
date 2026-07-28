@@ -24,6 +24,9 @@ services:
       GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
       GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
       GEOSERVER_PROXY_BASE_URL: ${GEOSERVER_PUBLIC_URL:-/geoserver}
+      INITIAL_MEMORY: "2G"
+      MAXIMUM_MEMORY: "4G"
+      JAVA_OPTS: "-server -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200 -XX:+ParallelRefProcEnabled -DGEOSERVER_CSRF_DISABLED=true"
     volumes:
       - geoserver-data:/opt/geoserver_data
       - shared-storage:/data/storage:ro

@@ -1,3 +1,4 @@
+import logging
 import re
 import shutil
 import subprocess
@@ -5,6 +6,8 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -163,6 +166,17 @@ class ImportProcessor:
                     if dataset.data_type == DatasetType.S57.value and layer in spatial_layers:
                         self._apply_s57_style(db, layer)
                     layer.status = LayerStatus.AVAILABLE.value
+                # Enable GWC tile caching for S-57 spatial layers
+                if dataset.data_type == DatasetType.S57.value:
+                    for layer in spatial_layers:
+                        try:
+                            self.geoserver.ensure_gwc_layer(
+                                layer.geoserver_layer_name or layer.code,
+                                gridsets=["EPSG:3857", "EPSG:4326"],
+                                mime_formats=["image/png"],
+                            )
+                        except Exception as exc:
+                            logger.warning("无法为图层 %s 启用 GWC 瓦片缓存: %s", layer.code, exc)
             self._switch_project_layer_versions(db, version, imported_layers)
             if version.parent_version_id:
                 parent_version = db.get(DatasetVersion, version.parent_version_id)
@@ -393,6 +407,15 @@ class ImportProcessor:
                 )
                 db.add(layer)
                 imported.append(layer)
+                # Create spatial index for efficient WMS tile rendering
+                idx_name = safe_identifier(f"idx_{table_name}_geom", 63)
+                db.execute(
+                    text(
+                        f'CREATE INDEX IF NOT EXISTS {idx_name} '
+                        f'ON geo."{table_name}" USING GIST (geom)'
+                    )
+                )
+                db.execute(text(f'ANALYZE geo."{table_name}"'))
             db.execute(text(f"DROP SCHEMA IF EXISTS {temp_schema} CASCADE"))
             db.flush()
             return imported

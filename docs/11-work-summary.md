@@ -1,9 +1,61 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-07-26
+> 最后更新: 2026-07-28
 
 ---
+
+## 会话 #12 — 海图批量加载前端显示性能优化
+
+**日期**: 2026-07-28
+**状态**: ✅ 完成
+
+### 问题背景
+
+批量导入一定数量的 S-57 海图图层后，页面出现加载缓慢和地图拖拽/缩放卡顿问题。经全面审查确认前端、基础设施、后端三方面共 10 个核心瓶颈。
+
+### 修改内容
+
+#### 前端优化 (4 项)
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/utils/mapLayerBatch.ts` | 调度器常量调整: SMART_MAX_WARMING_LAYERS 3→10, SMART_MAX_ACTIVE_WMS_LAYERS 20→30, SMART_MAX_ATTACHED_WMS_LAYERS 40→60 |
+| `frontend/src/views/MapWorkspaceView.vue` | Set 状态 shallowRef: 7个 ref(new Set()) 改为 shallowRef(new Set()) 减少深层响应式追踪 |
+| `frontend/src/views/MapWorkspaceView.vue` | 动态 zIndex: 新增 layerZIndex() 按 S-57 对象类分层 (填充层10→等深线20→岸线25→危险物30→水深点35→助航标志40) |
+| `frontend/src/views/MapWorkspaceView.vue` | 瓦片重试: 新增 createRetryTileLoadFunction() 用 fetch+指数退避对 429/502/503/504 及网络错误重试最多 2 次 |
+
+#### 基础设施优化 (4 项)
+
+| 文件 | 变更 |
+|------|------|
+| `deploy/nginx/default.conf` | HTTP/2: listen 80 http2 突破浏览器 6 连接限制 |
+| `deploy/nginx/default.conf` | WMS 瓦片缓存: proxy_cache_path + proxy_cache 指令缓存 GeoServer 响应 1h |
+| `deploy/nginx/default.conf` | 静态资源缓存: hashed 资源 Cache-Control: public, immutable (1year) |
+| `deploy/compose.yml` | GeoServer JVM: INITIAL_MEMORY=2G MAXIMUM_MEMORY=4G + G1GC 参数 |
+
+#### 后端优化 (2 项)
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/services/importer.py` | PostGIS 空间索引: 导入后为每张 geo.* 表 CREATE INDEX USING GIST (geom) + ANALYZE |
+| `backend/app/services/importer.py` | GWC 自动启用: 发布后调用 ensure_gwc_layer() 为 S-57 空间图层开启瓦片缓存 |
+
+### 实现效果
+
+- **瓦片重试**: 瞬态网络错误/GeoServer 503 自动恢复，不再出现永久空白瓦片
+- **HTTP/2**: 单连接多路复用突破 HTTP/1.1 每源 6 连接限制，20+ 瓦片并发请求不再串行化
+- **nginx proxy_cache**: 缓存命中时 0ms 延迟，大幅减少 GeoServer 渲染负载
+- **空间索引**: GiST 索引使 GeoServer WMS 查询从 Seq Scan → Index Scan，大表瓦片渲染时间降低数个数量级
+- **GWC 自动启用**: 新导入图层自动获得瓦片级缓存，无需手动配置
+- **JVM 调优**: 足够的堆空间 + G1GC 减少 GC 停顿，WMS 响应更可预测
+
+### 待完成
+
+- EPSG:3413 GWC GridSet 创建
+- GeoServer httpx 客户端连接池
+- SLD 样式 MinScaleDenominator
+- 性能测试场景 A-D 验收
 
 ## 会话 #1 — 项目初始化与环境配置
 

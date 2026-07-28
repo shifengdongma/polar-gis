@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-07-26
+> 最后更新: 2026-07-28
 
 ---
 
@@ -383,7 +383,7 @@ selectedLayerIds → 用户选择 (开关控制)
 attachedLayerIds → OpenLayers TileLayer 已创建
     ↓
 activeLayerIds → 可见并允许请求瓦片
-warmingLayerIds → 等待首块瓦片 (≤3 并发)
+warmingLayerIds → 等待首块瓦片 (≤10 并发)
 suspendedLayerIds → 视口外/比例尺外/预算不足 暂时休眠
 manuallyForcedLayerIds → 用户强制显示 (免疫智能休眠)
 failedLayerIds → 加载失败
@@ -414,12 +414,32 @@ failedLayerIds → 加载失败
 
 ### 可配置常量
 ```
-SMART_MAX_ACTIVE_WMS_LAYERS = 20  (活动图层预算)
-SMART_MAX_WARMING_LAYERS = 3      (同时 warming 上限)
-SMART_MAX_ATTACHED_WMS_LAYERS = 40 (内存中对象上限)
+SMART_MAX_ACTIVE_WMS_LAYERS = 30  (活动图层预算)
+SMART_MAX_WARMING_LAYERS = 10     (同时 warming 上限)
+SMART_MAX_ATTACHED_WMS_LAYERS = 60 (内存中对象上限)
 SMART_SUSPEND_EVICT_DELAY_MS = 30000 (LRU 驱逐延迟)
 SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 ```
+
+## 5.6 前端显示性能优化 (会话 #12)
+
+批导入海图图层后的页面加载缓慢和地图卡顿问题，在保留现有的智能调度器架构基础上进行了以下优化:
+
+### 前端优化
+- **瓦片加载重试**: TileWMS 源增加 tileLoadFunction，使用 fetch + 指数退避对 429/502/503/504 及网络错误重试最多 2 次
+- **动态 zIndex**: 按 S-57 对象类分层 (填充层10→等深线20→岸线25→危险物30→水深点35→助航标志40)，解决随机绘制闪烁
+- **响应式优化**: 7 个 Set 状态从 ref() 改为 shallowRef()，消除对 Set 内每个元素的深层追踪
+- **调度器预算提升**: warming 3→10 / active 20→30 / attached 40→60，提升批量加载吞吐量
+
+### 基础设施优化
+- **HTTP/2**: nginx listen 80 http2，突破浏览器每源 6 连接限制，实现瓦片请求多路复用
+- **WMS 瓦片缓存**: nginx proxy_cache 缓存 GeoServer 瓦片 1 小时，缓存命中时 0ms 延迟
+- **静态资源缓存**: hashed 资源 Cache-Control: public, immutable (1year)
+- **GeoServer JVM**: INITIAL_MEMORY=2G MAXIMUM_MEMORY=4G + G1GC 减少 GC 停顿
+
+### 后端优化
+- **PostGIS 空间索引**: 导入后自动 CREATE INDEX USING GIST (geom) + ANALYZE，GeoServer WMS 从 Seq Scan 转为 Index Scan
+- **GWC 自动启用**: 发布后自动调用 ensure_gwc_layer() 为 S-57 空间图层开启瓦片缓存
 
 ---
 
