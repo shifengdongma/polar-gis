@@ -1,5 +1,5 @@
 import { transformExtent } from 'ol/proj'
-import type { BulkResolvedLayer } from '../types'
+import type { BulkResolvedLayer, MapTilePerformanceStats } from '../types'
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -14,6 +14,38 @@ export const BULK_CONFIRM_THRESHOLD = 40
 
 /** Hard limit — loading is refused beyond this count. */
 export const BULK_HARD_LIMIT = 120
+
+// ── Smart render mode constants ─────────────────────────────────────
+
+/** Maximum number of concurrently active (tile-requesting) WMS layers in smart mode. */
+export const SMART_MAX_ACTIVE_WMS_LAYERS = 20
+
+/** Maximum number of layers entering the warming (first-tile) phase simultaneously. */
+export const SMART_MAX_WARMING_LAYERS = 3
+
+/** Maximum number of attached (in-memory) WMS layer objects in smart mode. */
+export const SMART_MAX_ATTACHED_WMS_LAYERS = 40
+
+/** Delay before a suspended layer is eligible for LRU eviction. */
+export const SMART_SUSPEND_EVICT_DELAY_MS = 30_000
+
+/** Debounce interval for the reconcileRenderPlan() scheduler on moveend. */
+export const SMART_RECONCILE_DEBOUNCE_MS = 150
+
+/** Zoom threshold below which the overview WMTS is preferred in smart mode. */
+export const SMART_OVERVIEW_ZOOM_THRESHOLD = 6
+
+/** Maximum tile retry attempts for recoverable errors (429, 502, 503, 504, network). */
+export const TILE_RETRY_MAX_ATTEMPTS = 2
+
+/** Base backoff delay for tile retries (exponential: 300ms, 600ms). */
+export const TILE_RETRY_BASE_DELAY_MS = 300
+
+/** Timeout for a layer to produce its first tile before it exits the warming phase. */
+export const TILE_WARMING_TIMEOUT_MS = 15_000
+
+/** Timeout for the projection switch double-buffer to force-complete. */
+export const PROJECTION_DOUBLE_BUFFER_TIMEOUT_MS = 10_000
 
 // ── Pure helpers ────────────────────────────────────────────────────
 
@@ -120,4 +152,93 @@ export function waitForBulkInterval(
       reject(new DOMException('Bulk load cancelled', 'AbortError'))
     }, { once: true })
   })
+}
+
+// ── Performance stats manager ───────────────────────────────────────
+
+export class PerLayerStatsManager {
+  private tileStartTimes = new Map<string, number>()
+  private durations: number[] = [] // ring buffer, max 200
+  private failures: number[] = [] // timestamps, max 500
+  retryCount = 0
+
+  recordTileStart(layerId: string): void {
+    this.tileStartTimes.set(layerId, performance.now())
+  }
+
+  recordTileEnd(layerId: string): void {
+    const start = this.tileStartTimes.get(layerId)
+    if (start) {
+      this.durations.push(performance.now() - start)
+      if (this.durations.length > 200) this.durations.shift()
+      this.tileStartTimes.delete(layerId)
+    }
+  }
+
+  recordTileError(layerId: string): void {
+    this.failures.push(Date.now())
+    if (this.failures.length > 500) this.failures.shift()
+    this.tileStartTimes.delete(layerId)
+  }
+
+  recordRetry(): void {
+    this.retryCount += 1
+  }
+
+  get pendingTileCount(): number {
+    return this.tileStartTimes.size
+  }
+
+  get loadedTileCount(): number {
+    return this.durations.length
+  }
+
+  get failedTileCount(): number {
+    return this.failures.length
+  }
+
+  get averageTileDurationMs(): number {
+    if (this.durations.length === 0) return 0
+    const sum = this.durations.reduce((a, b) => a + b, 0)
+    return Math.round(sum / this.durations.length)
+  }
+
+  get p95TileDurationMs(): number {
+    if (this.durations.length === 0) return 0
+    const sorted = [...this.durations].sort((a, b) => a - b)
+    const idx = Math.ceil(sorted.length * 0.95) - 1
+    return Math.round(sorted[Math.max(0, idx)])
+  }
+
+  /** Returns a snapshot for the current moment. Callers supply layer counts. */
+  snapshot(
+    activeLayerCount: number,
+    attachedLayerCount: number,
+    suspendedLayerCount: number,
+    currentGeneration: number,
+  ): MapTilePerformanceStats {
+    // Prune failures older than 60s
+    const cutoff = Date.now() - 60_000
+    while (this.failures.length > 0 && this.failures[0] < cutoff) this.failures.shift()
+
+    return {
+      activeLayerCount,
+      attachedLayerCount,
+      suspendedLayerCount,
+      pendingTileCount: this.pendingTileCount,
+      loadedTileCount: this.loadedTileCount,
+      failedTileCount: this.failures.length,
+      retriedTileCount: this.retryCount,
+      averageTileDurationMs: this.averageTileDurationMs,
+      p95TileDurationMs: this.p95TileDurationMs,
+      currentGeneration,
+    }
+  }
+
+  reset(): void {
+    this.tileStartTimes.clear()
+    this.durations.length = 0
+    this.failures.length = 0
+    this.retryCount = 0
+  }
 }

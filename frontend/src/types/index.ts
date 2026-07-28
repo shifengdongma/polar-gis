@@ -250,6 +250,23 @@ export interface ProjectDatasetLayer {
   opacity: number
 }
 
+// ── Performance statistics ──────────────────────────────────────────
+
+export interface MapTilePerformanceStats {
+  activeLayerCount: number
+  attachedLayerCount: number
+  suspendedLayerCount: number
+  pendingTileCount: number
+  loadedTileCount: number
+  failedTileCount: number
+  retriedTileCount: number
+  averageTileDurationMs: number
+  p95TileDurationMs: number
+  currentGeneration: number
+}
+
+export type ChartRenderMode = 'standard' | 'smart' | 'overview'
+
 // ── Bulk layer resolve ──────────────────────────────────────────────
 
 export type S57LoadProfile = 'core_chart' | 'navigation_recommended' | 'all_spatial'
@@ -288,6 +305,15 @@ export interface BulkResolvedLayer {
   exportable: boolean
   groupName: string
   sortOrder: number
+  // GWC and scale hints (optional, backward-compatible)
+  renderTransport?: 'gwc_wms' | 'wms'
+  tileServiceUrl?: string
+  gridSet?: string
+  cacheable?: boolean
+  minScaleDenominator?: number | null
+  maxScaleDenominator?: number | null
+  lowZoomVisible?: boolean
+  renderCost?: number | null
 }
 
 export interface BulkResolvedDataset {

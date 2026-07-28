@@ -4,9 +4,15 @@ import {
   BULK_ATTACH_INTERVAL_MS,
   BULK_CONFIRM_THRESHOLD,
   BULK_HARD_LIMIT,
+  SMART_MAX_ACTIVE_WMS_LAYERS,
+  SMART_MAX_WARMING_LAYERS,
+  SMART_MAX_ATTACHED_WMS_LAYERS,
+  SMART_SUSPEND_EVICT_DELAY_MS,
+  SMART_RECONCILE_DEBOUNCE_MS,
   prepareAttachCandidates,
   evaluateBulkThreshold,
   transformLayerExtent,
+  PerLayerStatsManager,
 } from './mapLayerBatch'
 import type { BulkResolvedLayer } from '../types'
 
@@ -128,5 +134,59 @@ describe('constants', () => {
     expect(BULK_ATTACH_INTERVAL_MS).toBe(200)
     expect(BULK_CONFIRM_THRESHOLD).toBe(40)
     expect(BULK_HARD_LIMIT).toBe(120)
+    expect(SMART_MAX_ACTIVE_WMS_LAYERS).toBe(20)
+    expect(SMART_MAX_WARMING_LAYERS).toBe(3)
+    expect(SMART_MAX_ATTACHED_WMS_LAYERS).toBe(40)
+    expect(SMART_SUSPEND_EVICT_DELAY_MS).toBe(30_000)
+    expect(SMART_RECONCILE_DEBOUNCE_MS).toBe(150)
+  })
+})
+
+describe('PerLayerStatsManager', () => {
+  it('tracks pending tile count', () => {
+    const m = new PerLayerStatsManager()
+    expect(m.pendingTileCount).toBe(0)
+    m.recordTileStart('layer-1')
+    m.recordTileStart('layer-2')
+    expect(m.pendingTileCount).toBe(2)
+  })
+
+  it('computes average and p95 duration', () => {
+    const m = new PerLayerStatsManager()
+    m.recordTileStart('a')
+    m.recordTileEnd('a') // duration is near-zero
+    expect(m.loadedTileCount).toBe(1)
+    expect(m.averageTileDurationMs).toBeGreaterThanOrEqual(0)
+    expect(m.p95TileDurationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('tracks errors and pending count drops after error', () => {
+    const m = new PerLayerStatsManager()
+    m.recordTileStart('x')
+    expect(m.pendingTileCount).toBe(1)
+    m.recordTileError('x')
+    expect(m.pendingTileCount).toBe(0)
+    expect(m.failedTileCount).toBe(1)
+  })
+
+  it('snapshot returns correct structure', () => {
+    const m = new PerLayerStatsManager()
+    const s = m.snapshot(3, 5, 2, 1)
+    expect(s.activeLayerCount).toBe(3)
+    expect(s.attachedLayerCount).toBe(5)
+    expect(s.suspendedLayerCount).toBe(2)
+    expect(s.currentGeneration).toBe(1)
+    expect(s.averageTileDurationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reset clears all', () => {
+    const m = new PerLayerStatsManager()
+    m.recordTileStart('a')
+    m.recordTileError('a')
+    m.recordRetry()
+    m.reset()
+    expect(m.pendingTileCount).toBe(0)
+    expect(m.failedTileCount).toBe(0)
+    expect(m.retryCount).toBe(0)
   })
 })

@@ -63,7 +63,10 @@ import {
   prepareAttachCandidates,
   transformLayerExtent,
   waitForBulkInterval,
+  PerLayerStatsManager,
+  SMART_RECONCILE_DEBOUNCE_MS,
 } from '../utils/mapLayerBatch'
+import type { ChartRenderMode, MapTilePerformanceStats } from '../types'
 import { parseWgs84Extent } from '../utils/mapExtent'
 import { s57LayerTitle } from '../utils/s57ObjectNames'
 
@@ -143,6 +146,29 @@ const bulkCancelled = ref(false)
 const bulkGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
 let bulkAbortController: AbortController | null = null
+
+// ── Performance stats (lightweight, no console spam) ──────────────────
+const perfStats = new PerLayerStatsManager()
+const perfDisplay = ref<MapTilePerformanceStats | null>(null)
+const devShowPerfDetail = ref(false)
+let perfPollTimer: number | undefined
+
+function updatePerfDisplay() {
+  const active = loadedLayerIds.value.size  // Phase 1: use existing set; Phase 2+ refines
+  const attached = active  // Phase 1: same; Phase 2+ distinguishes
+  const suspended = 0       // Phase 1: no suspension yet
+  perfDisplay.value = perfStats.snapshot(active, attached, suspended, bulkGeneration.value)
+}
+
+function startPerfPoll() {
+  updatePerfDisplay()
+  perfPollTimer = window.setInterval(updatePerfDisplay, 5000)
+}
+
+function stopPerfPoll() {
+  window.clearInterval(perfPollTimer)
+  perfPollTimer = undefined
+}
 
 /** Only S-57 datasets are eligible for batch operations. */
 const isS57Dataset = (dataset: RuntimeDataset) => dataset.config.dataType === 's57'
@@ -389,6 +415,7 @@ function attachWmsLayer(
   })
   source.on('tileloadstart', () => {
     runtime.pendingTiles += 1
+    perfStats.recordTileStart(runtime.config.id)
     window.clearTimeout(runtime.loadStateTimer)
     runtime.loadStateTimer = window.setTimeout(() => {
       if (runtime.pendingTiles > 0) {
@@ -398,6 +425,7 @@ function attachWmsLayer(
   })
   source.on('tileloadend', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
+    perfStats.recordTileEnd(runtime.config.id)
     if (runtime.pendingTiles === 0) {
       window.clearTimeout(runtime.loadStateTimer)
       if (runtime.loadState !== 'error') runtime.loadState = 'loaded'
@@ -405,6 +433,7 @@ function attachWmsLayer(
   })
   source.on('tileloaderror', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
+    perfStats.recordTileError(runtime.config.id)
     window.clearTimeout(runtime.loadStateTimer)
     runtime.loadState = 'error'
   })
@@ -1034,6 +1063,7 @@ onMounted(async () => {
     )
     await nextTick()
     await buildMap()
+    startPerfPoll()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '项目地图加载失败'))
   } finally {
@@ -1042,6 +1072,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
   map?.setTarget(undefined)
@@ -1214,7 +1245,28 @@ onBeforeUnmount(() => {
       <el-tooltip content="地图截图" placement="left"><button @click="captureMap"><el-icon><Camera /></el-icon></button></el-tooltip>
       <el-tooltip content="打印地图" placement="left"><button @click="printMap"><el-icon><Printer /></el-icon></button></el-tooltip>
     </div>
-    <div class="map-status"><span>{{ coordinateText }}</span><span>{{ currentCrs }}</span><span v-if="measureText" class="measure-result">{{ measureText }} <button @click="clearMeasure">清除</button></span></div>
+    <div class="map-status">
+      <span>{{ coordinateText }}</span><span>{{ currentCrs }}</span><span v-if="measureText" class="measure-result">{{ measureText }} <button @click="clearMeasure">清除</button></span>
+      <template v-if="perfDisplay">
+        <span class="perf-stat" title="活动图层">活动 {{ perfDisplay.activeLayerCount }}</span>
+        <span class="perf-stat" title="等待瓦片">瓦片 {{ perfDisplay.pendingTileCount }}</span>
+        <span v-if="perfDisplay.failedTileCount > 0" class="perf-stat perf-failed" title="失败瓦片">失败 {{ perfDisplay.failedTileCount }}</span>
+        <button class="perf-toggle" type="button" @click="devShowPerfDetail = !devShowPerfDetail" title="性能详情">⚙</button>
+      </template>
+    </div>
+    <!-- Dev-only: collapsible performance detail panel -->
+    <div v-if="devShowPerfDetail && perfDisplay" class="perf-detail">
+      <div><span>活动图层</span><span>{{ perfDisplay.activeLayerCount }}</span></div>
+      <div><span>已挂载图层</span><span>{{ perfDisplay.attachedLayerCount }}</span></div>
+      <div><span>休眠图层</span><span>{{ perfDisplay.suspendedLayerCount }}</span></div>
+      <div><span>等待瓦片</span><span>{{ perfDisplay.pendingTileCount }}</span></div>
+      <div><span>已加载瓦片</span><span>{{ perfDisplay.loadedTileCount }}</span></div>
+      <div><span>失败瓦片</span><span>{{ perfDisplay.failedTileCount }}</span></div>
+      <div><span>重试次数</span><span>{{ perfDisplay.retriedTileCount }}</span></div>
+      <div><span>平均耗时</span><span>{{ perfDisplay.averageTileDurationMs }}ms</span></div>
+      <div><span>P95耗时</span><span>{{ perfDisplay.p95TileDurationMs }}ms</span></div>
+      <div><span>当前代</span><span>{{ perfDisplay.currentGeneration }}</span></div>
+    </div>
     <el-drawer v-model="attributeVisible" :title="`${attributeLayer?.name || ''} · 属性表`" size="55%">
       <div class="tab-toolbar">
         <el-select v-model="attributeFilterField" clearable placeholder="筛选字段" style="width: 180px"><el-option v-for="field in attributeAllowedFields" :key="field" :label="field" :value="field" /></el-select>

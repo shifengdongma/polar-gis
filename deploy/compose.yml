@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     volumes:
       - shared-storage:/data/storage
+      - /data/s57-basemaps:/data/s57-basemaps:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +77,7 @@ services:
     environment: *backend-env
     volumes:
       - shared-storage:/data/storage
+      - /data/s57-basemaps:/data/s57-basemaps:ro
     depends_on:
       backend:
         condition: service_healthy

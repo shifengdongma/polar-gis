@@ -435,6 +435,12 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .map-tools { top: 48px; right: 8px; gap: 1px; padding: 4px; border-radius: 5px; }
 .map-tools button { width: 29px; height: 29px; min-height: 29px; padding: 0; border-radius: 3px; }
 .map-status { right: 8px; bottom: 8px; padding: 4px 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 4px; font-size: 9px; }
+.perf-stat { font-size: 9px; color: #88aeba; }
+.perf-stat.perf-failed { color: #d94b4b; }
+.perf-toggle { background: none; border: none; color: #88aeba; cursor: pointer; font-size: 9px; padding: 0 2px; }
+.perf-toggle:hover { color: #d7e8ef; }
+.perf-detail { position: absolute; right: 20px; bottom: 36px; z-index: 15; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; padding: 6px 10px; background: rgba(7,25,37,.92); border: 1px solid rgba(104,193,207,.22); border-radius: 4px; font-size: 9px; color: #d7e8ef; min-width: 160px; }
+.perf-detail div { display: flex; justify-content: space-between; gap: 8px; }
 .legend-preview { border-radius: 5px; }
 .ol-control button { border-radius: 4px !important; }
 .ol-zoom { top: 48px !important; right: 49px !important; left: auto !important; }
