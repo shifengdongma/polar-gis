@@ -6,7 +6,8 @@
  * RenderPlan computation, warming budget, LRU eviction selection.
  */
 
-import { transformExtent, intersects } from 'ol/extent'
+import { transformExtent } from 'ol/proj'
+import { intersects } from 'ol/extent'
 import {
   SMART_MAX_ACTIVE_WMS_LAYERS,
   SMART_MAX_WARMING_LAYERS,
@@ -32,9 +33,6 @@ export const VIEWPORT_BUFFER_RATIO = 0.2
 
 /** Zoom threshold below which the overview WMTS is preferred in smart mode. */
 export const SMART_OVERVIEW_ZOOM_THRESHOLD = 6
-
-// Approx meter-per-pixel for standard DPI 90.7 (256px tiles, equatorial circumference)
-const M_PER_DEGREE = 111_319.9
 
 /** Convert OpenLayers resolution (m/px) to OGC scale denominator. */
 export function resolutionToScaleDenom(resolution: number, dpi: number = 90.7): number {

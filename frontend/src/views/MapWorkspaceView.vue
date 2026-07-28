@@ -66,14 +66,13 @@ import {
   PerLayerStatsManager,
   SMART_RECONCILE_DEBOUNCE_MS,
   SMART_SUSPEND_EVICT_DELAY_MS,
-  SMART_MAX_WARMING_LAYERS,
   SMART_MAX_ATTACHED_WMS_LAYERS,
 } from '../utils/mapLayerBatch'
 import {
   buildRenderPlan,
+  isLayerInViewport,
   type ChartRenderMode,
   type ResolvedLayerMeta,
-  type RenderPlan,
 } from '../utils/mapRenderScheduler'
 import type { MapTilePerformanceStats } from '../types'
 import { parseWgs84Extent } from '../utils/mapExtent'
@@ -167,6 +166,7 @@ const renderMode = ref<ChartRenderMode>('smart')
 const bulkProgress = ref<BulkLayerProgress | null>(null)
 const bulkCancelled = ref(false)
 const bulkGeneration = ref(0)
+const renderGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
@@ -793,20 +793,6 @@ function runLruEviction() {
     const runtime = runtimeLayers.value.find((r) => r.config.id === evictable[i])
     if (runtime) detachWmsLayer(runtime)
   }
-}
-
-function forceShowLayer(layerId: string) {
-  const nextForce = new Set(manuallyForcedLayerIds.value)
-  nextForce.add(layerId)
-  manuallyForcedLayerIds.value = nextForce
-  reconcileRenderPlan()
-}
-
-function restoreSmartSchedule(layerId: string) {
-  const nextForce = new Set(manuallyForcedLayerIds.value)
-  nextForce.delete(layerId)
-  manuallyForcedLayerIds.value = nextForce
-  reconcileRenderPlan()
 }
 
 function clearSuspendedCache() {

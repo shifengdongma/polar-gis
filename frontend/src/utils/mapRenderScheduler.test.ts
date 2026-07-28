@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   buildRenderPlan,
   isLayerInViewport,
@@ -8,20 +8,21 @@ import {
   scaleDenomToResolution,
   type ResolvedLayerMeta,
   type RenderPlanInput,
-  type ChartRenderMode,
 } from './mapRenderScheduler'
 import {
   SMART_MAX_ACTIVE_WMS_LAYERS,
   SMART_MAX_WARMING_LAYERS,
-  SMART_MAX_ATTACHED_WMS_LAYERS,
 } from './mapLayerBatch'
 
-// Mock ol/extent to avoid projection runtime requirement in pure tests
-vi.mock('ol/extent', () => ({
+// Mock ol/proj (transformExtent) and ol/extent (intersects)
+vi.mock('ol/proj', () => ({
   transformExtent: vi.fn((extent: number[], _src: string, _dst: string) => {
     // Simplified: treat input as already in target projection
     return [...extent]
   }),
+}))
+
+vi.mock('ol/extent', () => ({
   intersects: vi.fn((extent1: number[], extent2: number[]) => {
     const [aMinX, aMinY, aMaxX, aMaxY] = extent1
     const [bMinX, bMinY, bMaxX, bMaxY] = extent2
