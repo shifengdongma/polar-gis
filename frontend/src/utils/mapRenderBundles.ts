@@ -15,7 +15,7 @@
 
 import TileLayer from 'ol/layer/Tile'
 import TileWMS from 'ol/source/TileWMS'
-import type Map from 'ol/Map'
+import type { default as OlMap } from 'ol/Map'
 import type { RenderBundleConfig } from '../types'
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ export interface BundleRuntime {
   status: BundleStatus
   generation: number
   pendingTiles: number
-  loadStateTimer?: ReturnType<typeof setTimeout>
+  loadStateTimer?: ReturnType<typeof window.setTimeout>
   /** When status === 'replacing', the new config we're warming up. */
   pendingReplacement?: BundleRuntime
   /** Error message when status === 'failed'. */
@@ -98,7 +98,7 @@ export function createBundleTileLayer(
  */
 export function attachBundle(
   config: RenderBundleConfig,
-  map: Map,
+  map: OlMap,
   tileLoadFunction: TileLoadFunction,
   onWarmingComplete: (bundleId: string) => void,
   onError: (bundleId: string, error: string) => void,
@@ -187,7 +187,7 @@ export function setBundleVisible(bundleId: string, visible: boolean): void {
 export function replaceBundle(
   oldBundleId: string,
   newConfig: RenderBundleConfig,
-  map: Map,
+  map: OlMap,
   tileLoadFunction: TileLoadFunction,
   onReplaced: (newBundleId: string) => void,
   onReplaceFailed: (newBundleId: string, error: string) => void,
@@ -307,8 +307,8 @@ export function isLayerCoveredByBundle(layerId: string): boolean {
 // ── Teardown ───────────────────────────────────────────────────────────
 
 /** Dispose all bundles (e.g. on projection switch or project unload). */
-export function disposeAllBundles(map: Map): void {
-  for (const [bundleId, runtime] of bundleRegistry) {
+export function disposeAllBundles(map: OlMap): void {
+  for (const [, runtime] of bundleRegistry) {
     if (runtime.layer) {
       map.removeLayer(runtime.layer)
       runtime.layer.dispose()

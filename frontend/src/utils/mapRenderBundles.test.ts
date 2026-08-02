@@ -19,10 +19,8 @@ vi.mock('ol/layer/Tile', () => ({
 }))
 
 import TileWMS from 'ol/source/TileWMS'
-import TileLayer from 'ol/layer/Tile'
 
 const MockTileWMS = TileWMS as unknown as ReturnType<typeof vi.fn>
-const MockTileLayer = TileLayer as unknown as ReturnType<typeof vi.fn>
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -41,21 +39,6 @@ function makeBundleConfig(overrides: Partial<RenderBundleConfig> = {}): RenderBu
     transport: overrides.transport ?? 'wms_multi',
     serviceUrl: overrides.serviceUrl ?? '/geoserver/polar_gis/wms',
     cacheKey: overrides.cacheKey ?? 'sha256hash',
-  }
-}
-
-function makeMockTileSource() {
-  const eventHandlers: Record<string, Array<(...args: any[]) => void>> = {}
-  return {
-    eventHandlers,
-    on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-      if (!eventHandlers[event]) eventHandlers[event] = []
-      eventHandlers[event].push(handler)
-    }),
-    emit: (event: string, ...args: any[]) => {
-      ;(eventHandlers[event] || []).forEach((h) => h(...args))
-    },
-    dispatchEvent: vi.fn(),
   }
 }
 

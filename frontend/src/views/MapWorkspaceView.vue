@@ -74,8 +74,8 @@ import {
   buildRenderPlan,
   ENABLE_RENDER_BUNDLES,
   isLayerInViewport,
-  type ChartRenderMode,
   type BundleRenderPlan,
+  type ChartRenderMode,
   type ResolvedLayerMeta,
 } from '../utils/mapRenderScheduler'
 import {
@@ -83,8 +83,6 @@ import {
   detachBundle,
   disposeAllBundles,
   setBundleVisible,
-  findBundleByLogicalLayer,
-  createBundleTileSource,
 } from '../utils/mapRenderBundles'
 import { fetchRenderPlan } from '../api/projects'
 import type { MapTilePerformanceStats } from '../types'
@@ -183,10 +181,6 @@ const renderGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
 /** Last profile used for batch loading — needed for bundle plan API. */
 const lastLoadProfile = ref<S57LoadProfile>('core_chart')
-/** Cached bundle plan from the last API call. */
-const activeBundlePlan = ref<BundleRenderPlan | null>(null)
-/** Debounce timer for bundle plan rebuild on layer toggle. */
-let bundleRebuildTimer: number | undefined
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
 let evictTimer: number | undefined

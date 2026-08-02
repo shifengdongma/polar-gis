@@ -380,7 +380,6 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
   // Phase 1: bundle-aware smart mode — composite multi-layer WMS
   if (ENABLE_RENDER_BUNDLES && bundlePlanInput) {
     const { bundles, standaloneLayerIds: standaloneIds } = bundlePlanInput
-    const standaloneSet = new Set(standaloneIds)
     const bundledLayerIds = new Set(bundles.flatMap((b) => b.layerIds))
 
     // Per-bundle viewport/scale check using union extents + permissive zoom
