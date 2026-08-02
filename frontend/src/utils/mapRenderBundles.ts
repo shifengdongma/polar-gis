@@ -123,8 +123,8 @@ export function attachBundle(
   // Wire tile events for warming → active transition
   source.on('tileloadstart', () => {
     runtime.pendingTiles += 1
-    window.clearTimeout(runtime.loadStateTimer)
-    runtime.loadStateTimer = window.setTimeout(() => {
+    clearTimeout(runtime.loadStateTimer)
+    runtime.loadStateTimer = setTimeout(() => {
       if (runtime.pendingTiles > 0 && runtime.status === 'warming') {
         // Still warming
       }
@@ -134,7 +134,7 @@ export function attachBundle(
   source.on('tileloadend', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
     if (runtime.pendingTiles === 0 && runtime.status === 'warming') {
-      window.clearTimeout(runtime.loadStateTimer)
+      clearTimeout(runtime.loadStateTimer)
       runtime.status = 'active'
       tileLayer.setVisible(true)
       onWarmingComplete(config.bundleId)
@@ -144,7 +144,7 @@ export function attachBundle(
   source.on('tileloaderror', () => {
     runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
     if (runtime.status === 'warming') {
-      window.clearTimeout(runtime.loadStateTimer)
+      clearTimeout(runtime.loadStateTimer)
       runtime.status = 'failed'
       runtime.errorMessage = '瓦片加载失败'
       onError(config.bundleId, runtime.errorMessage)
@@ -167,7 +167,7 @@ export function detachBundle(bundleId: string, map: OlMap): void {
     map.removeLayer(runtime.layer)
     runtime.layer.dispose()
   }
-  window.clearTimeout(runtime.loadStateTimer)
+  clearTimeout(runtime.loadStateTimer)
   bundleRegistry.delete(bundleId)
 }
 
@@ -313,7 +313,7 @@ export function disposeAllBundles(map: OlMap): void {
       map.removeLayer(runtime.layer)
       runtime.layer.dispose()
     }
-    window.clearTimeout(runtime.loadStateTimer)
+    clearTimeout(runtime.loadStateTimer)
   }
   bundleRegistry.clear()
 }
