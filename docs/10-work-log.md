@@ -1,7 +1,58 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-07-28
+> 最后更新: 2026-08-02
+
+---
+
+## 会话 #13 — Phase 1: 组合图层渲染通道 (Composite Layer Render Bundles)
+
+**日期**: 2026-08-02
+**目标**: 在智能模式下将 20~30 个独立 TileWMS 图层压缩为约 3~6 个语义组合 TileWMS，大幅减少 HTTP 瓦片请求数量
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 后端 Pydantic Schema (MapRenderPlanRequest/Response) | ✅ 完成 |
+| 2 | 后端 API 端点 POST /map-render/plan | ✅ 完成 |
+| 3 | 后端 API 集成测试 | ✅ 完成 |
+| 4 | 前端 TypeScript 类型定义 | ✅ 完成 |
+| 5 | 前端 Bundle 运行时 (mapRenderBundles.ts) | ✅ 完成 |
+| 6 | 前端 API Client (fetchRenderPlan) | ✅ 完成 |
+| 7 | 前端 Scheduler 集成 (BundleRenderPlan) | ✅ 完成 |
+| 8 | MapWorkspaceView.vue Bundle 执行路径 | ✅ 完成 |
+| 9 | Feature Flag (VITE_ENABLE_RENDER_BUNDLES) | ✅ 完成 |
+| 10 | 前端 Bundle 单元测试 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-02 | `backend/app/schemas.py` | 修改 | 新增 MapRenderPlanRequest, BundleConfigOut, StandaloneConfigOut, RenderPlanSummaryOut, MapRenderPlanResponse 五个 Pydantic Schema |
+| 2026-08-02 | `backend/app/api/projects.py` | 修改 | 新增 POST /{project_id}/map-render/plan API 端点，复用 _s57_object_class, _style_mapped_for_layer, classify_s57_layer 工具函数，调用 build_bundles() 纯函数 |
+| 2026-08-02 | `backend/tests/test_projects.py` | 修改 | 新增 6 个 render plan API 集成测试 (非项目图层拒绝、打包分组、多桶分离、非空间排除、确定性 cache key、空输入) |
+| 2026-08-02 | `frontend/src/types/index.ts` | 修改 | 新增 RenderBundleConfig, StandaloneLayerConfig, RenderPlanSummary, MapRenderPlanRequest, MapRenderPlanResponse, BundleViewState 类型 |
+| 2026-08-02 | `frontend/src/utils/mapRenderBundles.ts` | **新建** | Bundle 运行时管理: createBundleTileSource, attachBundle, detachBundle, replaceBundle (原子替换), setBundleVisible, disposeAllBundles, findBundleByLogicalLayer |
+| 2026-08-02 | `frontend/src/api/projects.ts` | 修改 | 新增 fetchRenderPlan() API client 函数 |
+| 2026-08-02 | `frontend/src/utils/mapRenderScheduler.ts` | 修改 | 新增 BundleRenderPlan 接口, ENABLE_RENDER_BUNDLES Feature Flag, buildRenderPlan() 增加 bundlePlanInput 参数和 bundle-aware 执行路径 |
+| 2026-08-02 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | reconcileRenderPlan() 改为 async，smart 模式自动调用 fetchRenderPlan；新增 executeBundlePlan() 和 executePerLayerPlan()；toggleLayer() 支持 Bundle 模式延迟重建；switchProjection() 增加 disposeAllBundles；unloadAllChartLayers() 增加 Bundle 清理 |
+| 2026-08-02 | `frontend/src/utils/mapRenderBundles.test.ts` | **新建** | 11 个单元测试: TileWMS 创建、comma-separated LAYERS/STYLES、URL 转换、配置校验、桶分离验证 |
+
+### 决策记录
+
+1. **后端纯函数服务已存在**: `map_render_plan.py` 和 `test_map_render_plan.py` (32 个测试) 在本次会话前已实现，只需新增 API 端点和 Schema
+2. **Feature Flag 默认启用**: `ENABLE_RENDER_BUNDLES` 默认为 `true`，设置 `VITE_ENABLE_RENDER_BUNDLES=false` 可回退到独立 WMS 模式
+3. **Bundle 原子替换**: 切换 Bundle 时旧 Bundle 保持可见直到新 Bundle 首块瓦片加载成功，失败则保留旧 Bundle
+4. **Standalone 图层**: opacity ≠ 1.0 或 renderStandalone=true 的图层自动从 Bundle 中提升为独立 TileWMS
+5. **无数据库迁移**: 本次变更纯加法 — 新增 API 端点、前端工具模块和类型定义，不涉及数据库或 GeoServer 资源变更
+
+### 验证结果
+
+- Backend: 44 tests passed (32 map_render_plan + 12 projects)
+- Frontend: 11 tests passed (mapRenderBundles)
+- TypeScript type check: clean (no errors)
+- Feature Flag: SET VITE_ENABLE_RENDER_BUNDLES=false for rollback
 
 ---
 

@@ -224,6 +224,57 @@ class BulkMapLayerResolveResponse(ApiModel):
     summary: BulkLayerResolveSummary
 
 
+# ── Map render plan ──────────────────────────────────────────────────
+
+
+class MapRenderPlanRequest(ApiModel):
+    layer_ids: list[UUID] = Field(min_length=0, max_length=120)
+    profile: str = Field(min_length=1, max_length=32)
+    projection: str = Field(default="EPSG:3857", pattern=r"^EPSG:\d+$")
+    render_mode: str = Field(default="smart")
+    view_extent: list[float] | None = None
+    zoom: int | None = None
+
+
+class BundleConfigOut(ApiModel):
+    bundle_id: str
+    bucket: str
+    layer_ids: list[UUID]
+    layer_names: list[str]
+    styles: list[str]
+    z_index: int
+    opacity: float
+    extent: list[float] | None = None
+    min_zoom: int | None = None
+    max_zoom: int | None = None
+    transport: str = "wms_multi"
+    service_url: str = "/geoserver/polar_gis/wms"
+    cache_key: str
+
+
+class StandaloneConfigOut(ApiModel):
+    layer_id: UUID
+    layer_name: str
+    style: str
+    z_index: int
+    opacity: float
+    reason: str  # "custom_opacity" | "render_standalone"
+
+
+class RenderPlanSummaryOut(ApiModel):
+    logical_layer_count: int = 0
+    bundle_count: int = 0
+    standalone_count: int = 0
+    estimated_request_reduction_ratio: float = 0.0
+
+
+class MapRenderPlanResponse(ApiModel):
+    generation: str
+    bundles: list[BundleConfigOut]
+    standalone_layers: list[StandaloneConfigOut]
+    summary: RenderPlanSummaryOut
+
+
 class UploadRead(ApiModel):
     id: UUID
     original_name: str

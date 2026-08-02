@@ -27,9 +27,12 @@ from app.schemas import (
     BulkMapLayerResolveResponse,
     BulkResolvedDataset,
     BulkResolvedLayer,
+    BundleConfigOut,
     MapConfig,
     MapDatasetConfig,
     MapLayerConfig,
+    MapRenderPlanRequest,
+    MapRenderPlanResponse,
     Paginated,
     ProjectCreate,
     ProjectDatasetLayerRead,
@@ -38,8 +41,15 @@ from app.schemas import (
     ProjectLayersUpdate,
     ProjectRead,
     ProjectUpdate,
+    RenderPlanSummaryOut,
+    StandaloneConfigOut,
 )
 from app.services.audit import write_audit
+from app.services.map_render_plan import (
+    LayerRenderInput,
+    build_bundles,
+    bundle_cache_key,
+)
 from app.services.s57_layer_catalog import classify_s57_layer
 from app.services.s57_styles import preset_for_object_class
 
@@ -509,6 +519,220 @@ def resolve_project_map_layers(
         )
 
     return BulkMapLayerResolveResponse(datasets=datasets_result, summary=stats)
+
+
+# ── Map render plan endpoint ──────────────────────────────────────────
+
+
+def _compute_data_version_hash(links: list[tuple[ProjectLayer, Layer]]) -> str:
+    """Compute a hash over active dataset versions for cache invalidation."""
+    import hashlib
+
+    version_fingerprints: list[str] = []
+    seen: set[UUID] = set()
+    for _link, layer in links:
+        dv = layer.dataset_version
+        if dv and dv.id not in seen:
+            seen.add(dv.id)
+            version_fingerprints.append(f"{dv.id}:{dv.version_no}:{dv.content_hash or ''}")
+    if not version_fingerprints:
+        return ""
+    return hashlib.sha256("|".join(sorted(version_fingerprints)).encode()).hexdigest()[:12]
+
+
+def _build_layer_render_input(link: ProjectLayer, layer: Layer) -> LayerRenderInput | None:
+    """Convert a ProjectLayer + Layer to a LayerRenderInput for bundle grouping.
+
+    Returns None for non-spatial layers (should be excluded from bundles).
+    """
+    object_class = _s57_object_class(layer)
+    style_mapped = _style_mapped_for_layer(layer)
+    rule = classify_s57_layer(object_class, layer.geometry_type, style_mapped)
+
+    # Non-spatial → excluded from bundles
+    if not rule.renderable or rule.load_profile == "non_spatial":
+        return None
+
+    workspace = layer.geoserver_workspace or settings.geoserver_workspace
+    geoserver_layer_name = (
+        f"{workspace}:{layer.geoserver_layer_name or layer.code}"
+    )
+
+    style_name = (
+        link.style.geoserver_style_name
+        if link.style
+        else (layer.metadata_json or {}).get("recommendedStyleCode", "")
+    )
+    if style_name:
+        style_name = f"{workspace}:{style_name}"
+
+    # Extract extent from metadata
+    extent: tuple[float, ...] | None = None
+    s57_meta = (layer.metadata_json or {}).get("s57")
+    if isinstance(s57_meta, dict):
+        raw_extent = s57_meta.get("extent")
+        if isinstance(raw_extent, list) and len(raw_extent) == 4:
+            try:
+                extent = tuple(float(v) for v in raw_extent)
+            except (ValueError, TypeError):
+                pass
+
+    return LayerRenderInput(
+        layer_id=str(layer.id),
+        geoserver_layer_name=geoserver_layer_name,
+        style_name=style_name,
+        object_class=rule.code,
+        display_category=rule.display_category,
+        display_priority=rule.display_priority,
+        opacity=float(link.opacity),
+        extent=extent,
+        min_zoom=int(link.min_zoom) if link.min_zoom else None,
+        max_zoom=int(link.max_zoom) if link.max_zoom else None,
+        render_standalone=False,  # can be set later via metadata
+    )
+
+
+@public_router.post(
+    "/{project_id}/map-render/plan",
+    response_model=MapRenderPlanResponse,
+)
+def get_map_render_plan(
+    project_id: UUID,
+    payload: MapRenderPlanRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> MapRenderPlanResponse:
+    """Build a render plan grouping logical layers into composite WMS bundles.
+
+    Only returns layers the user can access in the project.
+    Non-spatial layers are excluded. Layers with custom opacity or
+    ``renderStandalone`` become standalone layers.
+    """
+    import hashlib
+
+    project = project_or_404(db, project_id, include_unpublished=False)
+
+    # Fetch all ProjectLayer links with eager-loaded relationships
+    links = db.scalars(
+        select(ProjectLayer)
+        .where(ProjectLayer.project_id == project.id)
+        .options(
+            selectinload(ProjectLayer.layer)
+            .selectinload(Layer.dataset_version)
+            .selectinload(DatasetVersion.dataset),
+            selectinload(ProjectLayer.style),
+        )
+        .order_by(ProjectLayer.sort_order)
+    ).all()
+
+    # Build layer lookup and filter to only available, current-version layers
+    layer_map: dict[UUID, tuple[ProjectLayer, Layer]] = {}
+    for link in links:
+        layer = link.layer
+        if layer.deleted_at is not None:
+            continue
+        if layer.status != LayerStatus.AVAILABLE.value:
+            continue
+        dataset = layer.dataset_version.dataset
+        if dataset.current_version_id != layer.dataset_version_id:
+            continue
+        if dataset.deleted_at is not None:
+            continue
+        layer_map[layer.id] = (link, layer)
+
+    # Validate all requested layer IDs belong to the project
+    requested_ids = list(dict.fromkeys(payload.layer_ids))
+    missing = [str(lid) for lid in requested_ids if lid not in layer_map]
+    if missing:
+        raise AppError(
+            "PROJECT_LAYER_NOT_FOUND",
+            f"以下图层不属于当前项目或不可用: {', '.join(missing)}",
+            404,
+            {"missingLayerIds": missing},
+        )
+
+    # Build LayerRenderInput list
+    render_inputs: list[LayerRenderInput] = []
+    for lid in requested_ids:
+        link, layer = layer_map[lid]
+        ri = _build_layer_render_input(link, layer)
+        if ri is not None:
+            render_inputs.append(ri)
+
+    # Compute data version hash for cache invalidation
+    all_valid_links = list(layer_map.values())
+    data_version_hash = _compute_data_version_hash(all_valid_links)
+
+    # Build bundles
+    bundles, standalones = build_bundles(
+        render_inputs,
+        payload.profile,
+        payload.projection,
+        data_version_hash,
+    )
+
+    # Compute generation hash (stable fingerprint of the plan)
+    generation_raw = "|".join(
+        b.cache_key for b in bundles
+    ) + "||" + "|".join(
+        f"{s.layer_id}:{s.reason}" for s in standalones
+    )
+    generation = hashlib.sha256(generation_raw.encode()).hexdigest()[:12]
+
+    # Build response
+    bundle_outs = [
+        BundleConfigOut(
+            bundle_id=b.bundle_id,
+            bucket=b.bucket,
+            layer_ids=[UUID(lid) for lid in b.layer_ids],
+            layer_names=b.layer_names,
+            styles=b.styles,
+            z_index=b.z_index,
+            opacity=b.opacity,
+            extent=b.extent,
+            min_zoom=b.min_zoom,
+            max_zoom=b.max_zoom,
+            transport=b.transport,
+            service_url=b.service_url,
+            cache_key=b.cache_key,
+        )
+        for b in bundles
+    ]
+
+    standalone_outs = [
+        StandaloneConfigOut(
+            layer_id=UUID(s.layer_id),
+            layer_name=s.layer_name,
+            style=s.style,
+            z_index=s.z_index,
+            opacity=s.opacity,
+            reason=s.reason,
+        )
+        for s in standalones
+    ]
+
+    logical_count = len(bundle_outs) + len(standalone_outs)
+    # Sum of bundled layers accounts for layers inside bundles
+    total_layers = sum(len(b.layer_ids) for b in bundle_outs) + len(standalone_outs)
+    estimated_reduction = (
+        1.0 - (logical_count / max(total_layers, 1))
+        if total_layers > 0
+        else 0.0
+    )
+
+    summary = RenderPlanSummaryOut(
+        logical_layer_count=total_layers,
+        bundle_count=len(bundle_outs),
+        standalone_count=len(standalone_outs),
+        estimated_request_reduction_ratio=round(estimated_reduction, 3),
+    )
+
+    return MapRenderPlanResponse(
+        generation=generation,
+        bundles=bundle_outs,
+        standalone_layers=standalone_outs,
+        summary=summary,
+    )
 
 
 @admin_router.get("", response_model=Paginated[ProjectRead])

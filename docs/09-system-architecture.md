@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-07-28
+> 最后更新: 2026-08-02
 
 ---
 
@@ -441,19 +441,66 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 - **PostGIS 空间索引**: 导入后自动 CREATE INDEX USING GIST (geom) + ANALYZE，GeoServer WMS 从 Seq Scan 转为 Index Scan
 - **GWC 自动启用**: 发布后自动调用 ensure_gwc_layer() 为 S-57 空间图层开启瓦片缓存
 
+## 5.7 组合图层渲染通道 Phase 1 (会话 #13)
+
+在智能模式下将 20~30 个独立 TileWMS 压缩为约 3~6 个语义组合 TileWMS，通过逗号分隔的 LAYERS/STYLES 参数实现多图层单次 WMS 请求。
+
+### 两层模型
+
+| 层 | 职责 |
+|------|------|
+| **逻辑图层** (Logical Layer) | layerId, datasetId, objectClass, 单层开关, 图层顺序, 图例, 属性查询, 导出, 选择状态 |
+| **渲染图层** (Render Layer) | 由多个同级逻辑图层组成渲染 Bundle，对应一个 TileWMS，负责视觉显示 |
+
+### 默认语义分组 (5 Buckets)
+
+| Bucket | zIndex | 包含 S-57 对象类 | 显示名称 |
+|--------|--------|-------------------|----------|
+| `area_fill` | 10 | DEPARE, SEAARE, LNDARE, ICEARE, UNSARE, CTNARE, RESARE, HRBARE | 面域填充 |
+| `line_structure` | 20 | COALNE, DEPCNT, NAVLNE, FAIRWY, TSSBND, TSSLPT, SLCONS 等 | 线状结构 |
+| `hazard_detail` | 30 | WRECKS, OBSTRN, UWTROC, SOUNDG | 危险物与水深 |
+| `navigation_aid` | 50 | LIGHTS, FOGSIG, BOY*, BCN*, TOPMAR, RTPBCN | 助航标志 |
+| `optional_other` | 100 | 未归入以上类别的可选图层 | 其他可选 |
+
+分组规则从 `backend/app/services/s57_layer_catalog.py` 的 `get_render_bucket()` 派生，为分类事实的单一来源。
+
+### 后端服务 (已实现)
+
+- `backend/app/services/map_render_plan.py`: 纯函数 `build_bundles()` 接收 LayerRenderInput 列表，返回 (list[BundleConfig], list[StandaloneConfig])
+- `backend/app/api/projects.py`: POST `/api/v1/projects/{id}/map-render/plan` API 端点
+- `backend/tests/test_map_render_plan.py`: 32 纯函数测试
+- `backend/tests/test_projects.py`: 6 API 集成测试
+
+### 前端运行时
+
+- `frontend/src/utils/mapRenderBundles.ts`: Bundle 生命周期管理 (createBundleTileSource, attachBundle, detachBundle, replaceBundle, disposeAllBundles)
+- `frontend/src/utils/mapRenderScheduler.ts`: BundleRenderPlan 接口, ENABLE_RENDER_BUNDLES Feature Flag
+- `frontend/src/views/MapWorkspaceView.vue`: executeBundlePlan() 执行路径, 智能模式自动调用 fetchRenderPlan()
+
+### Standalone 拆离条件
+
+以下情况图层不能合并，必须作为 standaloneLayer:
+1. 用户修改了单层透明度 (opacity ≠ 1.0)
+2. renderStandalone = true
+3. 非空间图层 (已排除)
+
+### Feature Flag
+
+`VITE_ENABLE_RENDER_BUNDLES` (默认 true)。设为 false 时 smart 模式回退到独立 WMS 调度器。
+
 ---
 
 ## 6. 文件清单
 
 ### 后端 (52 files)
-- Python 源文件: `app/api/` (10), `app/core/` (6), `app/services/` (8), `app/worker/` (2), 根文件 (4) = 30
+- Python 源文件: `app/api/` (10), `app/core/` (6), `app/services/` (9), `app/worker/` (2), 根文件 (4) = 31
 - 迁移文件: `migrations/` (5)
 - 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
 ### 前端 (31 source files)
 - Vue 组件: `src/views/` (11), `src/components/` (1), `src/layouts/` (1) = 13
-- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (5), `src/router/` (1) = 11
+- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (6), `src/router/` (1) = 12
 - 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
 - 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
 

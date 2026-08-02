@@ -4,6 +4,8 @@ import type {
   BulkMapLayerResolveResponse,
   MapConfig,
   MapLayerConfig,
+  MapRenderPlanRequest,
+  MapRenderPlanResponse,
 } from '../types'
 
 /** Fetch the full map config (datasets summary, project info, CRS). */
@@ -33,6 +35,20 @@ export async function resolveProjectMapLayers(
 ): Promise<BulkMapLayerResolveResponse> {
   const response = await api.post<BulkMapLayerResolveResponse>(
     `/projects/${projectId}/map-layers/resolve`,
+    payload,
+    { signal },
+  )
+  return response.data
+}
+
+/** Build a render plan grouping logical layers into composite WMS bundles. */
+export async function fetchRenderPlan(
+  projectId: string,
+  payload: MapRenderPlanRequest,
+  signal?: AbortSignal,
+): Promise<MapRenderPlanResponse> {
+  const response = await api.post<MapRenderPlanResponse>(
+    `/projects/${projectId}/map-render/plan`,
     payload,
     { signal },
   )

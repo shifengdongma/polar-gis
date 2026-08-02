@@ -72,10 +72,21 @@ import {
 } from '../utils/mapLayerBatch'
 import {
   buildRenderPlan,
+  ENABLE_RENDER_BUNDLES,
   isLayerInViewport,
   type ChartRenderMode,
+  type BundleRenderPlan,
   type ResolvedLayerMeta,
 } from '../utils/mapRenderScheduler'
+import {
+  attachBundle,
+  detachBundle,
+  disposeAllBundles,
+  setBundleVisible,
+  findBundleByLogicalLayer,
+  createBundleTileSource,
+} from '../utils/mapRenderBundles'
+import { fetchRenderPlan } from '../api/projects'
 import type { MapTilePerformanceStats } from '../types'
 import { parseWgs84Extent } from '../utils/mapExtent'
 import { s57LayerTitle } from '../utils/s57ObjectNames'
@@ -170,6 +181,12 @@ const bulkCancelled = ref(false)
 const bulkGeneration = ref(0)
 const renderGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
+/** Last profile used for batch loading — needed for bundle plan API. */
+const lastLoadProfile = ref<S57LoadProfile>('core_chart')
+/** Cached bundle plan from the last API call. */
+const activeBundlePlan = ref<BundleRenderPlan | null>(null)
+/** Debounce timer for bundle plan rebuild on layer toggle. */
+let bundleRebuildTimer: number | undefined
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
 let evictTimer: number | undefined
@@ -640,23 +657,30 @@ function toggleLayer(runtime: RuntimeLayer) {
     const next = new Set(selectedLayerIds.value)
     next.delete(lid)
     selectedLayerIds.value = next
-    const nextAtt = new Set(attachedLayerIds.value)
-    if (nextAtt.has(lid)) {
-      // Detach immediately for responsiveness
-      detachWmsLayer(runtime)
-      nextAtt.delete(lid)
-      attachedLayerIds.value = nextAtt
+
+    if (ENABLE_RENDER_BUNDLES && renderMode.value === 'smart') {
+      // Bundle mode: trigger scheduler to rebuild bundles atomically.
+      // Do NOT immediately detach — the bundle handles the transition.
+      reconcileRenderPlan()
+    } else {
+      const nextAtt = new Set(attachedLayerIds.value)
+      if (nextAtt.has(lid)) {
+        // Detach immediately for responsiveness
+        detachWmsLayer(runtime)
+        nextAtt.delete(lid)
+        attachedLayerIds.value = nextAtt
+      }
+      // Clean up from other sets
+      const nextAct = new Set(activeLayerIds.value)
+      nextAct.delete(lid)
+      activeLayerIds.value = nextAct
+      const nextSus = new Set(suspendedLayerIds.value)
+      nextSus.delete(lid)
+      suspendedLayerIds.value = nextSus
+      const nextForce = new Set(manuallyForcedLayerIds.value)
+      nextForce.delete(lid)
+      manuallyForcedLayerIds.value = nextForce
     }
-    // Clean up from other sets
-    const nextAct = new Set(activeLayerIds.value)
-    nextAct.delete(lid)
-    activeLayerIds.value = nextAct
-    const nextSus = new Set(suspendedLayerIds.value)
-    nextSus.delete(lid)
-    suspendedLayerIds.value = nextSus
-    const nextForce = new Set(manuallyForcedLayerIds.value)
-    nextForce.delete(lid)
-    manuallyForcedLayerIds.value = nextForce
   }
 }
 
@@ -675,6 +699,8 @@ function switchProjection(crs: string) {
       detachWmsLayer(runtime)
     }
   }
+  // Dispose all composite bundles (will be recreated in new projection)
+  disposeAllBundles(map)
   currentCrs.value = crs
   applyBaseMapVisibility()
   map.setView(createView(crs))
@@ -738,7 +764,7 @@ function buildResolvedLayerMeta(): ResolvedLayerMeta[] {
   }))
 }
 
-function reconcileRenderPlan() {
+async function reconcileRenderPlan() {
   if (!map || renderMode.value === 'standard') return
 
   const view = map.getView()
@@ -754,6 +780,35 @@ function reconcileRenderPlan() {
     (b) => b.name.includes('全球海图概览') && b.crs === currentCrs.value && b.isEnabled,
   )
 
+  // Phase 1: smart mode with bundles — fetch render plan from API
+  let bundlePlanInput: {
+    bundles: import('../types').RenderBundleConfig[]
+    standaloneLayerIds: string[]
+  } | undefined
+
+  if (ENABLE_RENDER_BUNDLES && renderMode.value === 'smart') {
+    const projectId = config.value?.project.id
+    if (projectId && selectedLayerIds.value.size > 0) {
+      try {
+        const renderPlanResp = await fetchRenderPlan(projectId, {
+          layerIds: [...selectedLayerIds.value],
+          profile: lastLoadProfile.value,
+          projection: currentCrs.value,
+          renderMode: 'smart',
+          viewExtent: extent,
+          zoom: Math.round(zoom),
+        })
+        bundlePlanInput = {
+          bundles: renderPlanResp.bundles,
+          standaloneLayerIds: renderPlanResp.standaloneLayers.map((s) => s.layerId),
+        }
+      } catch {
+        // Fall back to per-layer smart mode on error
+        bundlePlanInput = undefined
+      }
+    }
+  }
+
   const plan = buildRenderPlan({
     selectedLayerIds: selectedLayerIds.value,
     attachedLayerIds: attachedLayerIds.value,
@@ -767,9 +822,27 @@ function reconcileRenderPlan() {
     resolution,
     renderMode: renderMode.value,
     overviewAvailable: overviewAvail,
+    bundlePlanInput,
   })
 
-  // Execute plan
+  // Execute bundle plan if present (smart mode with bundles)
+  if (plan.bundlePlan) {
+    executeBundlePlan(plan.bundlePlan, plan)
+  } else {
+    // Execute per-layer plan (existing logic)
+    executePerLayerPlan(plan)
+  }
+
+  // Update overview WMTS visibility
+  setOverviewVisible(plan.overviewVisible)
+
+  // Schedule LRU eviction check
+  window.clearTimeout(evictTimer)
+  evictTimer = window.setTimeout(runLruEviction, SMART_SUSPEND_EVICT_DELAY_MS)
+}
+
+/** Execute the per-layer attach/suspend/detach plan (existing logic, unchanged). */
+function executePerLayerPlan(plan: ReturnType<typeof buildRenderPlan>) {
   for (const id of plan.detach) {
     const runtime = runtimeLayers.value.find((r) => r.config.id === id)
     if (runtime) detachWmsLayer(runtime)
@@ -789,9 +862,9 @@ function reconcileRenderPlan() {
   for (const id of plan.attach) {
     const runtime = runtimeLayers.value.find((r) => r.config.id === id)
     if (!runtime || attachedLayerIds.value.has(id)) continue
-    const extent = transformLayerExtent(runtime.config.extent, currentCrs.value)
+    const projExtent = transformLayerExtent(runtime.config.extent, currentCrs.value)
     attachWmsLayer(runtime, {
-      extent,
+      extent: projExtent,
       minZoom: runtime.config.minZoom,
       maxZoom: runtime.config.maxZoom,
       visible: false,
@@ -813,13 +886,46 @@ function reconcileRenderPlan() {
     suspendedLayerIds.value = nextSus
     layerLastInViewportTime.set(id, Date.now())
   }
+}
 
-  // Update overview WMTS visibility
-  setOverviewVisible(plan.overviewVisible)
+/** Execute a bundle-aware plan: create/destroy composite TileWMS layers. */
+function executeBundlePlan(
+  bundlePlan: BundleRenderPlan,
+  plan: ReturnType<typeof buildRenderPlan>,
+) {
+  // Detach removed bundles
+  for (const bundleId of bundlePlan.detachBundles) {
+    detachBundle(bundleId, map!)
+  }
 
-  // Schedule LRU eviction check
-  window.clearTimeout(evictTimer)
-  evictTimer = window.setTimeout(runLruEviction, SMART_SUSPEND_EVICT_DELAY_MS)
+  // Suspend bundles (setVisible false)
+  for (const bundleId of bundlePlan.suspendBundles) {
+    setBundleVisible(bundleId, false)
+  }
+
+  // Attach new bundles
+  for (const config of bundlePlan.attachBundles) {
+    if (!map) continue
+    attachBundle(
+      config,
+      map,
+      createRetryTileLoadFunction(perfStats) as any,
+      (_bundleId) => {
+        // Bundle warming complete — no per-layer state to update
+      },
+      (_bundleId, _error) => {
+        // Bundle failed — error is tracked in bundle runtime
+      },
+    )
+  }
+
+  // Activate bundles
+  for (const bundleId of bundlePlan.activateBundles) {
+    setBundleVisible(bundleId, true)
+  }
+
+  // Handle standalone layers through existing per-layer path
+  executePerLayerPlan(plan)
 }
 
 function setOverviewVisible(visible: boolean) {
@@ -876,6 +982,7 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
     ElMessage.info('请先选择 S-57 数据集')
     return
   }
+  lastLoadProfile.value = profile  // remember for bundle plan API
   bulkCancelled.value = false
   bulkGeneration.value += 1
   const generation = bulkGeneration.value
@@ -1123,6 +1230,7 @@ function unloadAllChartLayers() {
   for (const runtime of runtimeLayers.value) {
     detachWmsLayer(runtime)
   }
+  if (map) disposeAllBundles(map)
   loadedLayerIds.value = new Set()
   lastBulkAttachedLayerIds.value = new Set()
   loadingLayerIds.value = new Set()

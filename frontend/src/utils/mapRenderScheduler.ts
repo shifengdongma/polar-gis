@@ -6,6 +6,7 @@
  * RenderPlan computation, warming budget, LRU eviction selection.
  */
 
+import type { RenderBundleConfig } from '../types'
 import { transformExtent } from 'ol/proj'
 import { intersects } from 'ol/extent'
 import {
@@ -75,6 +76,11 @@ export interface RenderPlanInput {
   resolution: number
   renderMode: ChartRenderMode
   overviewAvailable: boolean
+  /** Pre-fetched bundle plan from the render plan API (smart mode with bundles). */
+  bundlePlanInput?: {
+    bundles: RenderBundleConfig[]
+    standaloneLayerIds: string[]
+  }
 }
 
 export interface RenderPlan {
@@ -86,6 +92,30 @@ export interface RenderPlan {
   overviewVisible: boolean // show/hide global overview WMTS
   warming: string[] // new layers entering warming queue
   reasonByLayerId: Map<string, string>
+  /** Composite bundle plan — only set in smart mode with bundles enabled. */
+  bundlePlan?: BundleRenderPlan
+}
+
+/** Feature flag: enable composite render bundles in smart mode. */
+export const ENABLE_RENDER_BUNDLES: boolean =
+  typeof import.meta !== 'undefined' &&
+  (import.meta as any).env?.VITE_ENABLE_RENDER_BUNDLES !== 'false'
+
+
+// ── Bundle render plan (Phase 1) ─────────────────────────────────────
+
+/** Operations to maintain bundle layers in smart mode. */
+export interface BundleRenderPlan {
+  /** New bundle configs to create (via TileWMS with comma-separated LAYERS). */
+  attachBundles: RenderBundleConfig[]
+  /** Bundle IDs that should be removed and disposed. */
+  detachBundles: string[]
+  /** Bundle IDs to setVisible(true). */
+  activateBundles: string[]
+  /** Bundle IDs to setVisible(false). */
+  suspendBundles: string[]
+  /** Standalone layer IDs that continue through the per-layer path. */
+  standaloneLayerIds: string[]
 }
 
 // ── Viewport intersection ─────────────────────────────────────────────
@@ -280,6 +310,7 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
     resolution,
     renderMode,
     overviewAvailable,
+    bundlePlanInput,
   } = input
 
   const reason = new Map<string, string>()
@@ -345,6 +376,173 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
   }
 
   // ── Smart mode ────────────────────────────────────────────────────
+
+  // Phase 1: bundle-aware smart mode — composite multi-layer WMS
+  if (ENABLE_RENDER_BUNDLES && bundlePlanInput) {
+    const { bundles, standaloneLayerIds: standaloneIds } = bundlePlanInput
+    const standaloneSet = new Set(standaloneIds)
+    const bundledLayerIds = new Set(bundles.flatMap((b) => b.layerIds))
+
+    // Per-bundle viewport/scale check using union extents + permissive zoom
+    const inRangeBundleIds = new Set<string>()
+    for (const b of bundles) {
+      const inVp = isLayerInViewport(b.extent, viewExtent, currentProjection)
+      if (!inVp) continue
+      inRangeBundleIds.add(b.bundleId)
+    }
+
+    // Determine bundle operations
+    const attachBundles: RenderBundleConfig[] = []
+    const detachBundles: string[] = []
+    const activateBundles: string[] = []
+    const suspendBundles: string[] = []
+
+    for (const b of bundles) {
+      if (!inRangeBundleIds.has(b.bundleId)) {
+        // Out of viewport — suspend if active, detach if attached
+        if (false /* TODO: track attached bundles */) {
+          suspendBundles.push(b.bundleId)
+        }
+        continue
+      }
+      // In range — attach new, activate existing
+      attachBundles.push(b)
+    }
+
+    // Per-layer management: only standalone layers go through existing path
+    const inViewportAndScale = new Set<string>()
+    const outOfViewport = new Map<string, string>()
+    const outOfScale = new Map<string, string>()
+
+    for (const layer of layers) {
+      if (!selectedLayerIds.has(layer.id)) continue
+      // Skip bundled layers — handled by bundle plan
+      if (bundledLayerIds.has(layer.id)) continue
+      const forced = manuallyForcedLayerIds.has(layer.id)
+
+      const inVp = forced || isLayerInViewport(layer.extent, viewExtent, currentProjection)
+      const inScale =
+        forced ||
+        isLayerInScaleRange(
+          zoom, layer.minZoom, layer.maxZoom, resolution,
+          layer.minScaleDenominator, layer.maxScaleDenominator, layer.objectClass,
+        )
+
+      if (inVp && inScale) {
+        inViewportAndScale.add(layer.id)
+      } else {
+        if (!inVp && !forced) outOfViewport.set(layer.id, '视口外休眠')
+        if (!inScale && !forced) outOfScale.set(layer.id, '比例尺外休眠')
+      }
+    }
+
+    // Sort standalone candidates
+    const candidates = sortRenderCandidates(
+      layers.filter((l) => inViewportAndScale.has(l.id)),
+      manuallyForcedLayerIds,
+    )
+
+    const maxActive = SMART_MAX_ACTIVE_WMS_LAYERS
+    const maxWarming = SMART_MAX_WARMING_LAYERS
+    const currentWarmingCount = warmingLayerIds.size
+
+    const toAttach: string[] = []
+    const toActivate: string[] = []
+    const toSuspend: string[] = []
+    const warming: string[] = []
+
+    let queuedForActive = 0
+    for (const l of layers) {
+      if (activeLayerIds.has(l.id) && inViewportAndScale.has(l.id)) {
+        queuedForActive++
+      }
+    }
+
+    for (const layer of candidates) {
+      const lid = layer.id
+      if (attachedLayerIds.has(lid)) {
+        if (!activeLayerIds.has(lid)) {
+          if (queuedForActive < maxActive) {
+            toActivate.push(lid)
+            reason.set(lid, '进入视口')
+            queuedForActive++
+          } else {
+            toSuspend.push(lid)
+            reason.set(lid, '等待加载 (活动预算已满)')
+          }
+        }
+      } else {
+        if (warming.length + currentWarmingCount < maxWarming && queuedForActive < maxActive) {
+          toAttach.push(lid)
+          warming.push(lid)
+          queuedForActive++
+          reason.set(lid, '正在加载')
+        }
+      }
+    }
+
+    // Suspend standalone layers out of viewport/scale
+    for (const layer of layers) {
+      if (!activeLayerIds.has(layer.id)) continue
+      if (outOfViewport.has(layer.id)) {
+        toSuspend.push(layer.id)
+        reason.set(layer.id, outOfViewport.get(layer.id)!)
+      } else if (outOfScale.has(layer.id)) {
+        toSuspend.push(layer.id)
+        reason.set(layer.id, outOfScale.get(layer.id)!)
+      }
+    }
+
+    // LRU eviction (unchanged from per-layer path)
+    const toDetach: string[] = []
+    const totalAttached = attachedLayerIds.size + toAttach.length
+    if (totalAttached > SMART_MAX_ATTACHED_WMS_LAYERS) {
+      const excess = totalAttached - SMART_MAX_ATTACHED_WMS_LAYERS
+      const evictable = layers
+        .filter(
+          (l) =>
+            attachedLayerIds.has(l.id) &&
+            !activeLayerIds.has(l.id) &&
+            !manuallyForcedLayerIds.has(l.id) &&
+            !selectedLayerIds.has(l.id),
+        )
+        .sort((a, b) => (a.displayPriority ?? 900) - (b.displayPriority ?? 900))
+      for (let i = 0; i < Math.min(excess, evictable.length); i++) {
+        toDetach.push(evictable[i].id)
+        reason.set(evictable[i].id, 'LRU卸载')
+      }
+    }
+
+    const overviewVisible = overviewAvailable && zoom < SMART_OVERVIEW_ZOOM_THRESHOLD
+
+    const remainActive: string[] = []
+    const planChangeIds = new Set([...toAttach, ...toActivate, ...toSuspend, ...toDetach])
+    for (const layer of layers) {
+      if (activeLayerIds.has(layer.id) && !planChangeIds.has(layer.id)) {
+        remainActive.push(layer.id)
+      }
+    }
+
+    return {
+      activate: toActivate,
+      attach: toAttach,
+      suspend: toSuspend,
+      detach: toDetach,
+      remainActive,
+      overviewVisible,
+      warming,
+      reasonByLayerId: reason,
+      bundlePlan: {
+        attachBundles,
+        detachBundles,
+        activateBundles,
+        suspendBundles,
+        standaloneLayerIds: standaloneIds,
+      },
+    }
+  }
+
+  // Per-layer smart mode (existing logic, unchanged)
   const inViewportAndScale = new Set<string>()
   const outOfViewport = new Map<string, string>()
   const outOfScale = new Map<string, string>()

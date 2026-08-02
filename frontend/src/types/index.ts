@@ -411,3 +411,62 @@ export interface BasemapRunDetail extends S57ImportBatchDetail {
   baseMapIds: string[]
   warnings: string[]
 }
+
+// ── Map render plan (Phase 1: composite layer bundles) ───────────────
+
+export interface RenderBundleConfig {
+  bundleId: string
+  bucket: string
+  layerIds: string[]
+  layerNames: string[]
+  styles: string[]
+  zIndex: number
+  opacity: number
+  extent: number[] | null
+  minZoom: number | null
+  maxZoom: number | null
+  transport: string
+  serviceUrl: string
+  cacheKey: string
+}
+
+export interface StandaloneLayerConfig {
+  layerId: string
+  layerName: string
+  style: string
+  zIndex: number
+  opacity: number
+  reason: string // 'custom_opacity' | 'render_standalone'
+}
+
+export interface RenderPlanSummary {
+  logicalLayerCount: number
+  bundleCount: number
+  standaloneCount: number
+  estimatedRequestReductionRatio: number
+}
+
+export interface MapRenderPlanRequest {
+  layerIds: string[]
+  profile: string
+  projection: string
+  renderMode: string
+  viewExtent?: number[] | null
+  zoom?: number | null
+}
+
+export interface MapRenderPlanResponse {
+  generation: string
+  bundles: RenderBundleConfig[]
+  standaloneLayers: StandaloneLayerConfig[]
+  summary: RenderPlanSummary
+}
+
+export interface BundleViewState {
+  bundleId: string
+  logicalLayerIds: string[]
+  warming: boolean
+  active: boolean
+  failed: boolean
+  errorMessage?: string
+}

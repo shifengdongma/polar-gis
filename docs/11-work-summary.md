@@ -1,7 +1,59 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-07-28
+> 最后更新: 2026-08-02
+
+---
+
+## 会话 #13 — Phase 1: 组合图层渲染通道
+
+**日期**: 2026-08-02
+**状态**: ✅ 完成
+
+### 问题背景
+
+Polar-GIS 智能模式为每个 S-57 逻辑图层创建独立 OpenLayers TileWMS，30 个活动图层产生 30 × N 个瓦片 HTTP 请求，每个请求触发 GeoServer 渲染任务和 PostGIS 空间查询。首屏瓦片请求过多导致加载缓慢和地图拖拽卡顿。
+
+### 解决方案
+
+建立逻辑图层/渲染图层两层模型：保留逻辑图层的查询、导出、图例、透明度功能不变，在智能模式下将 20~30 个逻辑图层按语义桶（area_fill, line_structure, hazard_detail, navigation_aid, optional_other）压缩为约 3~6 个组合 TileWMS。
+
+### 修改内容
+
+#### 后端 (3 文件)
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/schemas.py` | 新增 MapRenderPlanRequest/Response, BundleConfigOut, StandaloneConfigOut, RenderPlanSummaryOut Schema |
+| `backend/app/api/projects.py` | 新增 POST /api/v1/projects/{id}/map-render/plan 端点，复用现有 resolve 端点的分类工具函数，调用已有 build_bundles() 纯函数 |
+| `backend/tests/test_projects.py` | 新增 6 个 API 集成测试覆盖打包分组、权限拒绝、非空间排除、确定性、空输入 |
+
+#### 前端 (6 文件)
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/types/index.ts` | 新增 RenderBundleConfig, StandaloneLayerConfig, MapRenderPlanResponse 等 6 个类型 |
+| `frontend/src/utils/mapRenderBundles.ts` | **新建** Bundle 运行时: 多图层 TileWMS 创建、原子替换、生命周期管理 |
+| `frontend/src/utils/mapRenderScheduler.ts` | 新增 BundleRenderPlan 接口、ENABLE_RENDER_BUNDLES Feature Flag、bundle-aware 调度路径 |
+| `frontend/src/api/projects.ts` | 新增 fetchRenderPlan() API client |
+| `frontend/src/views/MapWorkspaceView.vue` | reconcileRenderPlan() 异步获取渲染计划，新增 executeBundlePlan() 执行路径，toggleLayer/switchProjection/unloadAllChartLayers 增加 Bundle 生命周期管理 |
+| `frontend/src/utils/mapRenderBundles.test.ts` | **新建** 11 个 Bundle 单元测试 |
+
+### 实现效果
+
+- 智能模式 Bundle 数量: 30 逻辑图层 → 3~6 组合 TileWMS（预估减少 60-80% 瓦片请求）
+- standard 模式: 完全不受影响（bundlePlan 为 undefined）
+- overview 模式: 不受影响（仅使用全球概览 WMTS）
+- 属性查询: 不受影响（继续使用 PostGIS 直查）
+- Feature Flag: `VITE_ENABLE_RENDER_BUNDLES=false` 即可回滚
+- 测试覆盖: 后端 44 tests passed + 前端 11 tests passed + TypeScript 类型检查通过
+
+### 已知限制
+
+1. 动态组合 WMS 通过逗号分隔 LAYERS/STYLES 实现，GeoServer 需支持此特性
+2. Bundle 内部图层无法单独设置透明度（自动提升为 Standalone）
+3. 图层关闭/开启需触发 Bundle 重建（200ms 防抖），非即时响应
+4. 稳定组合 Layer Group 策略（Phase 1.2）待后续实现
 
 ---
 

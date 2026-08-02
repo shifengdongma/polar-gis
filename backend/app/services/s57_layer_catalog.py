@@ -305,3 +305,64 @@ def classify_s57_layer(
         low_zoom_visible=low_zoom,
         render_cost=rcost,
     )
+
+
+# ── Render bundle bucket mapping ─────────────────────────────────────────
+# Maps display_category → render bucket_id for smart-mode bundle grouping.
+# Consumed by map_render_plan.py.  Non-spatial → None (excluded).
+
+_BUCKET_BY_CATEGORY: Final[dict[str, str | None]] = {
+    "bathymetry": "area_fill",
+    "land_coast": "line_structure",
+    "depth": "hazard_detail",
+    "hazard": "hazard_detail",
+    "navigation_aid": "navigation_aid",
+    "routing": "line_structure",
+    "restriction_harbor": "area_fill",
+    "optional_thematic": "optional_other",
+    "optional_other": "optional_other",
+    "metadata_quality": "optional_other",
+    "non_spatial": None,
+}
+
+# Per-object-class overrides for the bucket mapping.
+# E.g. DEPCNT and SOUNDG share display_category="depth" but different buckets.
+_OBJECT_BUCKET_OVERRIDES: Final[dict[str, str]] = {
+    "DEPCNT": "line_structure",
+    "SOUNDG": "hazard_detail",
+    "SLCONS": "line_structure",
+    "COALNE": "line_structure",
+    "LNDARE": "area_fill",
+    "ICEARE": "area_fill",
+}
+
+# Bucket z-index values (lower = drawn first / below).
+_BUCKET_Z_INDEX: Final[dict[str, int]] = {
+    "area_fill": 10,
+    "line_structure": 20,
+    "hazard_detail": 30,
+    "navigation_aid": 50,
+    "optional_other": 100,
+}
+
+
+def get_render_bucket(display_category: str, object_class: str) -> str | None:
+    """Map a layer to its render bundle bucket for smart-mode grouping.
+
+    Returns the ``bucket_id`` string, or ``None`` for non-spatial layers.
+    Unknown categories fall back to ``"optional_other"``.
+    """
+    # Per-object-class override takes priority
+    override = _OBJECT_BUCKET_OVERRIDES.get(object_class.upper())
+    if override is not None:
+        return override
+
+    bucket = _BUCKET_BY_CATEGORY.get(display_category)
+    if bucket is None and display_category != "non_spatial":
+        return "optional_other"
+    return bucket
+
+
+def get_bucket_z_index(bucket_id: str) -> int:
+    """Return the z-index for a render bucket (default 15 for unknowns)."""
+    return _BUCKET_Z_INDEX.get(bucket_id, 15)
