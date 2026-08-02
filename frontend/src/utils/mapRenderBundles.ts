@@ -28,7 +28,7 @@ export interface BundleRuntime {
   status: BundleStatus
   generation: number
   pendingTiles: number
-  loadStateTimer?: ReturnType<typeof window.setTimeout>
+  loadStateTimer?: ReturnType<typeof setTimeout>
   /** When status === 'replacing', the new config we're warming up. */
   pendingReplacement?: BundleRuntime
   /** Error message when status === 'failed'. */
@@ -159,7 +159,7 @@ export function attachBundle(
 /**
  * Detach and dispose a bundle from the map.
  */
-export function detachBundle(bundleId: string, map: Map): void {
+export function detachBundle(bundleId: string, map: OlMap): void {
   const runtime = bundleRegistry.get(bundleId)
   if (!runtime) return
 
