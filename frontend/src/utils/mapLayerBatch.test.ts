@@ -98,13 +98,13 @@ describe('evaluateBulkThreshold', () => {
     expect(result.needsConfirm).toBe(true)
   })
 
-  it('allows 120 layers', () => {
-    const result = evaluateBulkThreshold(120)
+  it('allows 160 layers', () => {
+    const result = evaluateBulkThreshold(160)
     expect(result.blocked).toBe(false)
   })
 
-  it('blocks 121 layers', () => {
-    const result = evaluateBulkThreshold(121)
+  it('blocks 161 layers', () => {
+    const result = evaluateBulkThreshold(161)
     expect(result.blocked).toBe(true)
   })
 })
@@ -133,7 +133,7 @@ describe('constants', () => {
     expect(BULK_ATTACH_BATCH_SIZE).toBe(5)
     expect(BULK_ATTACH_INTERVAL_MS).toBe(200)
     expect(BULK_CONFIRM_THRESHOLD).toBe(40)
-    expect(BULK_HARD_LIMIT).toBe(120)
+    expect(BULK_HARD_LIMIT).toBe(160)
     expect(SMART_MAX_ACTIVE_WMS_LAYERS).toBe(20)
     expect(SMART_MAX_WARMING_LAYERS).toBe(3)
     expect(SMART_MAX_ATTACHED_WMS_LAYERS).toBe(40)

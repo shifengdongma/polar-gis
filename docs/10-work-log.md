@@ -5,6 +5,30 @@
 
 ---
 
+## 会话 #14 — 提高批量加载图层上限至160
+
+**日期**: 2026-08-03
+**目标**: 将批量加载图层硬限制从120提高到160
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 修改前端 BULK_HARD_LIMIT 常量 (120→160) | ✅ 完成 |
+| 2 | 修改后端 schema max_length (120→160) | ✅ 完成 |
+| 3 | 更新前端单元测试 | ✅ 完成 |
+| 4 | 验证测试通过 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-03 | `frontend/src/utils/mapLayerBatch.ts` | 修改 | BULK_HARD_LIMIT 120 → 160 |
+| 2026-08-03 | `backend/app/schemas.py` | 修改 | MapRenderPlanRequest.layer_ids max_length 120 → 160 |
+| 2026-08-03 | `frontend/src/utils/mapLayerBatch.test.ts` | 修改 | 测试用例阈值 120/121 → 160/161 |
+
+---
+
 ## 会话 #13 — Phase 1: 组合图层渲染通道 (Composite Layer Render Bundles)
 
 **日期**: 2026-08-02

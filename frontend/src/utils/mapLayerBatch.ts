@@ -13,7 +13,7 @@ export const BULK_ATTACH_INTERVAL_MS = 200
 export const BULK_CONFIRM_THRESHOLD = 40
 
 /** Hard limit — loading is refused beyond this count. */
-export const BULK_HARD_LIMIT = 120
+export const BULK_HARD_LIMIT = 160
 
 // ── Smart render mode constants ─────────────────────────────────────
 

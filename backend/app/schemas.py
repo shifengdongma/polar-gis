@@ -228,7 +228,7 @@ class BulkMapLayerResolveResponse(ApiModel):
 
 
 class MapRenderPlanRequest(ApiModel):
-    layer_ids: list[UUID] = Field(min_length=0, max_length=120)
+    layer_ids: list[UUID] = Field(min_length=0, max_length=160)
     profile: str = Field(min_length=1, max_length=32)
     projection: str = Field(default="EPSG:3857", pattern=r"^EPSG:\d+$")
     render_mode: str = Field(default="smart")
