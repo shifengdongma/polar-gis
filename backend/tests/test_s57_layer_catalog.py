@@ -18,7 +18,6 @@ EXPECTED_CORE_CHART = {
     "LNDARE",
     "DEPARE",
     "DEPCNT",
-    "SOUNDG",
     "SEAARE",
     "ICEARE",
     "OBSTRN",
@@ -54,6 +53,7 @@ EXPECTED_NAVIGATION_RECOMMENDED = {
     "SLCONS",
 }
 EXPECTED_OPTIONAL_THEMATIC = {
+    "SOUNDG",
     "ADMARE",
     "BUAARE",
     "BUISGL",
@@ -118,7 +118,7 @@ def test_normalizes_codes_and_assigns_display_priorities() -> None:
     assert classify_s57_layer("workspace: depare ", "Multi Polygon", True).code == "DEPARE"
     assert classify_s57_layer("DEPARE", "Multi Polygon", True).display_priority == 10
     assert classify_s57_layer("COALNE", "Line String", True).display_priority == 20
-    assert classify_s57_layer("SOUNDG", "Point", True).display_priority == 30
+    assert classify_s57_layer("SOUNDG", "Point", True).display_priority == 100
     assert classify_s57_layer("WRECKS", "Point", True).display_priority == 40
     assert classify_s57_layer("LIGHTS", "Point", True).display_priority == 50
     assert classify_s57_layer("TSSBND", "Line String", True).display_priority == 60
@@ -132,7 +132,7 @@ def test_assigns_stable_display_categories() -> None:
     expected = {
         "DEPARE": "bathymetry",
         "COALNE": "land_coast",
-        "SOUNDG": "depth",
+        "SOUNDG": "optional_thematic",
         "WRECKS": "hazard",
         "LIGHTS": "navigation_aid",
         "TSSBND": "routing",

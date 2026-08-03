@@ -32,7 +32,6 @@ _CORE_CHART_RULES = MappingProxyType(
         "LNDARE": ("land_coast", 20),
         "ICEARE": ("land_coast", 20),
         "DEPCNT": ("depth", 20),
-        "SOUNDG": ("depth", 30),
         "OBSTRN": ("hazard", 40),
         "WRECKS": ("hazard", 40),
         "UWTROC": ("hazard", 40),
@@ -71,6 +70,7 @@ NAVIGATION_RECOMMENDED: Final = frozenset(
 )
 OPTIONAL_THEMATIC: Final = frozenset(
     {
+        "SOUNDG",
         "ADMARE",
         "BUAARE",
         "BUISGL",

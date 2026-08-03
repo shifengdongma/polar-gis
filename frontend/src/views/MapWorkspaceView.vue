@@ -69,6 +69,7 @@ import {
   SMART_MAX_ATTACHED_WMS_LAYERS,
   TILE_RETRY_MAX_ATTEMPTS,
   TILE_RETRY_BASE_DELAY_MS,
+  TILE_WARMING_TIMEOUT_MS,
 } from '../utils/mapLayerBatch'
 import {
   buildRenderPlan,
@@ -181,10 +182,13 @@ const renderGeneration = ref(0)
 const lastBulkAttachedLayerIds = ref(new Set<string>())
 /** Last profile used for batch loading — needed for bundle plan API. */
 const lastLoadProfile = ref<S57LoadProfile>('core_chart')
+let lastBundlePlanCacheKey = ''
+let lastBundlePlanCache: { bundles: import('../types').RenderBundleConfig[]; standaloneLayerIds: string[] } | undefined
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
 let evictTimer: number | undefined
 const layerLastInViewportTime = new Map<string, number>()
+const layerWarmingStartTime = new Map<string, number>()
 
 // ── Performance stats (lightweight, no console spam) ──────────────────
 const perfStats = new PerLayerStatsManager()
@@ -539,6 +543,11 @@ function attachWmsLayer(
     if (runtime.pendingTiles === 0) {
       window.clearTimeout(runtime.loadStateTimer)
       if (runtime.loadState !== 'error') runtime.loadState = 'loaded'
+      // Drain from warming queue — first tile(s) successfully loaded
+      const nextWarm = new Set(warmingLayerIds.value)
+      if (nextWarm.delete(runtime.config.id)) {
+        warmingLayerIds.value = nextWarm
+      }
     }
   })
   source.on('tileloaderror', () => {
@@ -546,6 +555,11 @@ function attachWmsLayer(
     perfStats.recordTileError(runtime.config.id)
     window.clearTimeout(runtime.loadStateTimer)
     runtime.loadState = 'error'
+    // Drain from warming queue on error too — allow next candidate to proceed
+    const nextWarm = new Set(warmingLayerIds.value)
+    if (nextWarm.delete(runtime.config.id)) {
+      warmingLayerIds.value = nextWarm
+    }
   })
   const tileLayer = new TileLayer({
     source,
@@ -598,11 +612,17 @@ function detachWmsLayer(runtime: RuntimeLayer) {
   nextSus.delete(lid)
   suspendedLayerIds.value = nextSus
   layerLastInViewportTime.delete(lid)
+  layerWarmingStartTime.delete(lid)
 }
 
 async function toggleDataset(dataset: RuntimeDataset) {
   dataset.expanded = !dataset.expanded
-  if (!dataset.expanded || dataset.loaded || dataset.loading || !config.value) return
+  if (!dataset.expanded || dataset.loading || !config.value) return
+  // If layers are already populated (e.g., by batch load), skip API re-fetch
+  if (dataset.layers.length > 0) {
+    dataset.loaded = true
+    return
+  }
   dataset.loading = true
   try {
     const response = await api.get<MapLayerConfig[]>(
@@ -693,8 +713,10 @@ function switchProjection(crs: string) {
       detachWmsLayer(runtime)
     }
   }
-  // Dispose all composite bundles (will be recreated in new projection)
+  // Dispose all composite bundles and invalidate bundle plan cache
   disposeAllBundles(map)
+  lastBundlePlanCacheKey = ''
+  lastBundlePlanCache = undefined
   currentCrs.value = crs
   applyBaseMapVisibility()
   map.setView(createView(crs))
@@ -751,7 +773,7 @@ function buildResolvedLayerMeta(): ResolvedLayerMeta[] {
     maxZoom: r.config.maxZoom ?? null,
     displayPriority: r.config.sortOrder ?? 900,
     objectClass: r.config.objectClass ?? null,
-    loadProfile: '',
+    loadProfile: (r.config.metadata as any)?.s57?.loadProfile ?? '',
     minScaleDenominator: (r.config.metadata as any)?.s57?.minScaleDenominator ?? null,
     maxScaleDenominator: (r.config.metadata as any)?.s57?.maxScaleDenominator ?? null,
     renderCost: (r.config.metadata as any)?.s57?.renderCost ?? null,
@@ -760,6 +782,21 @@ function buildResolvedLayerMeta(): ResolvedLayerMeta[] {
 
 async function reconcileRenderPlan() {
   if (!map || renderMode.value === 'standard') return
+
+  // Drain stale warming entries — allows the queue to progress when a layer
+  // never fires tileloadend (e.g. out-of-viewport tiles are never requested).
+  const now = Date.now()
+  let warmingChanged = false
+  let nextWarm = warmingLayerIds.value
+  for (const lid of warmingLayerIds.value) {
+    const start = layerWarmingStartTime.get(lid) ?? now
+    if (now - start > TILE_WARMING_TIMEOUT_MS) {
+      if (!warmingChanged) { nextWarm = new Set(warmingLayerIds.value); warmingChanged = true }
+      nextWarm.delete(lid)
+      layerWarmingStartTime.delete(lid)
+    }
+  }
+  if (warmingChanged) warmingLayerIds.value = nextWarm
 
   const view = map.getView()
   if (!view) return
@@ -774,31 +811,45 @@ async function reconcileRenderPlan() {
     (b) => b.name.includes('全球海图概览') && b.crs === currentCrs.value && b.isEnabled,
   )
 
-  // Phase 1: smart mode with bundles — fetch render plan from API
+  // Phase 1: smart mode with bundles — fetch render plan from API.
+  // Cache by (sorted layer IDs + projection) to avoid redundant calls
+  // during pan/zoom — the bundle structure only changes when layer selection
+  // or projection changes.
   let bundlePlanInput: {
     bundles: import('../types').RenderBundleConfig[]
     standaloneLayerIds: string[]
   } | undefined
 
+  const bundleCacheKey = (
+    [...selectedLayerIds.value].sort().join(',')
+    + '|' + currentCrs.value
+  )
+
   if (ENABLE_RENDER_BUNDLES && renderMode.value === 'smart') {
     const projectId = config.value?.project.id
     if (projectId && selectedLayerIds.value.size > 0) {
-      try {
-        const renderPlanResp = await fetchRenderPlan(projectId, {
-          layerIds: [...selectedLayerIds.value],
-          profile: lastLoadProfile.value,
-          projection: currentCrs.value,
-          renderMode: 'smart',
-          viewExtent: extent,
-          zoom: Math.round(zoom),
-        })
-        bundlePlanInput = {
-          bundles: renderPlanResp.bundles,
-          standaloneLayerIds: renderPlanResp.standaloneLayers.map((s) => s.layerId),
+      if (lastBundlePlanCacheKey === bundleCacheKey && lastBundlePlanCache) {
+        bundlePlanInput = lastBundlePlanCache
+      } else {
+        try {
+          const renderPlanResp = await fetchRenderPlan(projectId, {
+            layerIds: [...selectedLayerIds.value],
+            profile: lastLoadProfile.value,
+            projection: currentCrs.value,
+            renderMode: 'smart',
+            viewExtent: extent,
+            zoom: Math.round(zoom),
+          })
+          bundlePlanInput = {
+            bundles: renderPlanResp.bundles,
+            standaloneLayerIds: renderPlanResp.standaloneLayers.map((s) => s.layerId),
+          }
+          lastBundlePlanCacheKey = bundleCacheKey
+          lastBundlePlanCache = bundlePlanInput
+        } catch {
+          // Fall back to per-layer smart mode on error
+          bundlePlanInput = undefined
         }
-      } catch {
-        // Fall back to per-layer smart mode on error
-        bundlePlanInput = undefined
       }
     }
   }
@@ -835,50 +886,62 @@ async function reconcileRenderPlan() {
   evictTimer = window.setTimeout(runLruEviction, SMART_SUSPEND_EVICT_DELAY_MS)
 }
 
-/** Execute the per-layer attach/suspend/detach plan (existing logic, unchanged). */
+/** Execute the per-layer attach/suspend/detach plan. */
 function executePerLayerPlan(plan: ReturnType<typeof buildRenderPlan>) {
+  // Phase 1 — detach (dispose + remove from all state sets)
   for (const id of plan.detach) {
     const runtime = runtimeLayers.value.find((r) => r.config.id === id)
     if (runtime) detachWmsLayer(runtime)
   }
 
-  for (const id of plan.suspend) {
-    const layer = wmsLayers.get(id)
-    if (layer) layer.setVisible(false)
-    const nextSus = new Set(suspendedLayerIds.value)
-    nextSus.add(id)
-    suspendedLayerIds.value = nextSus
-    const nextAct = new Set(activeLayerIds.value)
-    nextAct.delete(id)
-    activeLayerIds.value = nextAct
+  if (plan.suspend.length > 0) {
+    const susAdd = new Set(suspendedLayerIds.value)
+    const actDel = new Set(activeLayerIds.value)
+    for (const id of plan.suspend) {
+      const layer = wmsLayers.get(id)
+      if (layer) layer.setVisible(false)
+      susAdd.add(id)
+      actDel.delete(id)
+    }
+    suspendedLayerIds.value = susAdd
+    activeLayerIds.value = actDel
   }
 
-  for (const id of plan.attach) {
-    const runtime = runtimeLayers.value.find((r) => r.config.id === id)
-    if (!runtime || attachedLayerIds.value.has(id)) continue
-    const projExtent = transformLayerExtent(runtime.config.extent, currentCrs.value)
-    attachWmsLayer(runtime, {
-      extent: projExtent,
-      minZoom: runtime.config.minZoom,
-      maxZoom: runtime.config.maxZoom,
-      visible: false,
-    })
-    const nextWarm = new Set(warmingLayerIds.value)
-    nextWarm.add(id)
-    warmingLayerIds.value = nextWarm
-    layerLastInViewportTime.set(id, Date.now())
+  // Phase 3 — attach (create TileWMS, invisible initially)
+  if (plan.attach.length > 0) {
+    const warmAdd = new Set(warmingLayerIds.value)
+    const now = Date.now()
+    for (const id of plan.attach) {
+      const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+      if (!runtime || attachedLayerIds.value.has(id)) continue
+      const projExtent = transformLayerExtent(runtime.config.extent, currentCrs.value)
+      attachWmsLayer(runtime, {
+        extent: projExtent,
+        minZoom: runtime.config.minZoom,
+        maxZoom: runtime.config.maxZoom,
+        visible: false,
+      })
+      warmAdd.add(id)
+      layerWarmingStartTime.set(id, now)
+      layerLastInViewportTime.set(id, now)
+    }
+    warmingLayerIds.value = warmAdd
   }
 
-  for (const id of plan.activate) {
-    const layer = wmsLayers.get(id)
-    if (layer) layer.setVisible(true)
-    const nextAct = new Set(activeLayerIds.value)
-    nextAct.add(id)
-    activeLayerIds.value = nextAct
-    const nextSus = new Set(suspendedLayerIds.value)
-    nextSus.delete(id)
-    suspendedLayerIds.value = nextSus
-    layerLastInViewportTime.set(id, Date.now())
+  // Phase 4 — activate (setVisible true)
+  if (plan.activate.length > 0) {
+    const actAdd = new Set(activeLayerIds.value)
+    const susDel = new Set(suspendedLayerIds.value)
+    const now = Date.now()
+    for (const id of plan.activate) {
+      const layer = wmsLayers.get(id)
+      if (layer) layer.setVisible(true)
+      actAdd.add(id)
+      susDel.delete(id)
+      layerLastInViewportTime.set(id, now)
+    }
+    activeLayerIds.value = actAdd
+    suspendedLayerIds.value = susDel
   }
 }
 
@@ -977,6 +1040,8 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
     return
   }
   lastLoadProfile.value = profile  // remember for bundle plan API
+  lastBundlePlanCacheKey = ''        // invalidate bundle cache on new batch
+  lastBundlePlanCache = undefined
   bulkCancelled.value = false
   bulkGeneration.value += 1
   const generation = bulkGeneration.value
@@ -1039,7 +1104,7 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
               extent: rl.extent,
               objectClass: rl.objectClass,
               objectNameZh: rl.objectNameZh,
-              metadata: {},
+              metadata: { s57: { loadProfile: rl.loadProfile } },
             }
             const runtime: RuntimeLayer = {
               config,
@@ -1055,6 +1120,15 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
         }
       }
       allResolved.push(...ds.layers)
+    }
+
+    // Mark resolved datasets as loaded so toggleDataset doesn't re-fetch API,
+    // and the sidebar can show layers expanded immediately.
+    for (const ds of response.datasets) {
+      const runtimeDs = runtimeDatasets.value.find((d) => d.config.id === ds.datasetId)
+      if (runtimeDs && ds.layers.length > 0) {
+        runtimeDs.loaded = true
+      }
     }
 
     // Filter and sort candidates
@@ -1628,7 +1702,7 @@ onBeforeUnmount(() => {
                 </button>
                 <button class="dataset-title" type="button" @click="toggleDataset(dataset)">
                   <strong>{{ dataset.config.name }}</strong>
-                  <small>{{ dataset.config.code }} · {{ dataset.config.memberLayerCount }} 个图层</small>
+                  <small>{{ dataset.config.code }} · {{ dataset.config.memberLayerCount }} 个图层<span v-if="dataset.loaded"> · 已加载 {{ dataset.layers.filter(l => selectedLayerIds.has(l.config.id)).length }} 个</span></small>
                 </button>
                 <span v-if="dataset.loading" class="dataset-loading">加载中</span>
               </div>

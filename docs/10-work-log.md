@@ -5,6 +5,65 @@
 
 ---
 
+## 会话 #15 — 批量加载后优化：warming队列修复 + SOUNDG移除 + UI修复
+
+**日期**: 2026-08-03
+**目标**: 修复批量加载后的三个问题：缩放后图层切换失效、数据集展开状态、SOUNDG从核心图层移除
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 后端：SOUNDG 从 CORE_CHART 移到 OPTIONAL_THEMATIC | ✅ 完成 |
+| 2 | 后端：更新测试（catalog + bundle + resolve） | ✅ 完成 |
+| 3 | 前端：修复 warming 队列永不排空的关键 Bug | ✅ 完成 |
+| 4 | 前端：批量加载后数据集展开状态修复 | ✅ 完成 |
+| 5 | 前端：辅助性能优化（API 缓存/loadProfile/Set 批量化） | ✅ 完成 |
+| 6 | 前端：修复两个测试用例的过期常量值 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-03 | `backend/app/services/s57_layer_catalog.py` | 修改 | SOUNDG 从 _CORE_CHART_RULES 移到 OPTIONAL_THEMATIC |
+| 2026-08-03 | `backend/tests/test_s57_layer_catalog.py` | 修改 | EXPECTED_CORE_CHART 移除 SOUNDG；EXPECTED_OPTIONAL_THEMATIC 添加 SOUNDG；更新 display_priority/category 断言 |
+| 2026-08-03 | `backend/tests/test_map_render_plan.py` | 修改 | 更新 SOUNDG 的 display_category 测试参数和 categories/objects fixture |
+| 2026-08-03 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | 6 处变更见下方详细说明 |
+| 2026-08-03 | `frontend/src/utils/mapLayerBatch.test.ts` | 修改 | 更新 SMART_MAX_* 常量的过期望值（20→30, 3→10, 40→60） |
+| 2026-08-03 | `frontend/src/utils/mapRenderScheduler.test.ts` | 修改 | 修复 test 26 的排序断言以适配 warming=10 预算 |
+
+### 关键 Bug 修复：warming 队列永不排空
+
+根因：`warmingLayerIds` 仅在 `attachWmsLayer` 中添加、`detachWmsLayer` 中移除，但首块瓦片成功加载（tileloadend）后从不移除。这导致 `warmingLayerIds.size === 10` 永久保持，调度器 gate `warming.length + currentWarmingCount < SMART_MAX_WARMING_LAYERS` 永久拒绝所有后续 attach。
+
+修复：
+1. `tileloadend`/`tileloaderror` 回调中：`pendingTiles === 0` 时从 warmingLayerIds 移除
+2. `reconcileRenderPlan` 开头：扫描 warming 超时（`TILE_WARMING_TIMEOUT_MS=15s`）图层并排空
+3. 新增 `layerWarmingStartTime` Map 记录进入 warming 的时间
+
+### MapWorkspaceView.vue 变更汇总
+
+1. **warming 排空**：tileloadend/tileloaderror 中当 pendingTiles 归零时移除 warmingLayerIds 条目
+2. **warming 超时**：reconcileRenderPlan 中扫描超时 warming 图层
+3. **数据集展开**：批量加载后标记 `dataset.loaded = true`；toggleDataset 跳过已加载数据集的 API 重取
+4. **已加载计数**：数据集摘要行显示"已加载 N 个"
+5. **loadProfile 传递**：resolve 结果中的 loadProfile 写入 config.metadata.s57
+6. **Set 批量化**：executePerLayerPlan 中 suspend/attach/activate 的 Set 操作收集后一次性更新
+7. **Bundle API 缓存**：按 (sorted layerIds + projection) 缓存 bundle plan，避免每次 moveend 请求
+
+### 测试结果
+
+- 后端：125 passed ✅
+- 前端：70 passed, vue-tsc clean ✅
+
+### 关键决策
+
+1. SOUNDG 移至 OPTIONAL_THEMATIC 后，display_category 变为 `"optional_thematic"`，display_priority 变为 `100`，recommended 变为 `False`。_SCALE_RULES 和 _OBJECT_BUCKET_OVERRIDES 保留不变。
+2. warming 排空采用事件驱动（tileloadend）+ 超时兜底（15s）双保险
+3. 不自动展开批量加载的数据集面板，仅标记 `loaded=true` 并显示计数，用户手动控制展开
+
+---
+
 ## 会话 #14 — 提高批量加载图层上限至160
 
 **日期**: 2026-08-03

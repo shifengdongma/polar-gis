@@ -5,6 +5,51 @@
 
 ---
 
+## 会话 #15 — 批量加载后优化：warming队列修复 + SOUNDG移除 + UI修复
+
+**日期**: 2026-08-03
+**状态**: ✅ 完成
+
+### 问题背景
+
+用户反馈三个问题：
+1. 加载100+图层后缩放平移时图层内容切换缓慢甚至失效
+2. 批量加载完成后左侧数据集按钮全部关闭，无法看到加载了哪些图层
+3. "水深点"(SOUNDG) 在批量"核心图层"加载中不应作为核心指标
+
+### 修改内容
+
+#### 后端
+
+| 文件 | 修改说明 |
+|------|----------|
+| `backend/app/services/s57_layer_catalog.py` | SOUNDG 从 _CORE_CHART_RULES 移除，添加到 OPTIONAL_THEMATIC；CORE_CHART 自动缩减为 11 个对象类 |
+| `backend/tests/test_s57_layer_catalog.py` | EXPECTED_CORE_CHART 移除 SOUNDG；EXPECTED_OPTIONAL_THEMATIC 添加 SOUNDG；更新 display_priority(30→100) 和 display_category(depth→optional_thematic) 断言 |
+| `backend/tests/test_map_render_plan.py` | 更新 test_depth_soundg 的 display_category 参数；更新 categories/objects fixture 以匹配新分类 |
+
+#### 前端
+
+| 文件 | 修改说明 |
+|------|----------|
+| `frontend/src/views/MapWorkspaceView.vue` | 🔴 warming 排空(tileloadend/tileloaderror) + 超时排空(reconcile开场)；数据集加载状态标记；toggleDataset 防重复请求；已加载计数显示；loadProfile 传递；Set 批量更新；Bundle API 缓存 |
+| `frontend/src/utils/mapLayerBatch.test.ts` | 修正 SMART_MAX_* 常量测试值（过期 Phase2 值 → 当前值） |
+| `frontend/src/utils/mapRenderScheduler.test.ts` | 修复 test26 排序断言以适配 warming=10 |
+
+### 实现效果
+
+1. **warming 队列修复（关键）**：图层首块瓦片加载后自动从 warming 队列移除，后续图层可以正常进入 warming，缩放平移后新图层正常加载
+2. **数据集面板**：批量加载后数据集显示"已加载 N 个"，点击展开直接显示图层无需重新请求
+3. **SOUNDG 移除**：批量"核心图层"不再加载水深点，SOUNDG 仍可手动单独加载
+4. **性能优化**：Bundle API 缓存减少 moveend HTTP 请求；Set 批量更新降低 reactive 开销
+
+### 验证结果
+
+- 后端：125 tests passed ✅
+- 前端：70 tests passed ✅
+- vue-tsc：零错误 ✅
+
+---
+
 ## 会话 #14 — 提高批量加载图层上限至160
 
 **日期**: 2026-08-03

@@ -58,8 +58,8 @@ class TestGetBucketForLayer:
         assert bucket is not None
         assert bucket.bucket_id == "line_structure"
 
-    def test_depth_soundg_overrides_to_hazard_detail(self):
-        bucket = get_bucket_for_layer("depth", "SOUNDG")
+    def test_optional_thematic_soundg_overrides_to_hazard_detail(self):
+        bucket = get_bucket_for_layer("optional_thematic", "SOUNDG")
         assert bucket is not None
         assert bucket.bucket_id == "hazard_detail"
 
@@ -236,7 +236,8 @@ class TestBuildBundles:
         categories = [
             ("bathymetry", 10), ("bathymetry", 10),
             ("land_coast", 20), ("land_coast", 20), ("land_coast", 20),
-            ("depth", 20), ("depth", 30),
+            ("depth", 20),
+            ("optional_thematic", 100),
             ("hazard", 40), ("hazard", 40), ("hazard", 40), ("hazard", 40),
             ("navigation_aid", 50), ("navigation_aid", 50),
             ("routing", 60),
@@ -247,15 +248,15 @@ class TestBuildBundles:
         objects = [
             ("DEPARE", "SEAARE"),
             ("COALNE", "LNDARE", "ICEARE"),
-            ("DEPCNT", "SOUNDG"),
+            ("DEPCNT",),
             ("WRECKS", "OBSTRN", "UWTROC", "CTNARE"),
             ("LIGHTS", "FOGSIG"),
             ("TSSBND",),
             ("RESARE",),
-            ("ADMARE",),
+            ("ADMARE", "SOUNDG"),
             ("DEPARE", "SEAARE"),
             ("COALNE", "LNDARE", "ICEARE"),
-            ("DEPCNT", "SOUNDG"),
+            ("DEPCNT",),
             ("WRECKS", "OBSTRN", "UWTROC", "CTNARE"),
             ("LIGHTS", "FOGSIG"),
             ("TSSBND",),

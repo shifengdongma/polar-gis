@@ -374,13 +374,20 @@ describe('buildRenderPlan — warming budget', () => {
       resolution: 1000,
     })
     const plan = buildRenderPlan(input)
-    // First 3 (priority 10) should be in attach/activate before priority 900
+    // First 3 (priority 10) should appear before any priority 900 layer
+    // in the combined attach + activate output
     const earlyIds = new Set(['l0', 'l1', 'l2'])
+    let seenLate = false
     for (const id of [...plan.attach, ...plan.activate]) {
-      if (earlyIds.size > 0) {
-        expect(earlyIds.has(id)).toBe(true)
+      if (!earlyIds.has(id)) seenLate = true
+      else if (seenLate) {
+        // A high-priority layer appeared after a low-priority one — wrong
+        expect('high-priority layer after low-priority').toBe('unexpected ordering')
       }
     }
+    // At minimum, the first 3 attach/activate slots should be high-priority
+    const first3 = [...plan.attach, ...plan.activate].slice(0, 3)
+    expect(first3.every((id) => earlyIds.has(id))).toBe(true)
   })
 })
 
