@@ -5,6 +5,50 @@
 
 ---
 
+## 会话 #16 — 修复调度器未触发 + 瓦片请求泛滥 + overview死代码
+
+**日期**: 2026-08-03
+**状态**: ✅ 完成
+
+### 问题背景
+
+上次修复 warming 排空后仍存在三个问题：
+1. 状态面板始终显示"活动0 休眠0 等待0"，智能/标准模式切换无区别
+2. 平移地图时底图瓦片大面积空白
+3. 批量加载的后面图层移动到相应位置也加载不出来
+
+### 根因
+
+1. **调度器未触发**：批量加载完成后 `reconcileRenderPlan()` 从未被调用。`activeLayerIds`/`suspendedLayerIds`/`warmingLayerIds` 三个 Set 仅由 `executePerLayerPlan` 填充，而 executePerLayerPlan 仅由 reconcile 调用。
+2. **连接池饥饿**：`fetch()` 定制 tileLoadFunction 无 AbortController → 平移时僵尸请求堆积；`.catch()` 对所有错误无条件重试 → 雪崩；30层×20瓦片=600并发 → 底图图片加载饿死。
+3. **无范围图层永久占预算**：null extent 图层被保守视为"always in viewport"，永久占用30个活动槽位，后续图层永远得不到激活。
+
+### 修改内容
+
+| 文件 | 修改说明 |
+|------|----------|
+| `frontend/src/views/MapWorkspaceView.vue` | 批量加载完成调用 reconcileRenderPlan()；tileLoadFunction 添加 AbortController + .catch() 仅重试 TypeError 网络错误；setOverviewVisible 从空实现改为实际切换 WMTS 可见性 |
+| `frontend/src/utils/mapLayerBatch.ts` | SMART_MAX_ACTIVE_WMS_LAYERS 30→20；新增 SMART_MAX_UNBOUNDED_ACTIVE=10 |
+| `frontend/src/utils/mapRenderScheduler.ts` | import/export SMART_MAX_UNBOUNDED_ACTIVE；buildRenderPlan 中增加无范围图层计数和二级预算限制 |
+| `frontend/src/utils/mapLayerBatch.test.ts` | 更新常量测试值 |
+
+### 实现效果
+
+1. 批量加载完成后立即看到"活动 N 休眠 M 等待 0"正确统计
+2. 视口内图层自动激活，视口外自动休眠
+3. 智能/标准模式有明显区别：标准=全开，智能=视口裁剪
+4. 无范围图层最多占用10个活动槽，其余按优先级排序
+5. 平移时旧瓦片 fetch 立即取消，不堆积僵尸请求
+6. 仅网络错误重试（429/502/503/504），404/500 不重试
+7. setOverviewVisible 实际切换全球海图概览 WMTS
+
+### 验证结果
+
+- 前端：70 tests passed ✅
+- vue-tsc：零错误 ✅
+
+---
+
 ## 会话 #15 — 批量加载后优化：warming队列修复 + SOUNDG移除 + UI修复
 
 **日期**: 2026-08-03

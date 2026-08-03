@@ -5,6 +5,44 @@
 
 ---
 
+## 会话 #16 — 修复调度器未触发 + 瓦片请求泛滥 + overview死代码
+
+**日期**: 2026-08-03
+**目标**: 修复三个遗留问题：活动/休眠/等待始终为0、底图空白、后续图层加载不出
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 批量加载后调用 reconcileRenderPlan 填充调度器状态 | ✅ 完成 |
+| 2 | tileLoadFunction 加 AbortController + 修正 .catch() 重试范围 | ✅ 完成 |
+| 3 | SMART_MAX_ACTIVE_WMS_LAYERS 30→20 | ✅ 完成 |
+| 4 | 实现 setOverviewVisible（替代空实现） | ✅ 完成 |
+| 5 | 新增 SMART_MAX_UNBOUNDED_ACTIVE=10 限制无范围图层占用 | ✅ 完成 |
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-03 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | 4处：batch后调用reconcile；tileLoadFunction加AbortController+修正重试；setOverviewVisible实现 |
+| 2026-08-03 | `frontend/src/utils/mapLayerBatch.ts` | 修改 | SMART_MAX_ACTIVE_WMS_LAYERS 30→20；新增 SMART_MAX_UNBOUNDED_ACTIVE=10 |
+| 2026-08-03 | `frontend/src/utils/mapLayerBatch.test.ts` | 修改 | 更新常量测试 |
+| 2026-08-03 | `frontend/src/utils/mapRenderScheduler.ts` | 修改 | import/export SMART_MAX_UNBOUNDED_ACTIVE；buildRenderPlan中增加无范围图层计数和预算 |
+| 2026-08-03 | `frontend/src/utils/mapRenderScheduler.test.ts` | (no changes) |
+
+### 根因分析
+
+1. **调度器未触发**：批量加载直接调用 attachWmsLayer + setVisible(true)，从未调用 reconcileRenderPlan。activeLayerIds/suspendedLayerIds/warmingLayerIds 三个 Set 仅由 executePerLayerPlan 填充。
+2. **底图空白**：fetch() 无 AbortController → 平移时僵尸请求持续占用连接池；.catch() 对所有错误无条件重试 → 重试雪崩；30活动层×20瓦片=600并发请求 → 底图图片加载饿死。
+3. **后续图层不加载**：(a) null extent 图层永久占用活动预算；(b) 首轮 reconcile 会将超出预算的图层全部 suspend；(c) 激活已attach图层需要第二次 reconcile 触发。
+
+### 测试结果
+
+- 前端：70 passed ✅
+- TypeScript：vue-tsc zero errors ✅
+
+---
+
 ## 会话 #15 — 批量加载后优化：warming队列修复 + SOUNDG移除 + UI修复
 
 **日期**: 2026-08-03

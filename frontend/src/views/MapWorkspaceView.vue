@@ -472,15 +472,26 @@ function layerZIndex(objectClass: string | null | undefined): number {
 function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, src: string) => void {
   return (tile, src) => {
     const img = tile.getImage() as HTMLImageElement
+    const controller = new AbortController()
     let attempts = 0
 
+    // Abort in-flight fetch when OpenLayers discards the tile (pan/zoom).
+    tile.addEventListener('change', () => {
+      // OpenLayers TileState: 0=IDLE, 1=LOADING, 2=LOADED, 3=ERROR, 4=ABORT
+      if ((tile as any).getState?.() === 4) {
+        controller.abort()
+      }
+    })
+
     const tryLoad = () => {
+      if (controller.signal.aborted) return
       attempts++
-      fetch(src, { mode: 'cors' })
+      fetch(src, { mode: 'cors', signal: controller.signal })
         .then((response) => {
           if (response.ok) {
             return response.blob()
           }
+          // Only retry recoverable HTTP errors: 429, 502, 503, 504
           if (
             [429, 502, 503, 504].includes(response.status) &&
             attempts <= TILE_RETRY_MAX_ATTEMPTS
@@ -490,7 +501,8 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
             setTimeout(tryLoad, delay)
             return null
           }
-          throw new Error(`HTTP ${response.status}`)
+          // Non-recoverable (400, 404, 500, etc.): don't retry
+          return null
         })
         .then((blob) => {
           if (blob) {
@@ -499,8 +511,10 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
             img.src = objectUrl
           }
         })
-        .catch(() => {
-          if (attempts <= TILE_RETRY_MAX_ATTEMPTS) {
+        .catch((err) => {
+          if (controller.signal.aborted) return
+          // Only retry on network failures (TypeError), not HTTP errors
+          if (err instanceof TypeError && attempts <= TILE_RETRY_MAX_ATTEMPTS) {
             stats.recordRetry()
             const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
             setTimeout(tryLoad, delay)
@@ -986,12 +1000,23 @@ function executeBundlePlan(
 }
 
 function setOverviewVisible(visible: boolean) {
-  // Toggle the polar_global_enc_overview basemap visibility
+  // Toggle the polar_global_enc_overview basemap visibility.
+  // The overview WMTS is registered as a configured basemap; locate its OL layer.
+  if (!map) return
+  const layers = map.getLayers().getArray()
   for (const bm of baseMaps.value) {
     if (bm.name.includes('全球海图概览') && bm.crs === currentCrs.value) {
-      // Make visible/invisible alongside the active base map
-      if (visible && bm.id !== activeBaseMapId.value) {
-        // Show overview WMTS as overlay
+      for (const l of layers) {
+        if (l instanceof TileLayer && l.getClassName() === 'map-base-layer') {
+          const src = l.getSource()
+          if (src instanceof WMTS) {
+            const urls = src.getUrls?.() ?? []
+            if (urls.some((u) => u.includes('polar_global_enc_overview'))) {
+              l.setVisible(visible)
+              return
+            }
+          }
+        }
       }
     }
   }
@@ -1170,6 +1195,10 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
     }
     bulkProgress.value = null
     bulkCancelled.value = false
+    // Populate smart-scheduler state sets (active/suspended/warming).
+    // Batch load attaches layers directly without going through reconcile,
+    // so all three sets are empty until the first reconcile runs.
+    reconcileRenderPlan()
   } catch (error) {
     if (bulkAbortController?.signal.aborted) return
     ElMessage.error(apiErrorMessage(error, '批量图层解析失败'))

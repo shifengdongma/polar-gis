@@ -18,7 +18,11 @@ export const BULK_HARD_LIMIT = 160
 // ── Smart render mode constants ─────────────────────────────────────
 
 /** Maximum number of concurrently active (tile-requesting) WMS layers in smart mode. */
-export const SMART_MAX_ACTIVE_WMS_LAYERS = 30
+export const SMART_MAX_ACTIVE_WMS_LAYERS = 20
+
+/** Maximum number of active layers with null/unbounded extent (always-in-viewport).
+ *  Prevents unbounded layers from permanently consuming the active budget. */
+export const SMART_MAX_UNBOUNDED_ACTIVE = 10
 
 /** Maximum number of layers entering the warming (first-tile) phase simultaneously. */
 export const SMART_MAX_WARMING_LAYERS = 10

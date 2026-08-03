@@ -11,6 +11,7 @@ import { transformExtent } from 'ol/proj'
 import { intersects } from 'ol/extent'
 import {
   SMART_MAX_ACTIVE_WMS_LAYERS,
+  SMART_MAX_UNBOUNDED_ACTIVE,
   SMART_MAX_WARMING_LAYERS,
   SMART_MAX_ATTACHED_WMS_LAYERS,
   SMART_SUSPEND_EVICT_DELAY_MS,
@@ -21,6 +22,7 @@ import {
 // Re-export for consumers that want a single import path
 export {
   SMART_MAX_ACTIVE_WMS_LAYERS,
+  SMART_MAX_UNBOUNDED_ACTIVE,
   SMART_MAX_WARMING_LAYERS,
   SMART_MAX_ATTACHED_WMS_LAYERS,
   SMART_SUSPEND_EVICT_DELAY_MS,
@@ -592,38 +594,52 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
   const warming: string[] = []
 
   let queuedForActive = 0
+  let unboundedActive = 0
   // Count currently active layers that are staying active
   for (const l of layers) {
     if (activeLayerIds.has(l.id) && inViewportAndScale.has(l.id)) {
       queuedForActive++
+      // Layers without extent metadata are always-in-viewport — track separately
+      if (!l.extent || l.extent.length !== 4) {
+        unboundedActive++
+      }
     }
   }
 
+  const maxUnbounded = SMART_MAX_UNBOUNDED_ACTIVE
+
   for (const layer of candidates) {
     const lid = layer.id
+    const isUnbounded = !layer.extent || layer.extent.length !== 4
 
     if (attachedLayerIds.has(lid)) {
       // Already has OL object
       if (!activeLayerIds.has(lid)) {
-        if (queuedForActive < maxActive) {
+        const unboundedOk = !isUnbounded || unboundedActive < maxUnbounded
+        if (queuedForActive < maxActive && unboundedOk) {
           toActivate.push(lid)
           reason.set(lid, '进入视口')
           queuedForActive++
+          if (isUnbounded) unboundedActive++
         } else {
           toSuspend.push(lid)
-          reason.set(lid, '等待加载 (活动预算已满)')
+          reason.set(lid, isUnbounded && !unboundedOk
+            ? '等待加载 (无范围图层活动预算已满)'
+            : '等待加载 (活动预算已满)')
         }
       }
       // else: already active, no change
     } else {
       // Not yet attached — need to create OL object + warm
-      if (warming.length + currentWarmingCount < maxWarming && queuedForActive < maxActive) {
+      const unboundedOk = !isUnbounded || unboundedActive < maxUnbounded
+      if (warming.length + currentWarmingCount < maxWarming && queuedForActive < maxActive && unboundedOk) {
         toAttach.push(lid)
         warming.push(lid)
         queuedForActive++
+        if (isUnbounded) unboundedActive++
         reason.set(lid, '正在加载')
       }
-      // else: will remain unattached (queued behind warming limit)
+      // else: will remain unattached (queued behind warming/active/unbounded limit)
     }
   }
 
