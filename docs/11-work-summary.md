@@ -5,6 +5,40 @@
 
 ---
 
+## 会话 #17 — 修复属性表查询失败
+
+**日期**: 2026-08-03
+**状态**: ✅ 完成
+
+### 问题背景
+
+所有图层的"查看属性表"功能均报"属性表加载失败"。
+
+### 根因
+
+- DB验证：38,987层的 `allowed_fields` 存储为大写（RCID, PRIM），但 PG 列名为小写（rcid, prim）
+- `column_reference(field)` 使用双引号生成 `SELECT "RCID"` → PG 大小写敏感 → "column does not exist"
+- 回归来源：commit 441b204 移除 `.lower()` 但无数据迁移
+- PG ProgrammingError 未被 AppError handler 捕获 → HTTP 500 → 前端回退消息
+
+### 修改内容
+
+| 文件 | 修改说明 |
+|------|----------|
+| `backend/app/api/layers.py` | column_reference 移除双引号（使用未加引号标识符，PG 折叠为小写）；新增 normalize_geo_column_names() 工具函数 |
+
+### 实现效果
+
+- 属性表查询恢复正常（已验证：2 items, fields: RCID/PRIM/GRUP/OBJL/...）
+- 未加引号 SQL 标识符安全：字段名已由 field_pattern 严格校验，无 SQL 注入风险
+
+### 验证结果
+
+- 后端：125 tests passed ✅
+- 端到端：属性表查询成功返回数据 ✅
+
+---
+
 ## 会话 #16 — 修复调度器未触发 + 瓦片请求泛滥 + overview死代码
 
 **日期**: 2026-08-03

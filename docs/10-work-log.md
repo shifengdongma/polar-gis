@@ -5,6 +5,44 @@
 
 ---
 
+## 会话 #17 — 修复属性表查询失败（column_reference 大小写不匹配）
+
+**日期**: 2026-08-03
+**目标**: 修复所有图层"查看属性表"均报"属性表加载失败"的问题
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 诊断属性表查询全链路（前端→后端→SQL） | ✅ 完成 |
+| 2 | 修复 column_reference 移除双引号 | ✅ 完成 |
+| 3 | 添加 normalize_geo_column_names() 工具函数 | ✅ 完成 |
+| 4 | 运行测试 | ✅ 完成 |
+
+### 根因分析
+
+- **DB 验证**: 38,987 层 `allowed_fields` 为大写（如 RCID, PRIM），但 PG 列名均为小写（rcid, prim）
+- **SQL 生成**: `column_reference` 使用双引号 `f'"{field}"'` → 生成 `SELECT "RCID"` → PG 大小写敏感 → "column does not exist"
+- **回归来源**: commit 441b204 中移除了 `.lower()` 但无数据迁移；旧数据有 UPPERCASE allowed_fields，新 LAUNDER=YES 列是小写
+- **错误处理**: PG ProgrammingError 未被 AppError handler 捕获 → HTTP 500 → 前端回退消息"属性表加载失败"
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-03 | `backend/app/api/layers.py` | 修改 | column_reference 移除双引号（使用未加引号标识符，PG 折叠为小写）；新增 normalize_geo_column_names() |
+
+### 测试结果
+
+- 后端：125 passed ✅
+
+### 关键决策
+
+- 未加引号 SQL 标识符安全：字段名已由 field_pattern `^[A-Za-z_][A-Za-z0-9_]*$` 严格校验，无 SQL 注入风险
+- 不移除双引号 + 更新 allowed_fields 的方案需要 DB migration，而当前方案纯代码层面解决，向后兼容
+
+---
+
 ## 会话 #16 — 修复调度器未触发 + 瓦片请求泛滥 + overview死代码
 
 **日期**: 2026-08-03
