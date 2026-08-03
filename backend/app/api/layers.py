@@ -34,8 +34,47 @@ operators = {"eq": "=", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<
 _NON_SPATIAL_TYPES = frozenset({"unknown", "none", "", "无", "无几何", "geometrycollection"})
 
 
+def normalize_geo_column_names(db: Session) -> int:
+    """Rename uppercase column names in geo.* tables to lowercase.
+
+    Older S-57 imports (pre-LAUNDER=YES) produced uppercase PostgreSQL columns
+    (e.g. ``"DSID"``), but ``allowed_fields`` is always stored lowercase.
+    Since ``column_reference`` uses unquoted identifiers (PostgreSQL folds to
+    lowercase), uppercase column names cause ``column does not exist`` errors.
+
+    This function is idempotent — it only renames columns that contain
+    uppercase letters and are not already lowercase.
+    """
+    renamed = 0
+    rows = db.execute(
+        text(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'geo' AND column_name ~ '[A-Z]'"
+        )
+    ).fetchall()
+    for table_name, column_name in rows:
+        lower_name = column_name.lower()
+        if lower_name == column_name:
+            continue
+        try:
+            db.execute(
+                text(
+                    f'ALTER TABLE geo."{table_name}" '
+                    f'RENAME COLUMN "{column_name}" TO "{lower_name}"'
+                )
+            )
+            db.commit()
+            renamed += 1
+        except Exception:
+            db.rollback()
+    return renamed
+
+
 def column_reference(field: str) -> str:
-    return f'"{field}"'
+    # Unquoted identifier — PostgreSQL folds to lowercase by default.
+    # This matches the LAUNDER=YES lowercase column names produced by ogr2ogr.
+    # The field is already validated by field_pattern to contain only safe chars.
+    return field
 
 
 def selected_column(field: str) -> str:
