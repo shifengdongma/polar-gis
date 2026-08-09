@@ -1,7 +1,7 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-08-02
+> 最后更新: 2026-08-10
 
 ---
 
@@ -65,8 +65,11 @@ backend/
 │   │   ├── importer.py         # GDAL 导入处理器 (矢量/栅格/S-57)
 │   │   ├── s57.py              # S-57 文件识别 + GDAL 检测
 │   │   ├── s57_batch.py        # S-57 批次导入处理器
-│   │   ├── s57_styles.py       # S-57 SLD 样式预设 (10种)
+│   │   ├── s57_styles.py       # S-57 SLD 样式预设 (10种) + 比例尺规则
 │   │   ├── s57_layer_catalog.py # S-57 图层分类事实来源（纯函数）
+│   │   ├── s57_style_refresh.py # SLD 样式幂等刷新 (sldHash 对比 + 缓存截断)
+│   │   ├── map_render_plan.py  # 组合图层渲染计划纯函数 (build_bundles)
+│   │   ├── gwc_backfill.py     # GWC EPSG:3413 瓦片缓存回填 (GridSet + 图层)
 │   │   └── audit.py            # 审计日志写入
 │   │
 │   └── worker/                 # 后台工作进程
@@ -119,6 +122,8 @@ backend/
 | S-57批暂停 | `/api/v1/admin/s57-import-batches/{id}/pause` | 暂停批量导入 |
 | S-57批恢复 | `/api/v1/admin/s57-import-batches/{id}/resume` | 恢复暂停的批量导入 |
 | S-57批取消 | `/api/v1/admin/s57-import-batches/{id}/cancel` | 取消批量导入 |
+| GWC缓存回填 | `/api/v1/admin/gwc/backfill` | 为已有 S-57 图层幂等补齐 EPSG:3413 GridSet/缓存配置 |
+| S-57样式刷新 | `/api/v1/admin/styles/refresh-s57` | sldHash 幂等刷新 SLD 样式 + 截断瓦片缓存 |
 
 ### 2.4 数据导入架构 (S-57 Batch Import)
 
@@ -487,6 +492,42 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 ### Feature Flag
 
 `VITE_ENABLE_RENDER_BUNDLES` (默认 true)。设为 false 时 smart 模式回退到独立 WMS 调度器。
+
+## 5.8 GWC EPSG:3413 瓦片缓存链路 (会话 #18)
+
+批量加载 160 层海图后平移空白、缩放卡顿的根治方案：接通 GeoWebCache 全链路，修复视口裁剪、Bundle 生命周期、SLD 比例尺与发布 bbox 四类缺陷。
+
+### 瓦片请求数据流
+
+```
+前端 TileWMS
+ ├─ cacheable 图层 (renderTransport=gwc_wms)
+ │    → /geoserver/gwc/service/wms?VERSION=1.1.1&SRS=EPSG:3413&TILED=true&LAYERS=...
+ │        ├─ GWC 命中 → 直接返回缓存瓦片 (X-GWC-Cache: HIT)
+ │        └─ 未命中 → WMS 渲染 → 写入缓存 (X-GWC-Cache: MISS)
+ ├─ 组合 Bundle (逗号分隔多图层)
+ │    → /geoserver/wms 普通 WMS   (GWC WMS-C 不支持逗号图层，决策保留)
+ └─ 非 cacheable 图层 (optional_other 等)
+      → /geoserver/wms 普通 WMS
+```
+
+前端侧开关：`ENABLE_GWC_TILES`（`VITE_ENABLE_GWC_TILES=false` 回退普通 WMS）。cacheable 判定由后端 `_gwc_transport_for_layer()` 统一负责（`loadable` 且 `load_profile ∈ {core_chart, navigation_recommended}` → `cacheable=true / render_transport=gwc_wms / tile_service_url=/geoserver/gwc/service/wms`），经 `MapLayerConfig` 三字段透传前端。
+
+### GeoServer / GWC (后端)
+
+- **GridSet 创建**：发布 S-57 空间图层时 `ensure_gridset("EPSG:3413", "EPSG:3413", [-4194304, -4194304, 4194304, 4194304])` 幂等 PUT，extent 与 OpenLayers 默认 EPSG:3413 瓦片网格对齐；图层 GWC 启用覆盖三 gridset：`EPSG:3857` / `EPSG:4326` / `EPSG:3413`（mime 仅 image/png）
+- **已有图层回填**：`backend/app/services/gwc_backfill.py` — `ensure_gwc_3413_backfill()` 查询全部 AVAILABLE 且未软删的 S-57 图层，GET-then-PUT 幂等补齐（GWC 中缺失或缺 3413 gridset 才 PUT）；lifespan 后台 daemon 线程自动执行（`GWC_3413_BACKFILL=0` 禁用），`POST /api/v1/admin/gwc/backfill` 管理员端点可手动触发
+- **真实 bbox 发布**：`publish_feature_type` / `publish_feature_types_batch` 支持 `bounds` 参数（EPSG:4326 `[minx,miny,maxx,maxy]`），importer 按层从 `s57.extent` 传递；`_resolve_bounds` 对非法输入（长度≠4 / 非数值 / nan / inf / minx≥maxx 等）回退全球 -180..180 并仅告警
+- **SLD 比例尺规则**：`render_sld(min_scale_denominator, max_scale_denominator)` 在 Rule 内、Symbolizer 之前输出 `<sld:Min/MaxScaleDenominator>`；导入时持久化 `s57.minScaleDenominator`
+- **样式幂等刷新**：`backend/app/services/s57_style_refresh.py` — `sync_s57_layer_style()` 以 SLD sha256（`s57.sldHash`）对比判断，仅变化时 publish_style + set_default_style + `truncate_layer_cache`（best-effort，404 容忍）；`POST /api/v1/admin/styles/refresh-s57` 批量补齐已有图层
+
+### 数据落库 (元数据)
+
+导入时 `merge_s57_layer_metadata()` 向 `layers.metadata_json["s57"]` 写入：`extent`（ogrinfo `geometryFields[0].extent`，4 数值校验，NaN/Inf/缺失 → null）与 `minScaleDenominator`。前端 `isLayerInViewport` 消费 `extent` 实现视口裁剪，调度器据此休眠视口外图层。
+
+### Bundle 生命周期修复
+
+调度器 bundle 分支（`RenderPlanInput.attachedBundleIds`）真实四操作：视口内未挂载 → `attachBundles`；已挂载且视口内 → `activateBundles`；视口外 → `suspendBundles`；已挂载但不在新计划 → `detachBundles`（原恒空 TODO 导致图层泄漏）。`executeBundlePlan` activate 守卫仅激活 `status==='active'` 的 bundle（warming/failed/replacing 不强制显示）。renderMode 切换双向修复：切 standard 补 attach、切 smart/overview 清 per-layer 残留。
 
 ---
 

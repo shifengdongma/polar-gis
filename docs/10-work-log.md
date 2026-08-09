@@ -1,7 +1,88 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-08-02
+> 最后更新: 2026-08-10
+
+---
+
+## 会话 #18 — 批量加载海图图层渲染性能优化（GWC 3413 链路 + Bundle 修复 + SLD 比例尺 + bbox）
+
+**日期**: 2026-08-10
+**目标**: 根治批量加载 160 层海图后平移空白、缩放卡顿问题：接通 GWC EPSG:3413 瓦片缓存全链路，修复前端视口裁剪、Bundle 生命周期、SLD 比例尺与发布 bbox 四类缺陷
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 后端：接通 GWC EPSG:3413 瓦片缓存链路（importer + lifespan backfill + admin 端点） | ✅ 完成 |
+| 2 | 后端：导入时持久化 s57.extent 元数据（视口裁剪生效） | ✅ 完成 |
+| 3 | 前端：cacheable 图层切换 GWC 瓦片端点 + 字段透传 + ENABLE_GWC_TILES flag | ✅ 完成 |
+| 4 | 前端：Bundle 生命周期修复（detach/suspend/activate + renderMode 双向切换） | ✅ 完成 |
+| 5 | 后端：SLD 比例尺规则 + sldHash/truncate 幂等刷新 | ✅ 完成 |
+| 6 | 后端：发布 feature type 支持真实数据 bbox（仅新发布生效） | ✅ 完成 |
+| 7 | 文档更新 + 全量验证 + 提交 | ✅ 完成 |
+
+### 根因分析
+
+批量加载 160 层海图后平移空白、缩放卡顿，根因 5 项：
+
+1. **GWC 缓存全链路未接通**：前端 TileWMS 走普通 WMS（TILED 参数对非 GWC 端点无效）；GWC 只为图层启用 3857/4326 gridset，**EPSG:3413 GridSet 从未创建** → 北极投影下瓦片全部直连 WMS 渲染，无任何缓存命中
+2. **前端视口裁剪失效**：`s57.extent` 元数据从未写入 → 160 层全部被视为"在视口内"，超出活动预算，调度器无法正确休眠视口外图层
+3. **Bundle 生命周期缺陷**：调度器 bundle 分支 `if (false /* TODO */)` 恒空 → 已挂载 bundle 永不 detach，图层泄漏；renderMode 切换只清不补/只补不清，导致空白或残留
+4. **SLD 无比例尺规则**：所有样式在所有缩放级别渲染，高密度图层（SOUNDG 等）小比例尺下也渲染
+5. **发布 bbox 硬编码全球**：-180..180 使 GeoServer 查询/渲染扫描范围过大
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-09 | `backend/app/services/gwc_backfill.py` | **新建** | `ensure_gridset("EPSG:3413")` 幂等 PUT（extent [-4194304,-4194304,4194304,4194304]）+ `ensure_gwc_layer` 三 gridset（3857/4326/3413）+ `ensure_gwc_3413_backfill()` 纯函数（GET-then-PUT 幂等，`GWC_3413_BACKFILL=0` 跳过） |
+| 2026-08-09 | `backend/app/services/importer.py` | 修改 | 发布流程 GWC 启用块抽为 `_enable_gwc_caching`：先 ensure_gridset(EPSG:3413) 再三层 gridset；顺带修复模块级 import 在 logger 之后的问题（E402×11） |
+| 2026-08-09 | `backend/app/main.py` | 修改 | lifespan 后台线程 `_spawn_gwc_3413_backfill()`（不阻塞启动）；注册 `system.admin_router` |
+| 2026-08-09 | `backend/app/api/system.py` | 修改 | 新增 `admin_router`：`POST /api/v1/admin/gwc/backfill`（require_admin，幂等） |
+| 2026-08-09 | `backend/app/api/projects.py` | 修改 | 抽取 `_gwc_transport_for_layer` 共享分类；`GET /map-datasets/{id}/layers` 补 cacheable / render_transport / tile_service_url |
+| 2026-08-09 | `backend/app/schemas.py` | 修改 | `MapLayerConfig` 增补 `cacheable` / `render_transport` / `tile_service_url`（可选，向后兼容） |
+| 2026-08-09 | `backend/app/core/config.py` | 修改 | 新增 `gwc_3413_backfill`（环境变量 `GWC_3413_BACKFILL`，默认 true） |
+| 2026-08-10 | `backend/app/services/importer.py` | 修改 | `merge_s57_layer_metadata` 写入 `s57.extent`（ogrinfo `geometryFields[0].extent`，4 数值校验，NaN/Inf/缺失 → None） |
+| 2026-08-10 | `frontend/src/types/index.ts` | 修改 | `MapLayerConfig` 增补 `renderTransport` / `tileServiceUrl` / `cacheable` 三可选字段 |
+| 2026-08-10 | `frontend/src/utils/mapLayerBatch.ts` | 修改 | 新增 `ENABLE_GWC_TILES` flag（`VITE_ENABLE_GWC_TILES=false` 回退普通 WMS） |
+| 2026-08-10 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | `attachWmsLayer` cacheable 图层切 `/geoserver/gwc/service/wms` + `VERSION: '1.1.1'`（SRS 参数模式）；`loadSelectedDatasets` 透传三字段 |
+| 2026-08-10 | `frontend/src/utils/mapRenderScheduler.ts` | 修改 | `RenderPlanInput` 增 `attachedBundleIds`；bundle 分支真实四操作：视口内未挂载 attach / 已挂载 activate / 视口外 suspend / 不在新计划 detach |
+| 2026-08-10 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | reconcile 传 `attachedBundleIds`；空计划先 disposeAllBundles；unload 系列（unloadSelectedDatasets / unloadCurrentFilteredLayers / unloadLastBulkBatch）补 reconcile；renderMode watch 双向修复（切 standard 补 attach、切 smart/overview 清 per-layer 残留）；executeBundlePlan activate 守卫（仅 status='active' 才 setVisible） |
+| 2026-08-10 | `backend/app/services/s57_styles.py` | 修改 | `render_sld` 支持 `min_scale_denominator` / `max_scale_denominator`（Rule 内、Symbolizer 之前；无参输出与改造前逐字节一致） |
+| 2026-08-10 | `backend/app/services/s57_style_refresh.py` | **新建** | `sync_s57_layer_style`：sldHash sha256 对比，变化才 publish + truncate 缓存（`truncate_layer_cache` 复活，best-effort）；`refresh_s57_layer_styles` 批量刷新 |
+| 2026-08-10 | `backend/app/api/system.py` | 修改 | 新增 `styles_admin_router`：`POST /api/v1/admin/styles/refresh-s57`（require_admin） |
+| 2026-08-10 | `backend/app/services/importer.py` | 修改 | `merge_s57_layer_metadata` 持久化 `s57.minScaleDenominator`；`_apply_s57_style` 委托 `sync_s57_layer_style` |
+| 2026-08-10 | `backend/app/services/geoserver.py` | 修改 | `publish_feature_type` / `publish_feature_types_batch` 支持 `bounds` 参数（`_resolve_bounds` 非法值回退全球 -180..180）；`truncate_layer_cache` 复活 |
+| 2026-08-10 | `backend/app/services/importer.py` | 修改 | 新增 `_publish_spec_for_layer`：从 `s57.extent` 构建逐层发布 bounds（仅新发布生效） |
+
+### 测试结果
+
+- 后端：167 passed ✅（125 → 167，+42：importer 11 / gwc_backfill 5 / s57_style_refresh 4 / geoserver_publish 15 / projects 3 / test_s57 3 / 端点 1）
+- 前端：76 passed ✅（70 → 76，+6：bundle 分支 5 + detach 兜底 1）
+- TypeScript：vue-tsc 零错误 ✅
+- ruff：本批触碰文件全部干净；全库其余 29 处为改动前已存在的历史 F401 基线（git stash 验证），未触碰
+
+### 关键决策
+
+1. **bundle 保持普通 WMS**：GWC WMS-C 不支持逗号分隔多图层，组合 TileWMS 继续直连普通 WMS；仅 cacheable 单图层切换 GWC 端点
+2. **3413 GridSet extent [-4194304,-4194304,4194304,4194304]**：与 OpenLayers 默认 EPSG:3413 瓦片网格对齐，避免双线性重投影额外开销
+3. **不做瓦片预热**：缓存自然填充（首次请求渲染 + 写缓存），避免导入期抢资源
+4. **已有图层幂等补齐**：`POST /admin/gwc/backfill`（GWC gridset）与 `POST /admin/styles/refresh-s57`（SLD）两个管理员端点；GET-then-PUT / sldHash 对比保证幂等、零重复网络请求
+5. **端到端验证由用户在真实 GeoServer 环境执行**：验证方法（curl GWC gridset、X-GWC-Cache 头、160 层平移验证、回退演练）写入"验证方法"而非"已验证"
+
+### 验证方法（真实 GeoServer 环境执行）
+
+```bash
+# 1. GridSet 已创建
+curl http://localhost:8080/geoserver/gwc/rest/gridsets/EPSG:3413.json
+# 2. 图层已启用 3413 gridset（应含 EPSG:3413）
+curl http://localhost:8080/geoserver/gwc/rest/layers/polar:{layer}.json
+# 3. 瓦片响应带缓存头（X-GWC-Cache: MISS → HIT）
+curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYERS=polar:{layer}&VERSION=1.1.1&FORMAT=image/png&SRS=EPSG:3413&WIDTH=256&HEIGHT=256&BBOX=..." | grep -i x-gwc-cache
+# 4. 批量加载 160 层后平移/缩放验证（活动/休眠统计正常、无空白）
+# 5. 回退演练：VITE_ENABLE_GWC_TILES=false 重建前端 → 恢复普通 WMS 行为
+```
 
 ---
 
