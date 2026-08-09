@@ -85,6 +85,7 @@ import {
   detachBundle,
   disposeAllBundles,
   getAllBundleRuntimes,
+  getBundleRuntime,
   setBundleVisible,
 } from '../utils/mapRenderBundles'
 import { fetchRenderPlan } from '../api/projects'
@@ -287,11 +288,39 @@ watch(layerSearch, () => {
   }, 200)
 })
 
-// Leaving smart mode: reconcileRenderPlan returns early in standard mode,
-// so composite bundles would otherwise linger on the map. Dispose them.
+// ── Render mode transitions ──────────────────────────────────────────
+// reconcileRenderPlan returns early in standard mode, so composite bundles
+// would otherwise linger on the map — dispose them when leaving smart mode.
+// Per-layer TileWMS for bundle-covered layers is never created in smart mode
+// (scheduler skips bundledLayerIds), so switching to standard must also
+// re-attach those layers manually, otherwise the map goes blank.
 watch(renderMode, (mode) => {
-  if (mode === 'standard' && map) {
+  if (!map) return
+  if (mode === 'standard') {
+    // Leaving smart mode: dispose composite bundles, then re-attach every
+    // selected layer as an individual TileWMS (standard semantics = all on).
     disposeAllBundles(map)
+    for (const runtime of runtimeLayers.value) {
+      const lid = runtime.config.id
+      if (selectedLayerIds.value.has(lid) && !wmsLayers.has(lid)) {
+        attachWmsLayer(runtime, { visible: true })
+      }
+    }
+    return
+  }
+  // Entering smart/overview: per-layer TileWMS leftovers from standard mode
+  // would double-render next to the rebuilt bundle composites — detach them
+  // first, then let reconcileRenderPlan rebuild bundles and re-attach
+  // standalone layers via executePerLayerPlan. (Overview fully suspends
+  // layers; bundle disposal happens inside reconcileRenderPlan.)
+  if (mode === 'smart' || mode === 'overview') {
+    for (const runtime of runtimeLayers.value) {
+      const lid = runtime.config.id
+      if (selectedLayerIds.value.has(lid) && wmsLayers.has(lid)) {
+        detachWmsLayer(runtime)
+      }
+    }
+    reconcileRenderPlan()
   }
 })
 
@@ -1018,9 +1047,15 @@ function executeBundlePlan(
     )
   }
 
-  // Activate bundles
+  // Activate bundles — only force-visible healthy runtimes. A bundle that is
+  // still warming (first tiles pending) or failed would render a blank patch
+  // if forced visible; warming bundles flip visible on their own via
+  // tileloadend, failed bundles stay hidden.
   for (const bundleId of bundlePlan.activateBundles) {
-    setBundleVisible(bundleId, true)
+    const runtime = getBundleRuntime(bundleId)
+    if (runtime?.status === 'active') {
+      setBundleVisible(bundleId, true)
+    }
   }
 
   // Handle standalone layers through existing per-layer path

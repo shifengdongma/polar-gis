@@ -573,6 +573,24 @@ describe('buildRenderPlan — bundle branch', () => {
     expect(plan.bundlePlan?.suspendBundles).toEqual([])
     expect(plan.bundlePlan?.detachBundles).toEqual([])
   })
+
+  it('38: empty bundle plan with attached bundles → all detached (detach fallback)', () => {
+    const l1 = makeMeta({ id: 'l1', extent: inViewExtent, displayPriority: 10, objectClass: 'DEPARE' })
+    const input = makeInput({
+      layers: [l1],
+      renderMode: 'smart',
+      attachedBundleIds: new Set(['b1', 'b2']),
+      bundlePlanInput: { bundles: [], standaloneLayerIds: ['l1'] },
+    })
+    const plan = buildRenderPlan(input)
+    // Detach fallback: every previously mounted bundle is removed when the
+    // plan contains no bundles (API returned none / all layers standalone).
+    expect([...(plan.bundlePlan?.detachBundles ?? [])].sort()).toEqual(['b1', 'b2'])
+    expect(plan.bundlePlan?.attachBundles).toEqual([])
+    expect(plan.bundlePlan?.activateBundles).toEqual([])
+    // Standalone layers still flow through the per-layer path — no loss.
+    expect(plan.attach).toContain('l1')
+  })
 })
 
 // ── Resolution ↔ Scale conversion ─────────────────────────────────────
