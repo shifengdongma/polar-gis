@@ -4,6 +4,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   createBundleTileSource,
+  createBundleTileLayer,
   browserGeoServerUrl,
 } from './mapRenderBundles'
 import type { RenderBundleConfig } from '../types'
@@ -15,7 +16,10 @@ vi.mock('ol/source/TileWMS', () => ({
 }))
 
 vi.mock('ol/layer/Tile', () => ({
-  default: vi.fn(),
+  default: vi.fn((options: Record<string, unknown>) => ({
+    getVisible: () => options.visible === true,
+    setVisible: vi.fn(),
+  })),
 }))
 
 import TileWMS from 'ol/source/TileWMS'
@@ -101,6 +105,18 @@ describe('createBundleTileSource', () => {
 
     const callArgs = MockTileWMS.mock.calls[0][0]
     expect(callArgs.crossOrigin).toBe('anonymous')
+  })
+})
+
+describe('createBundleTileLayer', () => {
+  it('creates a layer that is visible immediately on attach', () => {
+    // Deadlock guard: OpenLayers does not request tiles from an invisible
+    // TileLayer, so a hidden bundle would never warm up ('warming' forever).
+    // Attach only happens for in-viewport bundles, so visible-on-attach is safe.
+    const config = makeBundleConfig()
+    const source = createBundleTileSource(config, vi.fn())
+    const layer = createBundleTileLayer(config, source)
+    expect(layer.getVisible()).toBe(true)
   })
 })
 

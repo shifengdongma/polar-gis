@@ -40,10 +40,11 @@ def sync_s57_layer_style(
 ) -> dict:
     """Publish (idempotently) the scale-aware preset SLD for one S-57 layer.
 
-    - Computes the SLD for the layer's style preset with the min scale
-      denominator from the classification output (metadata
-      ``s57.minScaleDenominator``, falling back to a fresh
-      ``classify_s57_layer`` call).
+    - Computes the SLD for the layer's style preset from the classification's
+      min scale denominator (metadata ``s57.minScaleDenominator``, falling
+      back to a fresh ``classify_s57_layer`` call), emitted as an SLD
+      ``MaxScaleDenominator`` — "render while scale denominator ≤ N" (e.g.
+      SOUNDG shows only when zoomed to at least 1:25000).
     - Compares its sha256 against ``metadata_json["s57"]["sldHash"]``.
     - Only when the SLD actually changed: PUT to GeoServer, truncate the GWC
       tile cache for the layer (best-effort, never interrupts import), and
@@ -72,7 +73,12 @@ def sync_s57_layer_style(
         rule = classify_s57_layer(source_layer, layer.geometry_type, True)
         min_scale = rule.min_scale_denominator
 
-    sld = preset.render_sld(min_scale_denominator=min_scale)
+    # SLD direction: the classification's "minScaleDenominator" is the largest
+    # scale denominator at which the layer should render ("show SOUNDG only
+    # when zoomed to at least 1:25000" ⇒ SD ≤ 25000).  SLD expresses "SD ≤ N
+    # renders" as MaxScaleDenominator — a MinScaleDenominator here would invert
+    # the rule (render only when zoomed OUT past 1:25000).
+    sld = preset.render_sld(max_scale_denominator=min_scale)
     sld_hash = hashlib.sha256(sld.encode("utf-8")).hexdigest()
 
     if s57_meta.get("sldHash") == sld_hash:

@@ -313,7 +313,7 @@ class TestApplyS57Style:
         assert len(stub.publish_style_calls) == 1
         style_name, sld = stub.publish_style_calls[0]
         assert style_name == "s57_sounding"
-        assert "<sld:MinScaleDenominator>25000.0</sld:MinScaleDenominator>" in sld
+        assert "<sld:MaxScaleDenominator>25000.0</sld:MaxScaleDenominator>" in sld
         assert stub.set_default_style_calls == [("SOUNDG_CELL", "s57_sounding")]
         assert stub.truncate_calls == ["SOUNDG_CELL"]
         assert layer.metadata_json["s57StyleStatus"] == "mapped"
@@ -385,7 +385,7 @@ class TestApplyS57Style:
         processor._apply_s57_style(db_session, layer)
 
         sld = stub.publish_style_calls[0][1]
-        assert "<sld:MinScaleDenominator>12345.0</sld:MinScaleDenominator>" in sld
+        assert "<sld:MaxScaleDenominator>12345.0</sld:MaxScaleDenominator>" in sld
         assert "50000.0" not in sld
 
     def test_unmapped_layer_marks_metadata_and_skips_publish(

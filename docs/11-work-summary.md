@@ -5,7 +5,47 @@
 
 ---
 
-## 会话 #18 — 批量加载海图图层渲染性能优化
+## 会话 #18.1 — 最终评审修复（SLD 比例尺方向 + Bundle attach 死锁）
+
+**日期**: 2026-08-10
+**状态**: ✅ 完成
+
+### 问题背景
+
+整体评审发现 2 个 Critical + 1 个 Important 缺陷：
+
+1. **SLD 比例尺方向反转（Critical）**：`sync_s57_layer_style` 把 classification 的 `minScaleDenominator` 作为 SLD `MinScaleDenominator` 输出。SLD 规范中 `MinScaleDenominator=25000` 表示"SD ≥ 25000 时渲染"（缩远方向），与"放大到至少 1:25000 才显示 SOUNDG"（SD ≤ 25000 渲染）相反 → 缩远全密度渲染、放大后高密度层消失
+2. **Bundle warming 死锁（Critical）**：OpenLayers 不可见 TileLayer 不请求瓦片；`attachBundle` 创建时 `visible: false` → 无 tileloadend → status 永远 'warming' → activate 守卫要求 'active' 才放行 → bundle 永不可见
+3. **被 suspend 的 warming bundle 无法恢复可见（Important）**：warming 中 setVisible(false) 会再次冻结瓦片加载
+
+### 修改内容
+
+| 文件 | 修改说明 |
+|------|----------|
+| `backend/app/services/s57_style_refresh.py` | `sync_s57_layer_style` 改为 `render_sld(max_scale_denominator=min_scale)`——分类的 minScaleDenominator 是"允许渲染的最大 SD"，SLD 方向正确对应 MaxScaleDenominator |
+| `backend/app/services/importer.py` | docstring 同步（MinScaleDenominator → MaxScaleDenominator） |
+| `frontend/src/utils/mapRenderBundles.ts` | `createBundleTileLayer` `visible: true`（attach 仅对视口内 bundle 发生，无空白风险）；tileloadend 仅做状态迁移 |
+| `frontend/src/views/MapWorkspaceView.vue` | activate 守卫放宽：仅拦截 `failed` / `replacing`，warming/active 均放行 setVisible(true) |
+| 测试 | test_s57 / test_importer / test_s57_style_refresh（方向断言更新 + 方向锁定测试）；mapRenderBundles.test.ts（attach 可见性测试） |
+
+### 实现效果
+
+1. **SLD 方向正确**：SOUNDG 等高密度图层仅在大比例尺（SD ≤ 25000）渲染，小比例尺自动跳过；放大后不再消失
+2. **Bundle 死锁解除**：attach 即可见 → 瓦片立即加载 → warming→active 状态正常迁移，bundle 不再永久不可见
+3. **suspend 恢复修复**：被 suspend 的 warming bundle 重新进入视口时恢复可见并继续加载
+
+### 验证结果
+
+- 后端：168 tests passed ✅
+- 前端：77 tests passed ✅
+- vue-tsc：零错误 ✅
+- ruff：触碰文件全部干净 ✅
+
+### 部署注意事项
+
+- SLD 内容从 MinScale 变 MaxScale → **sldHash 变化**（预期）→ 部署后执行 `POST /api/v1/admin/styles/refresh-s57` 让旧图层重发布 + truncate GWC 缓存（幂等，仅 hash 变化的图层触发）
+
+---
 
 **日期**: 2026-08-10
 **状态**: ✅ 完成（代码 + 测试；真实 GeoServer 环境端到端验证由用户执行）
@@ -319,7 +359,7 @@ Polar-GIS 智能模式为每个 S-57 逻辑图层创建独立 OpenLayers TileWMS
 
 - EPSG:3413 GWC GridSet 创建
 - GeoServer httpx 客户端连接池
-- SLD 样式 MinScaleDenominator
+- SLD 样式 MaxScaleDenominator
 - 性能测试场景 A-D 验收
 
 ## 会话 #1 — 项目初始化与环境配置

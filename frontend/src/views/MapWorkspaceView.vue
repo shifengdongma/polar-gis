@@ -1047,13 +1047,15 @@ function executeBundlePlan(
     )
   }
 
-  // Activate bundles — only force-visible healthy runtimes. A bundle that is
-  // still warming (first tiles pending) or failed would render a blank patch
-  // if forced visible; warming bundles flip visible on their own via
-  // tileloadend, failed bundles stay hidden.
+  // Activate bundles — only 'failed' / 'replacing' runtimes stay hidden.
+  // Requiring 'active' here deadlocked suspended bundles: OpenLayers stops
+  // requesting tiles from an invisible TileLayer, so a bundle suspended while
+  // still 'warming' never reaches 'active' and could never be re-shown.
+  // Warming bundles are re-shown (tile requests resume → tileloadend → active);
+  // attach already shows in-viewport bundles immediately.
   for (const bundleId of bundlePlan.activateBundles) {
     const runtime = getBundleRuntime(bundleId)
-    if (runtime?.status === 'active') {
+    if (runtime && runtime.status !== 'failed' && runtime.status !== 'replacing') {
       setBundleVisible(bundleId, true)
     }
   }

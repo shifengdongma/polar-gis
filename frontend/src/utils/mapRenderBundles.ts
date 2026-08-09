@@ -86,7 +86,13 @@ export function createBundleTileLayer(
     extent: config.extent ?? undefined,
     minZoom: config.minZoom ?? undefined,
     maxZoom: config.maxZoom ?? undefined,
-    visible: false, // start invisible until first tile loads
+    // Attach means visible: OpenLayers does NOT request tiles from an
+    // invisible TileLayer, so starting hidden would freeze the bundle in
+    // 'warming' forever (no tileloadend → no state transition).  attach is
+    // only ever invoked for in-viewport bundles (scheduler inRangeBundleIds),
+    // so there is no blank-patch risk.  tileloadend now only drives the
+    // status transition, not visibility.
+    visible: true,
   })
 }
 
@@ -94,7 +100,8 @@ export function createBundleTileLayer(
 
 /**
  * Attach a bundle to the map (creates OL layer, starts warming).
- * Returns the runtime. The bundle is NOT visible until the first tile loads.
+ * Returns the runtime. The layer is visible immediately (attach only happens
+ * for in-viewport bundles); 'warming' → 'active' is a status transition only.
  */
 export function attachBundle(
   config: RenderBundleConfig,
@@ -136,6 +143,9 @@ export function attachBundle(
     if (runtime.pendingTiles === 0 && runtime.status === 'warming') {
       clearTimeout(runtime.loadStateTimer)
       runtime.status = 'active'
+      // No-op for already-visible layers; re-shows a bundle suspended while
+      // warming (resuming tile requests for an invisible layer would be a no-op
+      // for OL, so this is required for state/visibility recovery).
       tileLayer.setVisible(true)
       onWarmingComplete(config.bundleId)
     }

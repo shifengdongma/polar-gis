@@ -135,6 +135,23 @@ class TestRefreshS57LayerStyles:
         assert [name for name, _ in stub.publish_style_calls] == ["s57_sounding"]
         assert stub.truncate_calls == ["SOUNDG_C"]
 
+    def test_sld_emits_max_scale_denominator_not_min(self, db_session: Session) -> None:
+        # Direction lock: "SOUNDG renders when SD ≤ 25000" must be emitted as
+        # an SLD MaxScaleDenominator.  A MinScaleDenominator would invert the
+        # rule (render only when zoomed OUT past 1:25000) — full-density
+        # rendering at small scales and SOUNDG disappearing when zoomed in.
+        _seed_s57_layer(db_session, code="SOUNDG_DIR", source_layer="SOUNDG")
+        stub = StubGeoServer()
+
+        result = refresh_s57_layer_styles(
+            db_session, geoserver=stub, settings=Settings()
+        )
+
+        assert result == {"checked": 1, "updated": 1, "failed": 0}
+        sld = stub.publish_style_calls[0][1]
+        assert "<sld:MaxScaleDenominator>25000.0</sld:MaxScaleDenominator>" in sld
+        assert "MinScaleDenominator" not in sld
+
     def test_truncate_failure_is_best_effort(self, db_session: Session) -> None:
         _seed_s57_layer(db_session, code="SOUNDG_F", source_layer="SOUNDG")
         _seed_s57_layer(db_session, code="WRECKS_G", source_layer="WRECKS")

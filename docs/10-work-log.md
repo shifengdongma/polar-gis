@@ -5,6 +5,44 @@
 
 ---
 
+## 会话 #18.1 — 最终评审修复（SLD 比例尺方向 + Bundle attach 死锁）
+
+**日期**: 2026-08-10
+**目标**: 修复整体评审发现的 2 个 Critical + 1 个 Important 缺陷：SLD 比例尺方向反转、Bundle warming 死锁（bundle 永不可见）、被 suspend 的 warming bundle 无法恢复可见
+
+### 根因分析
+
+1. **SLD 方向反转（Critical）**：SLD 规范中 `MinScaleDenominator=25000` 表示"SD ≥ 25000 时规则生效"（缩远方向渲染），而意图是"放大到至少 1:25000 才显示 SOUNDG"（SD ≤ 25000 渲染）。上一批把 classification 的 `minScaleDenominator` 直接作为 `min_scale_denominator` 传入 `render_sld` → 方向相反：缩远全密度渲染（CPU 问题未解决）、放大后高密度层消失（功能性回归）
+2. **Bundle warming 死锁（Critical）**：OpenLayers 不可见 TileLayer 不请求瓦片（ol/renderer/Composite.js 可见性门控）。`attachBundle` 创建时 `visible: false` → 无瓦片请求 → 无 tileloadend → status 永远 'warming' → activate 守卫要求 `status === 'active'` 才 setVisible(true) → 永不放行 → bundle 永不可见
+3. **被 suspend 的 warming bundle 无法恢复（Important）**：即使 attach 即显示，被 suspend（setVisible false）时仍处于 warming 的 bundle 会再次冻结，activate 守卫必须放宽
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-10 | `backend/app/services/s57_style_refresh.py` | 修改 | `sync_s57_layer_style` 以 `max_scale_denominator=min_scale` 调用 `render_sld`（附方向说明注释）；docstring 更新 |
+| 2026-08-10 | `backend/app/services/importer.py` | 修改 | `_apply_s57_style` docstring 中 MinScaleDenominator → MaxScaleDenominator |
+| 2026-08-10 | `backend/tests/test_s57.py` | 修改 | `test_render_sld_with_min_scale_denominator` → `test_render_sld_with_max_scale_denominator`（锁定向：含 MaxScaleDenominator、不含 MinScaleDenominator） |
+| 2026-08-10 | `backend/tests/test_importer.py` | 修改 | 两处生产路径断言 MinScaleDenominator → MaxScaleDenominator（25000.0 / 12345.0） |
+| 2026-08-10 | `backend/tests/test_s57_style_refresh.py` | 修改 | 新增方向锁定测试 `test_sld_emits_max_scale_denominator_not_min` |
+| 2026-08-10 | `frontend/src/utils/mapRenderBundles.ts` | 修改 | `createBundleTileLayer` `visible: false` → `visible: true`（attach 仅对视口内 bundle 发生；注释说明 tileloadend 仅做状态迁移）；attachBundle/tileloadend 注释更新 |
+| 2026-08-10 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | `executeBundlePlan` activate 守卫放宽：`status === 'active'` → 仅拦截 `failed` / `replacing`（修复被 suspend 的 warming bundle 无法恢复可见） |
+| 2026-08-10 | `frontend/src/utils/mapRenderBundles.test.ts` | 修改 | TileLayer mock 支持 `getVisible`；新增 `createBundleTileLayer` 可见性测试 |
+
+### 测试结果
+
+- 后端：168 passed ✅（167 → 168，+1 方向锁定测试）
+- 前端：77 passed ✅（76 → 77，+1 attach 可见性测试）
+- TypeScript：vue-tsc 零错误 ✅
+- ruff：触碰文件全部干净 ✅
+
+### 关键决策
+
+1. **SLD 方向修正导致 sldHash 变化是预期行为**：部署后需执行 `POST /api/v1/admin/styles/refresh-s57`，使旧图层重发布（SLD 内容从 MinScale 变 MaxScale）+ truncate GWC 缓存，一次幂等完成
+2. **`render_sld` 函数本身不改**：min/max 参数均已支持；仅生产调用路径改用 `max_scale_denominator`
+
+---
+
 ## 会话 #18 — 批量加载海图图层渲染性能优化（GWC 3413 链路 + Bundle 修复 + SLD 比例尺 + bbox）
 
 **日期**: 2026-08-10

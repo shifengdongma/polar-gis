@@ -518,7 +518,7 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 - **GridSet 创建**：发布 S-57 空间图层时 `ensure_gridset("EPSG:3413", "EPSG:3413", [-4194304, -4194304, 4194304, 4194304])` 幂等 PUT，extent 与 OpenLayers 默认 EPSG:3413 瓦片网格对齐；图层 GWC 启用覆盖三 gridset：`EPSG:3857` / `EPSG:4326` / `EPSG:3413`（mime 仅 image/png）
 - **已有图层回填**：`backend/app/services/gwc_backfill.py` — `ensure_gwc_3413_backfill()` 查询全部 AVAILABLE 且未软删的 S-57 图层，GET-then-PUT 幂等补齐（GWC 中缺失或缺 3413 gridset 才 PUT）；lifespan 后台 daemon 线程自动执行（`GWC_3413_BACKFILL=0` 禁用），`POST /api/v1/admin/gwc/backfill` 管理员端点可手动触发
 - **真实 bbox 发布**：`publish_feature_type` / `publish_feature_types_batch` 支持 `bounds` 参数（EPSG:4326 `[minx,miny,maxx,maxy]`），importer 按层从 `s57.extent` 传递；`_resolve_bounds` 对非法输入（长度≠4 / 非数值 / nan / inf / minx≥maxx 等）回退全球 -180..180 并仅告警
-- **SLD 比例尺规则**：`render_sld(min_scale_denominator, max_scale_denominator)` 在 Rule 内、Symbolizer 之前输出 `<sld:Min/MaxScaleDenominator>`；导入时持久化 `s57.minScaleDenominator`
+- **SLD 比例尺规则**：`render_sld(min_scale_denominator, max_scale_denominator)` 在 Rule 内、Symbolizer 之前输出 `<sld:Min/MaxScaleDenominator>`；导入时持久化 `s57.minScaleDenominator`。生产同步路径（`sync_s57_layer_style`）以 **`max_scale_denominator`** 输出——"SOUNDG 放大到至少 1:25000 才渲染"（SD ≤ 25000）对应 SLD `MaxScaleDenominator`；误用 `MinScaleDenominator` 会反向（缩远才渲染）
 - **样式幂等刷新**：`backend/app/services/s57_style_refresh.py` — `sync_s57_layer_style()` 以 SLD sha256（`s57.sldHash`）对比判断，仅变化时 publish_style + set_default_style + `truncate_layer_cache`（best-effort，404 容忍）；`POST /api/v1/admin/styles/refresh-s57` 批量补齐已有图层
 
 ### 数据落库 (元数据)

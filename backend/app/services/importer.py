@@ -486,7 +486,7 @@ class ImportProcessor:
         """Idempotently apply the scale-aware preset SLD for an S-57 layer.
 
         Delegates to :func:`sync_s57_layer_style` which publishes the SLD
-        (with MinScaleDenominator from the s57 classification), truncates the
+        (with MaxScaleDenominator from the s57 classification), truncates the
         GWC tile cache when the SLD hash changed, and records ``s57.sldHash``.
         """
         sync_s57_layer_style(db, layer, self.geoserver)
