@@ -179,11 +179,7 @@ class ImportProcessor:
                 ]
                 if spatial_layers:
                     self.geoserver.publish_feature_types_batch([
-                        {
-                            "table_name": (layer.source_table or "").split(".")[-1],
-                            "layer_name": layer.geoserver_layer_name or layer.code,
-                            "title": layer.name,
-                        }
+                        self._publish_spec_for_layer(layer)
                         for layer in spatial_layers
                     ])
                 for layer in imported_layers:
@@ -213,6 +209,26 @@ class ImportProcessor:
         finally:
             if staged_directory:
                 shutil.rmtree(staged_directory, ignore_errors=True)
+
+    @staticmethod
+    def _publish_spec_for_layer(layer: Layer) -> dict:
+        """Build the GeoServer publish spec for one spatial layer.
+
+        Carries the S-57 native extent (EPSG:4326, written by
+        ``merge_s57_layer_metadata`` from ogrinfo ``geometryFields[0].extent``)
+        as ``bounds`` so newly published feature types use their real data
+        bbox; GeoServerClient falls back to the global extent on invalid input.
+        """
+        spec = {
+            "table_name": (layer.source_table or "").split(".")[-1],
+            "layer_name": layer.geoserver_layer_name or layer.code,
+            "title": layer.name,
+        }
+        metadata = layer.metadata_json or {}
+        extent = metadata.get("s57", {}).get("extent")
+        if isinstance(extent, list):
+            spec["bounds"] = extent
+        return spec
 
     def _enable_gwc_caching(self, layers: list[Layer]) -> None:
         """Enable GWC tile caching for published S-57 spatial layers.

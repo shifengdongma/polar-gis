@@ -1,9 +1,13 @@
+import logging
+import math
 from urllib.parse import urlparse
 
 import httpx
 
 from app.core.config import Settings
 from app.core.errors import AppError
+
+logger = logging.getLogger(__name__)
 
 
 class GeoServerClient:
@@ -83,32 +87,12 @@ class GeoServerClient:
         layer_name: str,
         title: str,
         store_name: str = "postgis",
+        bounds: list[float] | None = None,
     ) -> None:
         self.ensure_workspace()
         self.ensure_postgis_store(store_name)
         workspace = self.settings.geoserver_workspace
-        payload = {
-            "featureType": {
-                "name": layer_name,
-                "nativeName": table_name,
-                "title": title,
-                "enabled": True,
-                "nativeBoundingBox": {
-                    "minx": -180,
-                    "maxx": 180,
-                    "miny": -90,
-                    "maxy": 90,
-                    "crs": "EPSG:4326",
-                },
-                "latLonBoundingBox": {
-                    "minx": -180,
-                    "maxx": 180,
-                    "miny": -90,
-                    "maxy": 90,
-                    "crs": "EPSG:4326",
-                },
-            }
-        }
+        payload = _feature_type_payload(table_name, layer_name, title, bounds)
         self._request(
             "POST",
             f"workspaces/{workspace}/datastores/{store_name}/featuretypes",
@@ -119,33 +103,22 @@ class GeoServerClient:
         self,
         layers: list[dict],
         store_name: str = "postgis",
+        bounds: list[float] | None = None,
     ) -> None:
         self.ensure_workspace()
         self.ensure_postgis_store(store_name)
         workspace = self.settings.geoserver_workspace
         for spec in layers:
-            payload = {
-                "featureType": {
-                    "name": spec["layer_name"],
-                    "nativeName": spec["table_name"],
-                    "title": spec["title"],
-                    "enabled": True,
-                    "nativeBoundingBox": {
-                        "minx": -180,
-                        "maxx": 180,
-                        "miny": -90,
-                        "maxy": 90,
-                        "crs": "EPSG:4326",
-                    },
-                    "latLonBoundingBox": {
-                        "minx": -180,
-                        "maxx": 180,
-                        "miny": -90,
-                        "maxy": 90,
-                        "crs": "EPSG:4326",
-                    },
-                }
-            }
+            # per-spec "bounds" wins; batch-level bounds is the fallback
+            spec_bounds = (
+                spec.get("bounds") if spec.get("bounds") is not None else bounds
+            )
+            payload = _feature_type_payload(
+                spec["table_name"],
+                spec["layer_name"],
+                spec["title"],
+                spec_bounds,
+            )
             self._request(
                 "POST",
                 f"workspaces/{workspace}/datastores/{store_name}/featuretypes",
@@ -381,6 +354,72 @@ class GeoServerClient:
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+GLOBAL_BOUNDS: tuple[float, float, float, float] = (-180, -90, 180, 90)
+
+
+def _feature_type_payload(
+    table_name: str,
+    layer_name: str,
+    title: str,
+    bounds: object = None,
+) -> dict:
+    """Build the feature type publish payload with the given data bounds.
+
+    ``bounds`` is ``[minx, miny, maxx, maxy]`` in EPSG:4326 (S-57 native).
+    Invalid bounds fall back to the global extent inside :func:`_resolve_bounds`.
+    """
+    minx, miny, maxx, maxy = _resolve_bounds(bounds)
+    return {
+        "featureType": {
+            "name": layer_name,
+            "nativeName": table_name,
+            "title": title,
+            "enabled": True,
+            "nativeBoundingBox": {
+                "minx": minx,
+                "maxx": maxx,
+                "miny": miny,
+                "maxy": maxy,
+                "crs": "EPSG:4326",
+            },
+            "latLonBoundingBox": {
+                "minx": minx,
+                "maxx": maxx,
+                "miny": miny,
+                "maxy": maxy,
+                "crs": "EPSG:4326",
+            },
+        }
+    }
+
+
+def _resolve_bounds(bounds: object) -> tuple[float, float, float, float]:
+    """Return ``(minx, miny, maxx, maxy)`` for valid bounds, else the global extent.
+
+    Invalid input (wrong shape, non-numeric, non-finite, or min >= max) is
+    logged and falls back to the global -180..180 / -90..90 extent so that
+    publishing never fails on bad bounds.
+    """
+    if bounds is None:
+        return GLOBAL_BOUNDS
+    if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+        logger.warning("非法发布bounds（需为[minx, miny, maxx, maxy]四元组）: %r，回退全球范围", bounds)
+        return GLOBAL_BOUNDS
+    try:
+        values = [float(value) for value in bounds]
+    except (TypeError, ValueError):
+        logger.warning("非法发布bounds（含非数值元素）: %r，回退全球范围", bounds)
+        return GLOBAL_BOUNDS
+    if not all(math.isfinite(value) for value in values):
+        logger.warning("非法发布bounds（含非有限数）: %r，回退全球范围", bounds)
+        return GLOBAL_BOUNDS
+    minx, miny, maxx, maxy = values
+    if minx >= maxx or miny >= maxy:
+        logger.warning("非法发布bounds（min不小于max）: %r，回退全球范围", bounds)
+        return GLOBAL_BOUNDS
+    return (minx, miny, maxx, maxy)
+
 
 def _default_gridset_levels(extent: list[float]) -> list[dict]:
     """Generate reasonable zoom levels for a gridset."""

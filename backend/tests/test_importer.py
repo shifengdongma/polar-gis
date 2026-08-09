@@ -404,3 +404,43 @@ class TestApplyS57Style:
         assert stub.truncate_calls == []
         assert layer.metadata_json["s57StyleStatus"] == "unmapped"
         assert layer.metadata_json["s57"]["styleMapped"] is False
+
+
+class TestPublishSpecForLayer:
+    def test_carries_s57_extent_metadata_as_bounds(self) -> None:
+        layer = _make_style_layer(
+            "DEPARE_CELL",
+            "DEPARE",
+            "Multi Polygon",
+            s57={"extent": [-15.0, 62.0, 30.0, 81.0]},
+        )
+        layer.source_table = "geo.ds_1234_v1_DEPARE"
+        spec = ImportProcessor._publish_spec_for_layer(layer)
+        assert spec == {
+            "table_name": "ds_1234_v1_DEPARE",
+            "layer_name": "DEPARE_CELL",
+            "title": "DEPARE",
+            "bounds": [-15.0, 62.0, 30.0, 81.0],
+        }
+
+    def test_layer_without_extent_has_no_bounds_key(self) -> None:
+        layer = _make_style_layer("DEPARE_CELL", "DEPARE", "Multi Polygon")
+        layer.source_table = "geo.ds_1234_v1_DEPARE"
+        spec = ImportProcessor._publish_spec_for_layer(layer)
+        assert spec == {
+            "table_name": "ds_1234_v1_DEPARE",
+            "layer_name": "DEPARE_CELL",
+            "title": "DEPARE",
+        }
+        assert "bounds" not in spec
+
+    def test_non_s57_layer_never_gets_bounds(self) -> None:
+        layer = _make_style_layer("ROADS_CELL", "roads", "Line String", s57={})
+        layer.source_table = "geo.ds_1234_v1_roads"
+        spec = ImportProcessor._publish_spec_for_layer(layer)
+        assert spec == {
+            "table_name": "ds_1234_v1_roads",
+            "layer_name": "ROADS_CELL",
+            "title": "roads",
+        }
+        assert "bounds" not in spec
