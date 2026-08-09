@@ -135,6 +135,9 @@ class MapLayerConfig(ApiModel):
     style_name: str | None = None
     geometry_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    cacheable: bool = False
+    render_transport: str = "wms"
+    tile_service_url: str | None = None
 
 
 class MapDatasetConfig(ApiModel):

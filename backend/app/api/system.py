@@ -7,9 +7,11 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import AuditLog, User
 from app.schemas import AuditLogRead, Paginated
+from app.services.gwc_backfill import ensure_gwc_3413_backfill
 
 health_router = APIRouter(prefix="/health", tags=["health"])
 audit_router = APIRouter(prefix="/admin/audit-logs", tags=["admin-audit"])
+admin_router = APIRouter(prefix="/admin/gwc", tags=["admin-gwc"])
 settings = get_settings()
 
 
@@ -26,6 +28,15 @@ def ready(db: Session = Depends(get_db)) -> dict:
     probe.write_text("ok", encoding="utf-8")
     probe.unlink(missing_ok=True)
     return {"status": "ready", "database": "ok", "storage": "ok"}
+
+
+@admin_router.post("/backfill")
+def run_gwc_3413_backfill(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> dict:
+    """Idempotently backfill EPSG:3413 GWC caching for all available S-57 layers."""
+    return ensure_gwc_3413_backfill(db)
 
 
 @audit_router.get("", response_model=Paginated[AuditLogRead])

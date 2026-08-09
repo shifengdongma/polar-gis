@@ -7,8 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
-
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -28,10 +26,19 @@ from app.models import (
     VersionStatus,
 )
 from app.services.geoserver import GeoServerClient
+from app.services.gwc_backfill import (
+    GWC_3413_CRS,
+    GWC_3413_EXTENT,
+    GWC_3413_GRIDSET,
+    GWC_LAYER_GRIDSETS,
+    GWC_LAYER_MIME_FORMATS,
+)
 from app.services.s57 import GdalInspector
 from app.services.s57_layer_catalog import classify_s57_layer, has_valid_geometry
 from app.services.s57_styles import preset_for_object_class
 from app.services.storage import LocalStorage
+
+logger = logging.getLogger(__name__)
 
 identifier_pattern = re.compile(r"[^a-z0-9_]+")
 
@@ -168,15 +175,7 @@ class ImportProcessor:
                     layer.status = LayerStatus.AVAILABLE.value
                 # Enable GWC tile caching for S-57 spatial layers
                 if dataset.data_type == DatasetType.S57.value:
-                    for layer in spatial_layers:
-                        try:
-                            self.geoserver.ensure_gwc_layer(
-                                layer.geoserver_layer_name or layer.code,
-                                gridsets=["EPSG:3857", "EPSG:4326"],
-                                mime_formats=["image/png"],
-                            )
-                        except Exception as exc:
-                            logger.warning("无法为图层 %s 启用 GWC 瓦片缓存: %s", layer.code, exc)
+                    self._enable_gwc_caching(spatial_layers)
             self._switch_project_layer_versions(db, version, imported_layers)
             if version.parent_version_id:
                 parent_version = db.get(DatasetVersion, version.parent_version_id)
@@ -197,6 +196,31 @@ class ImportProcessor:
         finally:
             if staged_directory:
                 shutil.rmtree(staged_directory, ignore_errors=True)
+
+    def _enable_gwc_caching(self, layers: list[Layer]) -> None:
+        """Enable GWC tile caching for published S-57 spatial layers.
+
+        Ensures the EPSG:3413 gridset once (idempotent PUT), then configures
+        GWC for every layer with gridsets EPSG:3857 / EPSG:4326 / EPSG:3413.
+        Failures are logged as warnings and never interrupt the import.
+        """
+        try:
+            self.geoserver.ensure_gridset(
+                GWC_3413_GRIDSET,
+                GWC_3413_CRS,
+                GWC_3413_EXTENT,
+            )
+        except Exception as exc:
+            logger.warning("无法创建 EPSG:3413 GridSet: %s", exc)
+        for layer in layers:
+            try:
+                self.geoserver.ensure_gwc_layer(
+                    layer.geoserver_layer_name or layer.code,
+                    gridsets=GWC_LAYER_GRIDSETS,
+                    mime_formats=GWC_LAYER_MIME_FORMATS,
+                )
+            except Exception as exc:
+                logger.warning("无法为图层 %s 启用 GWC 瓦片缓存: %s", layer.code, exc)
 
     def _check_cancelled(self, db: Session, job_id) -> bool:
         job = db.get(ImportJob, job_id)

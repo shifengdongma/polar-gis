@@ -16,6 +16,7 @@ os.environ["STORAGE_ROOT"] = str(Path(".pytest-storage").resolve())
 os.environ["TEMP_ROOT"] = str(Path(".pytest-storage/temp").resolve())
 os.environ["INITIAL_ADMIN_USERNAME"] = ""
 os.environ["INITIAL_ADMIN_PASSWORD"] = ""
+os.environ["GWC_3413_BACKFILL"] = "0"
 
 from app.core.database import Base, get_db
 from app.core.security import hash_password

@@ -205,28 +205,34 @@ def get_project_dataset_map_layers(
     ).all()
     if not links:
         raise AppError("PROJECT_DATASET_NOT_FOUND", "项目未配置该数据集", 404)
-    return [
-        MapLayerConfig(
-            id=link.layer.id,
-            code=link.layer.code,
-            name=link.layer.name,
-            group_name=link.group_name,
-            sort_order=link.sort_order,
-            visible_by_default=link.visible_by_default,
-            opacity=float(link.opacity),
-            queryable=link.layer.queryable,
-            exportable=link.layer.exportable,
-            service_url=(
-                f"{settings.geoserver_public_url.rstrip('/')}"
-                f"/{link.layer.geoserver_workspace or settings.geoserver_workspace}/wms"
-            ),
-            service_layer_name=link.layer.geoserver_layer_name or link.layer.code,
-            style_name=link.style.geoserver_style_name if link.style else None,
-            geometry_type=link.layer.geometry_type,
-            metadata=link.layer.metadata_json,
+    configs: list[MapLayerConfig] = []
+    for link in links:
+        cacheable, render_transport, tile_service_url = _gwc_transport_for_layer(link.layer)
+        configs.append(
+            MapLayerConfig(
+                id=link.layer.id,
+                code=link.layer.code,
+                name=link.layer.name,
+                group_name=link.group_name,
+                sort_order=link.sort_order,
+                visible_by_default=link.visible_by_default,
+                opacity=float(link.opacity),
+                queryable=link.layer.queryable,
+                exportable=link.layer.exportable,
+                service_url=(
+                    f"{settings.geoserver_public_url.rstrip('/')}"
+                    f"/{link.layer.geoserver_workspace or settings.geoserver_workspace}/wms"
+                ),
+                service_layer_name=link.layer.geoserver_layer_name or link.layer.code,
+                style_name=link.style.geoserver_style_name if link.style else None,
+                geometry_type=link.layer.geometry_type,
+                metadata=link.layer.metadata_json,
+                cacheable=cacheable,
+                render_transport=render_transport,
+                tile_service_url=tile_service_url,
+            )
         )
-        for link in links
-    ]
+    return configs
 
 
 # ── Resolve helpers ──────────────────────────────────────────────────
@@ -257,6 +263,39 @@ def _style_mapped_for_layer(layer: Layer) -> bool:
     if status == "unmapped":
         return False
     return preset_for_object_class(_s57_object_class(layer)) is not None
+
+
+def _gwc_transport_for_layer(
+    layer: Layer,
+    rule: object | None = None,
+) -> tuple[bool, str, str]:
+    """Compute GWC transport classification for a layer.
+
+    Returns ``(cacheable, render_transport, tile_service_url)`` with the same
+    semantics as the resolve endpoint: core/navigation layers published to
+    GeoServer are cacheable and rendered through the GWC WMS facade.
+    """
+    if rule is None:
+        rule_obj = classify_s57_layer(
+            _s57_object_class(layer),
+            layer.geometry_type,
+            _style_mapped_for_layer(layer),
+        )
+    else:
+        rule_obj = rule  # type: ignore[assignment]
+
+    workspace = layer.geoserver_workspace or settings.geoserver_workspace
+    service_url = f"{settings.geoserver_public_url.rstrip('/')}/{workspace}/wms"
+    geoserver_layer_name = layer.geoserver_layer_name or layer.code
+    loadable = rule_obj.renderable and bool(workspace and geoserver_layer_name)
+    cacheable = loadable and rule_obj.load_profile in {"core_chart", "navigation_recommended"}
+    render_transport = "gwc_wms" if cacheable else "wms"
+    tile_service_url = (
+        f"{settings.geoserver_public_url.rstrip('/')}/gwc/service/wms"
+        if cacheable
+        else service_url
+    )
+    return cacheable, render_transport, tile_service_url
 
 
 def _build_resolved_layer(
@@ -310,13 +349,7 @@ def _build_resolved_layer(
 
     # Phase 4: determine GWC transport and cacheability
     # Core/navigation layers published to GeoServer are likely cacheable via GWC
-    cacheable = loadable and rule_obj.load_profile in {"core_chart", "navigation_recommended"}
-    render_transport = "gwc_wms" if cacheable else "wms"
-    tile_service_url = (
-        f"{settings.geoserver_public_url.rstrip('/')}/gwc/service/wms"
-        if cacheable
-        else service_url
-    )
+    cacheable, render_transport, tile_service_url = _gwc_transport_for_layer(layer, rule_obj)
 
     return BulkResolvedLayer(
         id=layer.id,

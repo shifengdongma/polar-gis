@@ -530,3 +530,44 @@ def test_render_plan_empty_layer_ids_returns_empty(
     assert body["bundles"] == []
     assert body["standaloneLayers"] == []
     assert body["summary"]["logicalLayerCount"] == 0
+
+
+def test_map_datasets_layers_include_gwc_transport_fields(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    db_session: Session,
+) -> None:
+    """map-datasets layer entries expose cacheable/render_transport/tile_service_url.
+
+    Core-chart layers published to GeoServer must be flagged cacheable with the
+    GWC WMS facade URL; non-core layers fall back to the plain WMS endpoint.
+    """
+    project_id, _ = _setup_project_with_layers(
+        client,
+        admin_headers,
+        db_session,
+        [
+            ("depare", "水深区域", "DEPARE", "Polygon"),  # core_chart → cacheable
+            ("mypoint", "自定义点", "MYPOINT", "Point"),   # optional_other → plain WMS
+        ],
+    )
+    map_cfg = client.get(
+        f"/api/v1/projects/{project_id}/map-config", headers=admin_headers
+    ).json()
+    dataset_id = map_cfg["datasets"][0]["id"]
+    layers = client.get(
+        f"/api/v1/projects/{project_id}/map-datasets/{dataset_id}/layers",
+        headers=admin_headers,
+    ).json()
+    by_code = {layer["code"]: layer for layer in layers}
+
+    depare = by_code["depare"]
+    assert depare["cacheable"] is True
+    assert depare["renderTransport"] == "gwc_wms"
+    assert depare["tileServiceUrl"] == "/geoserver/gwc/service/wms"
+    assert depare["serviceUrl"] == "/geoserver/pg/wms"
+
+    mypoint = by_code["mypoint"]
+    assert mypoint["cacheable"] is False
+    assert mypoint["renderTransport"] == "wms"
+    assert mypoint["tileServiceUrl"] == "/geoserver/pg/wms"

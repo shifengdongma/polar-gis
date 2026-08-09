@@ -1,6 +1,10 @@
 """Tests for S-57 layer metadata merge during import."""
 
-from app.services.importer import merge_s57_layer_metadata
+from uuid import uuid4
+
+from app.core.config import Settings
+from app.models import Layer, LayerStatus
+from app.services.importer import ImportProcessor, merge_s57_layer_metadata
 
 
 class TestMergeS57LayerMetadata:
@@ -107,3 +111,78 @@ class TestMergeS57LayerMetadata:
         assert result["s57"]["loadProfile"] == "non_spatial"
         assert result["s57"]["renderable"] is False
         assert result["s57"]["displayPriority"] == 900
+
+
+class StubGeoServerClient:
+    """Minimal GeoServerClient stand-in recording GWC calls."""
+
+    def __init__(self) -> None:
+        self.gridset_calls: list[tuple[str, str, list[float]]] = []
+        self.gwc_calls: list[tuple[str, list[str], list[str]]] = []
+        self.fail_gwc_layers: set[str] = set()
+
+    def ensure_gridset(self, gridset_name: str, crs: str, extent: list[float]) -> None:
+        self.gridset_calls.append((gridset_name, crs, extent))
+
+    def ensure_gwc_layer(
+        self,
+        layer_name: str,
+        gridsets: list[str] | None = None,
+        mime_formats: list[str] | None = None,
+    ) -> None:
+        if layer_name in self.fail_gwc_layers:
+            raise RuntimeError(f"stub GWC failure for {layer_name}")
+        self.gwc_calls.append((layer_name, gridsets or [], mime_formats or []))
+
+
+def _make_spatial_layer(code: str) -> Layer:
+    return Layer(
+        dataset_version_id=uuid4(),
+        code=code,
+        name=code,
+        geometry_type="Multi Polygon",
+        status=LayerStatus.AVAILABLE.value,
+        geoserver_workspace="polar_gis",
+        geoserver_layer_name=code,
+    )
+
+
+class TestEnableGwcCaching:
+    def test_ensures_3413_gridset_once_and_configures_three_gridsets(self) -> None:
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._enable_gwc_caching([_make_spatial_layer("DEPARE"), _make_spatial_layer("LIGHTS")])
+
+        # ensure_gridset called exactly once with the EPSG:3413 definition
+        assert len(stub.gridset_calls) == 1
+        gridset_name, crs, extent = stub.gridset_calls[0]
+        assert gridset_name == "EPSG:3413"
+        assert crs == "EPSG:3413"
+        assert extent == [-4194304.0, -4194304.0, 4194304.0, 4194304.0]
+
+        # every layer configured with all three gridsets incl. EPSG:3413
+        assert len(stub.gwc_calls) == 2
+        for layer_name, gridsets, mime_formats in stub.gwc_calls:
+            assert layer_name in {"DEPARE", "LIGHTS"}
+            assert gridsets == ["EPSG:3857", "EPSG:4326", "EPSG:3413"]
+            assert "EPSG:3413" in gridsets
+            assert mime_formats == ["image/png"]
+
+    def test_gridset_or_layer_failures_only_warn_do_not_interrupt(self) -> None:
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+
+        def fail_gridset(*_args: object) -> None:
+            raise RuntimeError("stub gridset failure")
+
+        stub.ensure_gridset = fail_gridset  # type: ignore[method-assign]
+        stub.fail_gwc_layers = {"DEPARE"}
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        # Must not raise; surviving layers still get configured.
+        processor._enable_gwc_caching([_make_spatial_layer("DEPARE"), _make_spatial_layer("LIGHTS")])
+
+        assert len(stub.gwc_calls) == 1
+        assert stub.gwc_calls[0][0] == "LIGHTS"
