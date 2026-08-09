@@ -51,6 +51,14 @@ export const TILE_WARMING_TIMEOUT_MS = 15_000
 /** Timeout for the projection switch double-buffer to force-complete. */
 export const PROJECTION_DOUBLE_BUFFER_TIMEOUT_MS = 10_000
 
+// ── Feature flags ─────────────────────────────────────────────────────
+
+/** Feature flag: route cacheable layers through the GWC tile endpoint.
+ *  Defaults to enabled; disable with VITE_ENABLE_GWC_TILES=false. */
+export const ENABLE_GWC_TILES: boolean =
+  typeof import.meta !== 'undefined' &&
+  (import.meta as any).env?.VITE_ENABLE_GWC_TILES !== 'false'
+
 // ── Pure helpers ────────────────────────────────────────────────────
 
 /**

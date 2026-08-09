@@ -47,6 +47,10 @@ export interface MapLayerConfig {
   objectClass?: string | null
   objectNameZh?: string | null
   metadata: Record<string, unknown>
+  // GWC tile cache hints (optional, backward-compatible)
+  renderTransport?: string
+  tileServiceUrl?: string
+  cacheable?: boolean
 }
 
 export interface MapDatasetConfig {

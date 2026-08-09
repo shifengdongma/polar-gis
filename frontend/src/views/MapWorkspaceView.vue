@@ -59,6 +59,7 @@ import {
   BULK_ATTACH_BATCH_SIZE,
   BULK_ATTACH_INTERVAL_MS,
   BULK_HARD_LIMIT,
+  ENABLE_GWC_TILES,
   evaluateBulkThreshold,
   prepareAttachCandidates,
   transformLayerExtent,
@@ -534,9 +535,19 @@ function attachWmsLayer(
     runtime.loadState = 'loaded'
     return 'non-spatial'
   }
+  // Cacheable layers route through the GWC tile endpoint when available.
+  // Force WMS 1.1.1 so OpenLayers emits SRS instead of CRS — GWC WMS-C
+  // gridsets are keyed on SRS, avoiding 1.3.0/CRS handling differences.
+  const useGwc =
+    ENABLE_GWC_TILES && runtime.config.renderTransport === 'gwc_wms' && !!runtime.config.tileServiceUrl
   const source = new TileWMS({
-    url: browserGeoServerUrl(runtime.config.serviceUrl),
-    params: { LAYERS: runtime.config.serviceLayerName, TILED: true, STYLES: runtime.config.styleName || '' },
+    url: browserGeoServerUrl(useGwc ? runtime.config.tileServiceUrl! : runtime.config.serviceUrl),
+    params: {
+      LAYERS: runtime.config.serviceLayerName,
+      TILED: true,
+      STYLES: runtime.config.styleName || '',
+      ...(useGwc ? { VERSION: '1.1.1' } : {}),
+    },
     crossOrigin: 'anonymous',
     transition: 0,
     tileLoadFunction: createRetryTileLoadFunction(perfStats),
@@ -1129,6 +1140,9 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
               extent: rl.extent,
               objectClass: rl.objectClass,
               objectNameZh: rl.objectNameZh,
+              renderTransport: rl.renderTransport,
+              tileServiceUrl: rl.tileServiceUrl,
+              cacheable: rl.cacheable,
               metadata: { s57: { loadProfile: rl.loadProfile } },
             }
             const runtime: RuntimeLayer = {
