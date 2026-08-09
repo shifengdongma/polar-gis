@@ -44,6 +44,62 @@ class TestMergeS57LayerMetadata:
         )
         assert result2["s57"]["featureCount"] is None
 
+    def test_extent_present_writes_four_float_list(self) -> None:
+        result = merge_s57_layer_metadata(
+            {},
+            source_layer={
+                "name": "DEPARE",
+                "featureCount": 923,
+                "geometryFields": [
+                    {
+                        "name": "",
+                        "type": "Multi Polygon",
+                        "extent": [-180, -90, 180, 90],
+                    }
+                ],
+            },
+            geometry_type="Multi Polygon",
+            style_mapped=True,
+        )
+        assert result["s57"]["extent"] == [-180.0, -90.0, 180.0, 90.0]
+        assert all(isinstance(value, float) for value in result["s57"]["extent"])
+
+    def test_extent_missing_or_invalid_yields_none(self) -> None:
+        # geometryFields empty (non-spatial layer)
+        result = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "DSID", "geometryFields": []},
+            geometry_type=None,
+            style_mapped=False,
+        )
+        assert result["s57"]["extent"] is None
+
+        # extent key missing from geometry field
+        result2 = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "DEPARE", "geometryFields": [{"type": "Multi Polygon"}]},
+            geometry_type="Multi Polygon",
+            style_mapped=True,
+        )
+        assert result2["s57"]["extent"] is None
+
+        # invalid extent (wrong length / non-numeric)
+        result3 = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "DEPARE", "geometryFields": [{"extent": [1, 2, 3]}]},
+            geometry_type="Multi Polygon",
+            style_mapped=True,
+        )
+        assert result3["s57"]["extent"] is None
+
+        result4 = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "DEPARE", "geometryFields": [{"extent": ["a", "b", "c", "d"]}]},
+            geometry_type="Multi Polygon",
+            style_mapped=True,
+        )
+        assert result4["s57"]["extent"] is None
+
     def test_non_s57_does_not_write_metadata_s57(self) -> None:
         """Non-S-57 imports should not get s57 metadata. Returns original metadata unchanged."""
         # merge_s57_layer_metadata is only called for S-57 datasets;

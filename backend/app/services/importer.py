@@ -1,4 +1,5 @@
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -66,6 +67,20 @@ def merge_s57_layer_metadata(
         except (ValueError, TypeError):
             pass
 
+    extent = None
+    geometry_fields = source_layer.get("geometryFields")
+    if isinstance(geometry_fields, list) and geometry_fields:
+        raw_extent = geometry_fields[0].get("extent")
+        if (
+            isinstance(raw_extent, list)
+            and len(raw_extent) == 4
+            and all(
+                isinstance(value, (int, float)) and math.isfinite(value)
+                for value in raw_extent
+            )
+        ):
+            extent = [float(value) for value in raw_extent]
+
     merged = dict(existing_metadata)
     s57 = dict(merged.get("s57") or {})
     s57.update(
@@ -79,6 +94,7 @@ def merge_s57_layer_metadata(
             "renderable": rule.renderable,
             "styleMapped": style_mapped,
             "featureCount": feature_count,
+            "extent": extent,
         }
     )
     merged["s57"] = s57
