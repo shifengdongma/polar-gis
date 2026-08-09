@@ -1,6 +1,9 @@
-"""Tests for S-57 layer metadata merge during import."""
+"""Tests for S-57 layer metadata merge and style application during import."""
 
+import hashlib
 from uuid import uuid4
+
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models import Layer, LayerStatus
@@ -168,14 +171,34 @@ class TestMergeS57LayerMetadata:
         assert result["s57"]["renderable"] is False
         assert result["s57"]["displayPriority"] == 900
 
+    def test_scale_rule_min_scale_denominator_stored(self) -> None:
+        result = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "SOUNDG"},
+            geometry_type="Point",
+            style_mapped=True,
+        )
+        assert result["s57"]["minScaleDenominator"] == 25000.0
+
+        result2 = merge_s57_layer_metadata(
+            {},
+            source_layer={"name": "COALNE"},
+            geometry_type="Line String",
+            style_mapped=True,
+        )
+        assert result2["s57"]["minScaleDenominator"] is None
+
 
 class StubGeoServerClient:
-    """Minimal GeoServerClient stand-in recording GWC calls."""
+    """Minimal GeoServerClient stand-in recording GWC and style calls."""
 
     def __init__(self) -> None:
         self.gridset_calls: list[tuple[str, str, list[float]]] = []
         self.gwc_calls: list[tuple[str, list[str], list[str]]] = []
         self.fail_gwc_layers: set[str] = set()
+        self.publish_style_calls: list[tuple[str, str]] = []
+        self.set_default_style_calls: list[tuple[str, str]] = []
+        self.truncate_calls: list[str] = []
 
     def ensure_gridset(self, gridset_name: str, crs: str, extent: list[float]) -> None:
         self.gridset_calls.append((gridset_name, crs, extent))
@@ -189,6 +212,15 @@ class StubGeoServerClient:
         if layer_name in self.fail_gwc_layers:
             raise RuntimeError(f"stub GWC failure for {layer_name}")
         self.gwc_calls.append((layer_name, gridsets or [], mime_formats or []))
+
+    def publish_style(self, style_name: str, sld: str) -> None:
+        self.publish_style_calls.append((style_name, sld))
+
+    def set_default_style(self, layer_name: str, style_name: str) -> None:
+        self.set_default_style_calls.append((layer_name, style_name))
+
+    def truncate_layer_cache(self, layer_name: str) -> None:
+        self.truncate_calls.append(layer_name)
 
 
 def _make_spatial_layer(code: str) -> Layer:
@@ -242,3 +274,133 @@ class TestEnableGwcCaching:
 
         assert len(stub.gwc_calls) == 1
         assert stub.gwc_calls[0][0] == "LIGHTS"
+
+
+def _make_style_layer(
+    code: str,
+    source_layer: str,
+    geometry_type: str | None,
+    s57: dict | None = None,
+) -> Layer:
+    return Layer(
+        dataset_version_id=uuid4(),
+        code=code,
+        name=source_layer,
+        geometry_type=geometry_type,
+        status=LayerStatus.AVAILABLE.value,
+        geoserver_workspace="polar_gis",
+        geoserver_layer_name=code,
+        metadata_json={
+            "sourceLayer": source_layer,
+            "s57": s57 or {"objectClass": source_layer.upper(), "styleMapped": True},
+        },
+    )
+
+
+class TestApplyS57Style:
+    def test_publishes_scale_aware_sld_and_truncates_cache(
+        self, db_session: Session
+    ) -> None:
+        layer = _make_style_layer("SOUNDG_CELL", "SOUNDG", "Point")
+        db_session.add(layer)
+        db_session.flush()
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._apply_s57_style(db_session, layer)
+
+        assert len(stub.publish_style_calls) == 1
+        style_name, sld = stub.publish_style_calls[0]
+        assert style_name == "s57_sounding"
+        assert "<sld:MinScaleDenominator>25000.0</sld:MinScaleDenominator>" in sld
+        assert stub.set_default_style_calls == [("SOUNDG_CELL", "s57_sounding")]
+        assert stub.truncate_calls == ["SOUNDG_CELL"]
+        assert layer.metadata_json["s57StyleStatus"] == "mapped"
+        assert layer.metadata_json["recommendedStyleCode"] == "s57_sounding"
+        assert layer.metadata_json["s57"]["styleMapped"] is True
+        assert layer.metadata_json["s57"]["sldHash"] == hashlib.sha256(
+            sld.encode("utf-8")
+        ).hexdigest()
+
+    def test_idempotent_skip_when_sld_unchanged(self, db_session: Session) -> None:
+        layer = _make_style_layer("DEPCNT_CELL", "DEPCNT", "Line String")
+        db_session.add(layer)
+        db_session.flush()
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._apply_s57_style(db_session, layer)
+        assert len(stub.publish_style_calls) == 1
+
+        processor._apply_s57_style(db_session, layer)
+
+        # second call with an identical SLD must not re-publish or truncate
+        assert len(stub.publish_style_calls) == 1
+        assert len(stub.set_default_style_calls) == 1
+        assert len(stub.truncate_calls) == 1
+
+    def test_truncates_when_sld_changed(self, db_session: Session) -> None:
+        # stale hash (e.g. from the old single-rule SLD) forces re-publish + truncate
+        layer = _make_style_layer(
+            "LIGHTS_CELL",
+            "LIGHTS",
+            "Point",
+            s57={"objectClass": "LIGHTS", "styleMapped": True, "sldHash": "0" * 64},
+        )
+        db_session.add(layer)
+        db_session.flush()
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._apply_s57_style(db_session, layer)
+
+        assert len(stub.publish_style_calls) == 1
+        assert stub.truncate_calls == ["LIGHTS_CELL"]
+        assert layer.metadata_json["s57"]["sldHash"] != "0" * 64
+
+    def test_uses_stored_min_scale_denominator_from_metadata(
+        self, db_session: Session
+    ) -> None:
+        # classification output persisted by merge_s57_layer_metadata wins over
+        # a fresh classify call, so re-imports stay byte-identical
+        layer = _make_style_layer(
+            "LIGHTS_CELL2",
+            "LIGHTS",
+            "Point",
+            s57={
+                "objectClass": "LIGHTS",
+                "styleMapped": True,
+                "minScaleDenominator": 12345.0,
+            },
+        )
+        db_session.add(layer)
+        db_session.flush()
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._apply_s57_style(db_session, layer)
+
+        sld = stub.publish_style_calls[0][1]
+        assert "<sld:MinScaleDenominator>12345.0</sld:MinScaleDenominator>" in sld
+        assert "50000.0" not in sld
+
+    def test_unmapped_layer_marks_metadata_and_skips_publish(
+        self, db_session: Session
+    ) -> None:
+        layer = _make_style_layer("DSID_CELL", "DSID", None)
+        db_session.add(layer)
+        db_session.flush()
+        processor = ImportProcessor(Settings())
+        stub = StubGeoServerClient()
+        processor.geoserver = stub  # type: ignore[assignment]
+
+        processor._apply_s57_style(db_session, layer)
+
+        assert stub.publish_style_calls == []
+        assert stub.truncate_calls == []
+        assert layer.metadata_json["s57StyleStatus"] == "unmapped"
+        assert layer.metadata_json["s57"]["styleMapped"] is False

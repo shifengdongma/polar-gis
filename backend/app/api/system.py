@@ -8,10 +8,12 @@ from app.core.database import get_db
 from app.models import AuditLog, User
 from app.schemas import AuditLogRead, Paginated
 from app.services.gwc_backfill import ensure_gwc_3413_backfill
+from app.services.s57_style_refresh import refresh_s57_layer_styles
 
 health_router = APIRouter(prefix="/health", tags=["health"])
 audit_router = APIRouter(prefix="/admin/audit-logs", tags=["admin-audit"])
 admin_router = APIRouter(prefix="/admin/gwc", tags=["admin-gwc"])
+styles_admin_router = APIRouter(prefix="/admin/styles", tags=["admin-styles"])
 settings = get_settings()
 
 
@@ -37,6 +39,19 @@ def run_gwc_3413_backfill(
 ) -> dict:
     """Idempotently backfill EPSG:3413 GWC caching for all available S-57 layers."""
     return ensure_gwc_3413_backfill(db)
+
+
+@styles_admin_router.post("/refresh-s57")
+def refresh_s57_styles(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> dict:
+    """Idempotently re-apply scale-aware S-57 SLDs to all available S-57 layers.
+
+    Layers whose SLD changed are re-published to GeoServer and their GWC tile
+    cache is truncated; unchanged layers are skipped.
+    """
+    return refresh_s57_layer_styles(db)
 
 
 @audit_router.get("", response_model=Paginated[AuditLogRead])

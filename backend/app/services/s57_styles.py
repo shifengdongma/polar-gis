@@ -1,6 +1,14 @@
 from dataclasses import dataclass
 
 
+def _format_scale_denominator(value: float) -> str:
+    """Canonical float formatting for SLD scale denominators (e.g. ``25000.0``).
+
+    Normalizes through ``float`` so int and float inputs hash identically.
+    """
+    return str(float(value))
+
+
 @dataclass(frozen=True)
 class S57StylePreset:
     code: str
@@ -9,7 +17,11 @@ class S57StylePreset:
     color: str
     fill_color: str | None = None
 
-    def render_sld(self) -> str:
+    def render_sld(
+        self,
+        min_scale_denominator: float | None = None,
+        max_scale_denominator: float | None = None,
+    ) -> str:
         if self.geometry == "point":
             symbolizer = f"""
               <sld:PointSymbolizer><sld:Graphic><sld:Mark>
@@ -29,6 +41,22 @@ class S57StylePreset:
                 <sld:CssParameter name="stroke">{self.color}</sld:CssParameter>
                 <sld:CssParameter name="stroke-width">1.5</sld:CssParameter>
               </sld:Stroke></sld:LineSymbolizer>"""
+        # Scale-dependent rendering: omit both elements when no scale is set so
+        # the default output stays byte-identical with the pre-scale-rules SLD.
+        scale_blocks = []
+        if min_scale_denominator is not None:
+            scale_blocks.append(
+                "<sld:MinScaleDenominator>"
+                f"{_format_scale_denominator(min_scale_denominator)}"
+                "</sld:MinScaleDenominator>"
+            )
+        if max_scale_denominator is not None:
+            scale_blocks.append(
+                "<sld:MaxScaleDenominator>"
+                f"{_format_scale_denominator(max_scale_denominator)}"
+                "</sld:MaxScaleDenominator>"
+            )
+        scale_xml = f"\n      {'\n      '.join(scale_blocks)}" if scale_blocks else ""
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <sld:StyledLayerDescriptor version="1.0.0"
   xmlns:sld="http://www.opengis.net/sld"
@@ -36,7 +64,7 @@ class S57StylePreset:
   xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <sld:NamedLayer><sld:Name>{self.code}</sld:Name><sld:UserStyle>
-    <sld:Title>{self.name}</sld:Title><sld:FeatureTypeStyle><sld:Rule>
+    <sld:Title>{self.name}</sld:Title><sld:FeatureTypeStyle><sld:Rule>{scale_xml}
       {symbolizer}
     </sld:Rule></sld:FeatureTypeStyle>
   </sld:UserStyle></sld:NamedLayer>

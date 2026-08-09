@@ -23,7 +23,6 @@ from app.models import (
     Layer,
     LayerStatus,
     ProjectLayer,
-    Style,
     VersionStatus,
 )
 from app.services.geoserver import GeoServerClient
@@ -36,6 +35,7 @@ from app.services.gwc_backfill import (
 )
 from app.services.s57 import GdalInspector
 from app.services.s57_layer_catalog import classify_s57_layer, has_valid_geometry
+from app.services.s57_style_refresh import sync_s57_layer_style
 from app.services.s57_styles import preset_for_object_class
 from app.services.storage import LocalStorage
 
@@ -90,6 +90,7 @@ def merge_s57_layer_metadata(
             "displayCategory": rule.display_category,
             "loadProfile": rule.load_profile,
             "displayPriority": rule.display_priority,
+            "minScaleDenominator": rule.min_scale_denominator,
             "recommended": rule.recommended,
             "renderable": rule.renderable,
             "styleMapped": style_mapped,
@@ -466,38 +467,13 @@ class ImportProcessor:
             raise
 
     def _apply_s57_style(self, db: Session, layer: Layer) -> None:
-        source_layer = str(layer.metadata_json.get("sourceLayer", ""))
-        preset = preset_for_object_class(source_layer)
-        if preset is None:
-            s57_meta = dict(layer.metadata_json.get("s57") or {})
-            s57_meta["styleMapped"] = False
-            layer.metadata_json = {
-                **layer.metadata_json,
-                "s57StyleStatus": "unmapped",
-                "s57": s57_meta,
-            }
-            return
-        style = db.scalar(select(Style).where(Style.code == preset.code))
-        if style is None:
-            style = Style(
-                code=preset.code,
-                name=preset.name,
-                geoserver_style_name=preset.code,
-                status="published",
-            )
-            db.add(style)
-            db.flush()
-        self.geoserver.publish_style(preset.code, preset.render_sld())
-        self.geoserver.set_default_style(layer.geoserver_layer_name or layer.code, preset.code)
-        s57_meta = dict(layer.metadata_json.get("s57") or {})
-        s57_meta["styleMapped"] = True
-        layer.metadata_json = {
-            **layer.metadata_json,
-            "recommendedStyleCode": preset.code,
-            "recommendedStyleId": str(style.id),
-            "s57StyleStatus": "mapped",
-            "s57": s57_meta,
-        }
+        """Idempotently apply the scale-aware preset SLD for an S-57 layer.
+
+        Delegates to :func:`sync_s57_layer_style` which publishes the SLD
+        (with MinScaleDenominator from the s57 classification), truncates the
+        GWC tile cache when the SLD hash changed, and records ``s57.sldHash``.
+        """
+        sync_s57_layer_style(db, layer, self.geoserver)
 
     def _switch_project_layer_versions(
         self,

@@ -110,6 +110,7 @@ app.include_router(s57_basemaps.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)
 app.include_router(system.admin_router, prefix=api)
+app.include_router(system.styles_admin_router, prefix=api)
 
 
 @app.get("/")
