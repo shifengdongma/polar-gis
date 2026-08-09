@@ -84,6 +84,7 @@ import {
   attachBundle,
   detachBundle,
   disposeAllBundles,
+  getAllBundleRuntimes,
   setBundleVisible,
 } from '../utils/mapRenderBundles'
 import { fetchRenderPlan } from '../api/projects'
@@ -284,6 +285,14 @@ watch(layerSearch, () => {
   layerSearchTimer = window.setTimeout(() => {
     layerSearchDebounced.value = layerSearch.value
   }, 200)
+})
+
+// Leaving smart mode: reconcileRenderPlan returns early in standard mode,
+// so composite bundles would otherwise linger on the map. Dispose them.
+watch(renderMode, (mode) => {
+  if (mode === 'standard' && map) {
+    disposeAllBundles(map)
+  }
 })
 
 const filteredGroups = computed(() => {
@@ -879,6 +888,13 @@ async function reconcileRenderPlan() {
     }
   }
 
+  // No bundle plan to reconcile against (empty selection or fetch failure):
+  // dispose any attached bundles so stale composites don't leak on the map,
+  // then fall through to the per-layer path.
+  if (!bundlePlanInput && getAllBundleRuntimes().length > 0) {
+    disposeAllBundles(map!)
+  }
+
   const plan = buildRenderPlan({
     selectedLayerIds: selectedLayerIds.value,
     attachedLayerIds: attachedLayerIds.value,
@@ -893,6 +909,7 @@ async function reconcileRenderPlan() {
     renderMode: renderMode.value,
     overviewAvailable: overviewAvail,
     bundlePlanInput,
+    attachedBundleIds: new Set(getAllBundleRuntimes().map((r) => r.config.bundleId)),
   })
 
   // Execute bundle plan if present (smart mode with bundles)
@@ -1332,6 +1349,9 @@ function unloadSelectedDatasets() {
       selectedLayerIds.value = next
     }
   }
+  // Selection change invalidates the bundle cache key — reconcile so
+  // stale bundles are detached by the scheduler.
+  reconcileRenderPlan()
   ElMessage.success('已卸载所选数据集的图层')
 }
 
@@ -1360,6 +1380,9 @@ function unloadCurrentFilteredLayers() {
       loadedLayerIds.value = next
     }
   }
+  // Selection change invalidates the bundle cache key — reconcile so
+  // stale bundles are detached by the scheduler.
+  reconcileRenderPlan()
   ElMessage.success('已卸载当前搜索结果图层')
 }
 
@@ -1374,6 +1397,9 @@ function unloadLastBulkBatch() {
     }
   }
   lastBulkAttachedLayerIds.value = new Set()
+  // Selection change invalidates the bundle cache key — reconcile so
+  // stale bundles are detached by the scheduler.
+  reconcileRenderPlan()
   ElMessage.success('已卸载本次批量加载的图层')
 }
 

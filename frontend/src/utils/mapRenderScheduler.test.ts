@@ -9,6 +9,7 @@ import {
   type ResolvedLayerMeta,
   type RenderPlanInput,
 } from './mapRenderScheduler'
+import type { RenderBundleConfig } from '../types'
 import {
   SMART_MAX_ACTIVE_WMS_LAYERS,
   SMART_MAX_WARMING_LAYERS,
@@ -65,6 +66,26 @@ function makeInput(
     resolution: overrides.resolution ?? 1000,
     renderMode: overrides.renderMode ?? 'smart',
     overviewAvailable: overrides.overviewAvailable ?? true,
+    bundlePlanInput: overrides.bundlePlanInput,
+    attachedBundleIds: overrides.attachedBundleIds,
+  }
+}
+
+function makeBundle(overrides: Partial<RenderBundleConfig> = {}): RenderBundleConfig {
+  return {
+    bundleId: overrides.bundleId ?? 'bundle-1',
+    bucket: overrides.bucket ?? 'bucket-a',
+    layerIds: overrides.layerIds ?? ['l1', 'l2'],
+    layerNames: overrides.layerNames ?? ['wms_layer_1', 'wms_layer_2'],
+    styles: overrides.styles ?? ['style_1', 'style_2'],
+    zIndex: overrides.zIndex ?? 10,
+    opacity: overrides.opacity ?? 1,
+    extent: overrides.extent ?? [10, 45, 20, 55], // inside default viewport [-2000..2000]
+    minZoom: overrides.minZoom ?? null,
+    maxZoom: overrides.maxZoom ?? null,
+    transport: overrides.transport ?? 'wms',
+    serviceUrl: overrides.serviceUrl ?? 'http://localhost:8080/geoserver/wms',
+    cacheKey: overrides.cacheKey ?? 'cache-1',
   }
 }
 
@@ -473,6 +494,84 @@ describe('buildRenderPlan — edge cases', () => {
     const plan = buildRenderPlan(input)
     // Conservative: null/invalid extent → in viewport → attach
     expect(plan.attach).toContain('l1')
+  })
+})
+
+// ── Bundle branch (smart mode with composite bundles) ────────────────
+
+describe('buildRenderPlan — bundle branch', () => {
+  const inViewExtent: number[] = [10, 45, 20, 55] // inside default viewport [-2000..2000]
+  const outViewExtent: number[] = [5100, 4500, 5200, 4600] // clearly outside
+
+  it('33: new bundle in viewport (not attached) → attachBundles, activate empty', () => {
+    const bundle = makeBundle({ bundleId: 'b1', extent: inViewExtent })
+    const input = makeInput({
+      layers: [],
+      renderMode: 'smart',
+      bundlePlanInput: { bundles: [bundle], standaloneLayerIds: [] },
+    })
+    const plan = buildRenderPlan(input)
+    expect(plan.bundlePlan?.attachBundles.map((b) => b.bundleId)).toContain('b1')
+    expect(plan.bundlePlan?.activateBundles).toEqual([])
+    expect(plan.bundlePlan?.suspendBundles).toEqual([])
+  })
+
+  it('34: attached + in viewport → activate only, no re-attach', () => {
+    const bundle = makeBundle({ bundleId: 'b1', extent: inViewExtent })
+    const input = makeInput({
+      layers: [],
+      renderMode: 'smart',
+      attachedBundleIds: new Set(['b1']),
+      bundlePlanInput: { bundles: [bundle], standaloneLayerIds: [] },
+    })
+    const plan = buildRenderPlan(input)
+    expect(plan.bundlePlan?.activateBundles).toContain('b1')
+    expect(plan.bundlePlan?.attachBundles).toEqual([])
+    expect(plan.bundlePlan?.detachBundles).not.toContain('b1')
+  })
+
+  it('35: attached + out of viewport → suspendBundles', () => {
+    const bundle = makeBundle({ bundleId: 'b1', extent: outViewExtent })
+    const input = makeInput({
+      layers: [],
+      renderMode: 'smart',
+      attachedBundleIds: new Set(['b1']),
+      bundlePlanInput: { bundles: [bundle], standaloneLayerIds: [] },
+    })
+    const plan = buildRenderPlan(input)
+    expect(plan.bundlePlan?.suspendBundles).toContain('b1')
+    expect(plan.bundlePlan?.attachBundles).toEqual([])
+    expect(plan.bundlePlan?.activateBundles).toEqual([])
+  })
+
+  it('36: attached but absent from new plan → detachBundles (leak fix)', () => {
+    const bundle = makeBundle({ bundleId: 'b1', extent: inViewExtent })
+    const input = makeInput({
+      layers: [],
+      renderMode: 'smart',
+      attachedBundleIds: new Set(['b1', 'b2']),
+      bundlePlanInput: { bundles: [bundle], standaloneLayerIds: [] },
+    })
+    const plan = buildRenderPlan(input)
+    expect(plan.bundlePlan?.detachBundles).toContain('b2')
+    expect(plan.bundlePlan?.detachBundles).not.toContain('b1')
+  })
+
+  it('37: no attachedBundleIds (legacy callers) → all in-viewport bundles attach', () => {
+    const bundles = [
+      makeBundle({ bundleId: 'b1', extent: inViewExtent }),
+      makeBundle({ bundleId: 'b2', extent: inViewExtent }),
+    ]
+    const input = makeInput({
+      layers: [],
+      renderMode: 'smart',
+      bundlePlanInput: { bundles, standaloneLayerIds: [] },
+    })
+    const plan = buildRenderPlan(input)
+    expect(plan.bundlePlan?.attachBundles.map((b) => b.bundleId)).toEqual(['b1', 'b2'])
+    expect(plan.bundlePlan?.activateBundles).toEqual([])
+    expect(plan.bundlePlan?.suspendBundles).toEqual([])
+    expect(plan.bundlePlan?.detachBundles).toEqual([])
   })
 })
 

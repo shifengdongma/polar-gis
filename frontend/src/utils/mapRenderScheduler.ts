@@ -83,6 +83,8 @@ export interface RenderPlanInput {
     bundles: RenderBundleConfig[]
     standaloneLayerIds: string[]
   }
+  /** Bundle IDs that currently have attached OL layers (smart bundle mode). Defaults to empty. */
+  attachedBundleIds?: ReadonlySet<string>
 }
 
 export interface RenderPlan {
@@ -398,16 +400,29 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
     const activateBundles: string[] = []
     const suspendBundles: string[] = []
 
+    const attachedBundleIds = input.attachedBundleIds ?? new Set<string>()
     for (const b of bundles) {
       if (!inRangeBundleIds.has(b.bundleId)) {
-        // Out of viewport — suspend if active, detach if attached
-        if (false /* TODO: track attached bundles */) {
+        // Out of viewport — suspend if already mounted, otherwise leave unattached
+        if (attachedBundleIds.has(b.bundleId)) {
           suspendBundles.push(b.bundleId)
         }
         continue
       }
       // In range — attach new, activate existing
-      attachBundles.push(b)
+      if (attachedBundleIds.has(b.bundleId)) {
+        activateBundles.push(b.bundleId)
+      } else {
+        attachBundles.push(b)
+      }
+    }
+
+    // Bundles attached previously but absent from the new plan
+    // (deselection / version change → bundleId change) → detach (fixes leak)
+    for (const id of attachedBundleIds) {
+      if (!bundles.some((b) => b.bundleId === id)) {
+        detachBundles.push(id)
+      }
     }
 
     // Per-layer management: only standalone layers go through existing path
