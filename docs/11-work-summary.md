@@ -5,6 +5,25 @@
 
 ---
 
+## 补充修复 — GWC 批量加载 400（会话 #18.2，2026-08-10）
+
+### 修改了什么
+
+- `backend/app/api/projects.py` 两处 API 响应构建器（`get_project_dataset_map_layers` 懒加载路径、`_build_resolved_layer` 批量 resolve 路径）将图层名/样式名输出为 **workspace 全限定名**（`polar_gis:s57_c110408a_1_depare` / `polar_gis:s57_depth`）
+- `backend/tests/test_projects.py` 对应断言同步更新
+
+### 达到的效果
+
+- **修复**：批量加载图层不再 400，GWC facade 瓦片请求（`LAYERS/STYLES` 带前缀）返回 200 PNG；GWC 缓存链路（会话 #18 的 cacheable 图层 GWC 化）真正可用
+- **统一契约**：逐层路径与 bundle 路径（`_build_layer_render_input` 原本已正确）输出一致的 `workspace:name` 全限定名
+- **零回归**：普通 WMS 接受全限定名（默认命名空间解析裸名同样兼容）；168 后端测试通过
+- 前端无需改动（仅透传后端字段），`s57ObjectNames` 标题归一化兼容前缀
+
+### 遗留注意
+
+- 需重启后端服务使修复生效；此前已发布图层的 GWC 注册表键本就为全限定名，无需迁移
+---
+
 ## 会话 #18.1 — 最终评审修复（SLD 比例尺方向 + Bundle attach 死锁）
 
 **日期**: 2026-08-10
@@ -822,23 +841,3 @@ docker compose up -d         # 启动服务
 - 阶段五: SLD 比例尺规则 (s57_styles.py)、PostGIS GiST 索引 + ANALYZE、EPSG:3413 GWC GridSet、GeoServer JVM 调优
 - 阶段六: 性能测试场景 A-D 验收、回归测试、文档更新
 - 可选: 低缩放简化视图 (ST_SimplifyPreserveTopology)
-
----
-
-## 补充修复 — GWC 批量加载 400（会话 #18.2，2026-08-10）
-
-### 修改了什么
-
-- `backend/app/api/projects.py` 两处 API 响应构建器（`get_project_dataset_map_layers` 懒加载路径、`_build_resolved_layer` 批量 resolve 路径）将图层名/样式名输出为 **workspace 全限定名**（`polar_gis:s57_c110408a_1_depare` / `polar_gis:s57_depth`）
-- `backend/tests/test_projects.py` 对应断言同步更新
-
-### 达到的效果
-
-- **修复**：批量加载图层不再 400，GWC facade 瓦片请求（`LAYERS/STYLES` 带前缀）返回 200 PNG；GWC 缓存链路（会话 #18 的 cacheable 图层 GWC 化）真正可用
-- **统一契约**：逐层路径与 bundle 路径（`_build_layer_render_input` 原本已正确）输出一致的 `workspace:name` 全限定名
-- **零回归**：普通 WMS 接受全限定名（默认命名空间解析裸名同样兼容）；168 后端测试通过
-- 前端无需改动（仅透传后端字段），`s57ObjectNames` 标题归一化兼容前缀
-
-### 遗留注意
-
-- 需重启后端服务使修复生效；此前已发布图层的 GWC 注册表键本就为全限定名，无需迁移
