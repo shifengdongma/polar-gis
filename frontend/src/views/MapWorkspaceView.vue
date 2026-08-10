@@ -71,7 +71,19 @@ import {
   TILE_RETRY_MAX_ATTEMPTS,
   TILE_RETRY_BASE_DELAY_MS,
   TILE_WARMING_TIMEOUT_MS,
+  TILE_CACHE_MAX_ENTRIES,
+  TILE_CACHE_MAX_BYTES,
+  TILE_MAX_CONCURRENT_FETCH,
+  TILE_MAX_QUEUED_FETCH,
+  ENABLE_TILE_MERGING,
 } from '../utils/mapLayerBatch'
+import { LRUTileCache } from '../utils/tileCache'
+import { TileRequestQueue } from '../utils/tileRequestQueue'
+import {
+  groupResolvedLayers,
+  createMergedTileSource,
+  type MergeGroup,
+} from '../utils/mapTileMerger'
 import {
   buildRenderPlan,
   ENABLE_RENDER_BUNDLES,
@@ -260,6 +272,20 @@ let map: OlMap | null = null
 let fallbackBaseLayer: TileLayer<OSM> | null = null
 let measureInteraction: Draw | null = null
 const wmsLayers = new globalThis.Map<string, TileLayer<TileWMS>>()
+const tileCache = new LRUTileCache(TILE_CACHE_MAX_ENTRIES, TILE_CACHE_MAX_BYTES)
+const tileRequestQueue = new TileRequestQueue(TILE_MAX_CONCURRENT_FETCH, TILE_MAX_QUEUED_FETCH)
+
+// ── Merged group state (standard-mode TileWMS source sharing) ─────────
+// When ENABLE_TILE_MERGING is on, layers are grouped by (serviceUrl,
+// renderTransport, style, objectClass) and share one TileWMS source.
+interface MergedGroupRuntime {
+  source: TileWMS
+  memberIds: Set<string>
+  pendingTiles: number
+}
+const mergedGroupRuntimes = new Map<string, MergedGroupRuntime>()
+const mergedGroupMembers = new Map<string, string>()  // layerId → groupId
+
 const configuredBaseLayers = new globalThis.Map<string, TileLayer<XYZ | WMTS>>()
 const measureSource = new VectorSource()
 const aisSource = new VectorSource()
@@ -525,7 +551,19 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
     const tryLoad = () => {
       if (controller.signal.aborted) return
       attempts++
-      fetch(src, { mode: 'cors', signal: controller.signal })
+
+      // 1. Check LRU tile cache first — avoid redundant fetches for
+      //    previously loaded tiles (pan-back, layer toggle, etc.).
+      const cached = tileCache.get(src)
+      if (cached) {
+        const objectUrl = URL.createObjectURL(cached)
+        img.onload = () => URL.revokeObjectURL(objectUrl)
+        img.src = objectUrl
+        return
+      }
+
+      // 2. Fetch tile from GeoServer via the concurrency-limited queue.
+      tileRequestQueue.fetch(src, controller.signal)
         .then((response) => {
           if (response.ok) {
             return response.blob()
@@ -545,6 +583,8 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
         })
         .then((blob) => {
           if (blob) {
+            // Cache successful responses for future pan-back / toggle scenarios.
+            tileCache.set(src, blob)
             const objectUrl = URL.createObjectURL(blob)
             img.onload = () => URL.revokeObjectURL(objectUrl)
             img.src = objectUrl
@@ -567,63 +607,69 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
 function attachWmsLayer(
   runtime: RuntimeLayer,
   opts?: { extent?: number[]; minZoom?: number | null; maxZoom?: number | null; visible?: boolean },
+  sharedSource?: TileWMS,
 ): AttachResult {
   if (!map || wmsLayers.has(runtime.config.id)) return 'already-loaded'
   if (isNonSpatial(runtime.config)) {
     runtime.loadState = 'loaded'
     return 'non-spatial'
   }
-  // Cacheable layers route through the GWC tile endpoint when available.
-  // Force WMS 1.1.1 so OpenLayers emits SRS instead of CRS — GWC WMS-C
-  // gridsets are keyed on SRS, avoiding 1.3.0/CRS handling differences.
-  const useGwc =
-    ENABLE_GWC_TILES && runtime.config.renderTransport === 'gwc_wms' && !!runtime.config.tileServiceUrl
-  const source = new TileWMS({
-    url: browserGeoServerUrl(useGwc ? runtime.config.tileServiceUrl! : runtime.config.serviceUrl),
-    params: {
-      LAYERS: runtime.config.serviceLayerName,
-      TILED: true,
-      STYLES: runtime.config.styleName || '',
-      ...(useGwc ? { VERSION: '1.1.1' } : {}),
-    },
-    crossOrigin: 'anonymous',
-    transition: 0,
-    tileLoadFunction: createRetryTileLoadFunction(perfStats),
-  })
-  source.on('tileloadstart', () => {
-    runtime.pendingTiles += 1
-    perfStats.recordTileStart(runtime.config.id)
-    window.clearTimeout(runtime.loadStateTimer)
-    runtime.loadStateTimer = window.setTimeout(() => {
-      if (runtime.pendingTiles > 0) {
-        runtime.loadState = 'loading'
-      }
-    }, 300)
-  })
-  source.on('tileloadend', () => {
-    runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
-    perfStats.recordTileEnd(runtime.config.id)
-    if (runtime.pendingTiles === 0) {
+
+  const source = sharedSource ?? (() => {
+    // Cacheable layers route through the GWC tile endpoint when available.
+    // Force WMS 1.1.1 so OpenLayers emits SRS instead of CRS — GWC WMS-C
+    // gridsets are keyed on SRS, avoiding 1.3.0/CRS handling differences.
+    const useGwc =
+      ENABLE_GWC_TILES && runtime.config.renderTransport === 'gwc_wms' && !!runtime.config.tileServiceUrl
+    const s = new TileWMS({
+      url: browserGeoServerUrl(useGwc ? runtime.config.tileServiceUrl! : runtime.config.serviceUrl),
+      params: {
+        LAYERS: runtime.config.serviceLayerName,
+        TILED: true,
+        STYLES: runtime.config.styleName || '',
+        ...(useGwc ? { VERSION: '1.1.1' } : {}),
+      },
+      crossOrigin: 'anonymous',
+      transition: 0,
+      tileLoadFunction: createRetryTileLoadFunction(perfStats),
+    })
+    s.on('tileloadstart', () => {
+      runtime.pendingTiles += 1
+      perfStats.recordTileStart(runtime.config.id)
       window.clearTimeout(runtime.loadStateTimer)
-      if (runtime.loadState !== 'error') runtime.loadState = 'loaded'
-      // Drain from warming queue — first tile(s) successfully loaded
+      runtime.loadStateTimer = window.setTimeout(() => {
+        if (runtime.pendingTiles > 0) {
+          runtime.loadState = 'loading'
+        }
+      }, 300)
+    })
+    s.on('tileloadend', () => {
+      runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
+      perfStats.recordTileEnd(runtime.config.id)
+      if (runtime.pendingTiles === 0) {
+        window.clearTimeout(runtime.loadStateTimer)
+        if (runtime.loadState !== 'error') runtime.loadState = 'loaded'
+        // Drain from warming queue — first tile(s) successfully loaded
+        const nextWarm = new Set(warmingLayerIds.value)
+        if (nextWarm.delete(runtime.config.id)) {
+          warmingLayerIds.value = nextWarm
+        }
+      }
+    })
+    s.on('tileloaderror', () => {
+      runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
+      perfStats.recordTileError(runtime.config.id)
+      window.clearTimeout(runtime.loadStateTimer)
+      runtime.loadState = 'error'
+      // Drain from warming queue on error too — allow next candidate to proceed
       const nextWarm = new Set(warmingLayerIds.value)
       if (nextWarm.delete(runtime.config.id)) {
         warmingLayerIds.value = nextWarm
       }
-    }
-  })
-  source.on('tileloaderror', () => {
-    runtime.pendingTiles = Math.max(0, runtime.pendingTiles - 1)
-    perfStats.recordTileError(runtime.config.id)
-    window.clearTimeout(runtime.loadStateTimer)
-    runtime.loadState = 'error'
-    // Drain from warming queue on error too — allow next candidate to proceed
-    const nextWarm = new Set(warmingLayerIds.value)
-    if (nextWarm.delete(runtime.config.id)) {
-      warmingLayerIds.value = nextWarm
-    }
-  })
+    })
+    return s
+  })()
+
   const tileLayer = new TileLayer({
     source,
     opacity: runtime.opacity,
@@ -654,14 +700,37 @@ function detachWmsLayer(runtime: RuntimeLayer) {
   const tileLayer = wmsLayers.get(runtime.config.id)
   if (!tileLayer || !map) return
   map.removeLayer(tileLayer)
-  tileLayer.dispose()
-  wmsLayers.delete(runtime.config.id)
+
+  const lid = runtime.config.id
+  const groupId = mergedGroupMembers.get(lid)
+
+  if (groupId) {
+    // Merged group member — release layer from group, dispose shared
+    // source only when the last member is detached.
+    mergedGroupMembers.delete(lid)
+    const grp = mergedGroupRuntimes.get(groupId)
+    if (grp) {
+      grp.memberIds.delete(lid)
+      if (grp.memberIds.size === 0) {
+        // Last member gone — dispose shared source and group runtime
+        grp.source.dispose()
+        mergedGroupRuntimes.delete(groupId)
+      }
+    }
+    // Dispose the individual TileLayer (shared source survives if group
+    // has remaining members).
+    tileLayer.dispose()
+  } else {
+    // Standalone layer — dispose both TileLayer and its private source
+    tileLayer.dispose()
+  }
+
+  wmsLayers.delete(lid)
   window.clearTimeout(runtime.loadStateTimer)
   runtime.pendingTiles = 0
   runtime.loadState = 'idle'
   runtime.loadStateTimer = undefined
   // Clean up from state sets
-  const lid = runtime.config.id
   const nextAtt = new Set(attachedLayerIds.value)
   nextAtt.delete(lid)
   attachedLayerIds.value = nextAtt
@@ -780,6 +849,10 @@ function switchProjection(crs: string) {
   disposeAllBundles(map)
   lastBundlePlanCacheKey = ''
   lastBundlePlanCache = undefined
+  // Invalidate tile cache and abort pending requests — different CRS
+  // produces different tile URLs
+  tileRequestQueue.abortAll()
+  tileCache.clear()
   currentCrs.value = crs
   applyBaseMapVisibility()
   map.setView(createView(crs))
@@ -1281,74 +1354,234 @@ async function loadResolvedLayersInBatches(
 ) {
   if (!map || !config.value) return
 
-  for (let i = 0; i < candidates.length; i += BULK_ATTACH_BATCH_SIZE) {
-    if (bulkCancelled.value || bulkGeneration.value !== generation) break
+  // ── Pre-group candidates when merging is enabled ──────────────────
+  // Groups share one TileWMS source with comma-separated LAYERS param,
+  // drastically reducing HTTP request count for same-dataset layers.
+  const groups = ENABLE_TILE_MERGING ? groupResolvedLayers(candidates) : null
+  // Pre-create shared sources and wire group-level tile events
+  const groupSourceMap = new Map<string, TileWMS>() // groupKey → shared source
+  if (groups) {
+    const tileLoadFn = createRetryTileLoadFunction(perfStats)
+    for (const group of groups) {
+      const gid = group.layerIds.sort().join('|') // deterministic group id
+      if (mergedGroupRuntimes.has(gid)) continue   // already attached
+      const source = createMergedTileSource(group, TileWMS, tileLoadFn)
+      groupSourceMap.set(gid, source)
 
-    const batch = candidates.slice(i, i + BULK_ATTACH_BATCH_SIZE)
-    for (const resolved of batch) {
-      const runtime = runtimeLayers.value.find((l) => l.config.id === resolved.id)
-      if (!runtime) continue
-
-      const layerId = resolved.id
-      if (loadingLayerIds.value.has(layerId) || selectedLayerIds.value.has(layerId)) {
-        if (bulkProgress.value) bulkProgress.value.skipped++
-        continue
+      // Track member → group mapping for detachWmsLayer
+      for (const lid of group.layerIds) {
+        mergedGroupMembers.set(lid, gid)
       }
 
-      const loadingNext = new Set(loadingLayerIds.value)
-      loadingNext.add(layerId)
-      loadingLayerIds.value = loadingNext
+      // Group-level tile event wiring:
+      // When tiles load for the composite LAYERS param, update ALL member
+      // runtimes — each tile covers every layer in the group.
+      const memberIds = new Set(group.layerIds)
+      const grpRuntime: MergedGroupRuntime = { source, memberIds, pendingTiles: 0 }
+      mergedGroupRuntimes.set(gid, grpRuntime)
 
-      try {
-        const extent = transformLayerExtent(resolved.extent, currentCrs.value)
-        const result = attachWmsLayer(runtime, {
-          extent,
-          minZoom: resolved.minZoom,
-          maxZoom: resolved.maxZoom,
-          visible: false,
-        })
-        if (result === 'attached') {
-          runtime.visible = true
-          // Mark as selected
-          const selNext = new Set(selectedLayerIds.value)
-          selNext.add(layerId)
-          selectedLayerIds.value = selNext
-
-          const attachNext = new Set(lastBulkAttachedLayerIds.value)
-          attachNext.add(layerId)
-          lastBulkAttachedLayerIds.value = attachNext
-
-          if (bulkProgress.value) {
-            bulkProgress.value.succeeded++
-            bulkProgress.value.attachedLayerIds.push(layerId)
+      source.on('tileloadstart', () => {
+        grpRuntime.pendingTiles += 1
+        for (const lid of memberIds) {
+          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+          if (!rt) continue
+          rt.pendingTiles += 1
+          perfStats.recordTileStart(lid)
+          window.clearTimeout(rt.loadStateTimer)
+          rt.loadStateTimer = window.setTimeout(() => {
+            if (rt.pendingTiles > 0) rt.loadState = 'loading'
+          }, 300)
+        }
+      })
+      source.on('tileloadend', () => {
+        grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
+        for (const lid of memberIds) {
+          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+          if (!rt) continue
+          rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
+          perfStats.recordTileEnd(lid)
+          if (rt.pendingTiles === 0) {
+            window.clearTimeout(rt.loadStateTimer)
+            if (rt.loadState !== 'error') rt.loadState = 'loaded'
+            const nextWarm = new Set(warmingLayerIds.value)
+            if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
           }
-        } else if (result === 'non-spatial') {
-          if (bulkProgress.value) bulkProgress.value.skipped++
-        } else {
-          if (bulkProgress.value) bulkProgress.value.skipped++
         }
-      } catch (err) {
-        if (bulkProgress.value) {
-          bulkProgress.value.failed++
-          bulkProgress.value.errors.push({
-            layerId,
-            layerName: resolved.name,
-            message: err instanceof Error ? err.message : '加载失败',
+      })
+      source.on('tileloaderror', () => {
+        grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
+        for (const lid of memberIds) {
+          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+          if (!rt) continue
+          rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
+          perfStats.recordTileError(lid)
+          window.clearTimeout(rt.loadStateTimer)
+          rt.loadState = 'error'
+          const nextWarm = new Set(warmingLayerIds.value)
+          if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
+        }
+      })
+    }
+  }
+
+  // ── Build the flat ordered list for batch iteration ──────────────
+  // With merging: one "batch unit" = one group (creating 1 source + N layers).
+  // Without merging: one "batch unit" = one candidate (original behaviour).
+  type BatchItem =
+    | { kind: 'merged'; group: MergeGroup; source: TileWMS }
+    | { kind: 'single'; candidate: BulkResolvedLayer }
+
+  const items: BatchItem[] = (() => {
+    if (!groups || !groupSourceMap) {
+      return candidates.map((c) => ({ kind: 'single' as const, candidate: c }))
+    }
+    const result: BatchItem[] = []
+    const seenLayerIds = new Set<string>()
+    for (const group of groups) {
+      const gid = group.layerIds.sort().join('|')
+      const source = groupSourceMap.get(gid)
+      if (!source) continue
+      for (const lid of group.layerIds) seenLayerIds.add(lid)
+      result.push({ kind: 'merged', group, source })
+    }
+    // Append any candidates not covered by any group (edge case)
+    for (const c of candidates) {
+      if (!seenLayerIds.has(c.id)) {
+        result.push({ kind: 'single', candidate: c })
+      }
+    }
+    return result
+  })()
+
+  // ── Batch iteration ──────────────────────────────────────────────
+  for (let i = 0; i < items.length; i += BULK_ATTACH_BATCH_SIZE) {
+    if (bulkCancelled.value || bulkGeneration.value !== generation) break
+
+    const batch = items.slice(i, i + BULK_ATTACH_BATCH_SIZE)
+    for (const item of batch) {
+      if (item.kind === 'merged') {
+        // Attach all members of this group using the shared source
+        for (const lid of item.group.layerIds) {
+          const runtime = runtimeLayers.value.find((r) => r.config.id === lid)
+          if (!runtime) continue
+          if (loadingLayerIds.value.has(lid) || selectedLayerIds.value.has(lid)) {
+            if (bulkProgress.value) bulkProgress.value.skipped++
+            continue
+          }
+
+          const loadingNext = new Set(loadingLayerIds.value)
+          loadingNext.add(lid)
+          loadingLayerIds.value = loadingNext
+
+          try {
+            const resolved = candidates.find((c) => c.id === lid)
+            const extent = resolved ? transformLayerExtent(resolved.extent, currentCrs.value) : undefined
+            const result = attachWmsLayer(runtime, {
+              extent,
+              minZoom: item.group.minZoom ?? undefined,
+              maxZoom: item.group.maxZoom ?? undefined,
+              visible: false,
+            }, item.source)
+            if (result === 'attached') {
+              runtime.visible = true
+              const selNext = new Set(selectedLayerIds.value)
+              selNext.add(lid)
+              selectedLayerIds.value = selNext
+              const attachNext = new Set(lastBulkAttachedLayerIds.value)
+              attachNext.add(lid)
+              lastBulkAttachedLayerIds.value = attachNext
+              if (bulkProgress.value) {
+                bulkProgress.value.succeeded++
+                bulkProgress.value.attachedLayerIds.push(lid)
+              }
+            } else if (result === 'non-spatial') {
+              if (bulkProgress.value) bulkProgress.value.skipped++
+            } else {
+              if (bulkProgress.value) bulkProgress.value.skipped++
+            }
+          } catch (err) {
+            if (bulkProgress.value) {
+              bulkProgress.value.failed++
+              bulkProgress.value.errors.push({
+                layerId: lid,
+                layerName: runtime.config.name,
+                message: err instanceof Error ? err.message : '加载失败',
+              })
+            }
+            const failedNext = new Map(failedLayerIds.value)
+            failedNext.set(lid, err instanceof Error ? err.message : '加载失败')
+            failedLayerIds.value = failedNext
+          } finally {
+            const loadingFinal = new Set(loadingLayerIds.value)
+            loadingFinal.delete(lid)
+            loadingLayerIds.value = loadingFinal
+            if (bulkProgress.value) bulkProgress.value.processed++
+          }
+        }
+      } else {
+        // Original per-layer path (merging disabled or edge case)
+        const resolved = item.candidate
+        const runtime = runtimeLayers.value.find((r) => r.config.id === resolved.id)
+        if (!runtime) continue
+
+        const layerId = resolved.id
+        if (loadingLayerIds.value.has(layerId) || selectedLayerIds.value.has(layerId)) {
+          if (bulkProgress.value) bulkProgress.value.skipped++
+          continue
+        }
+
+        const loadingNext = new Set(loadingLayerIds.value)
+        loadingNext.add(layerId)
+        loadingLayerIds.value = loadingNext
+
+        try {
+          const extent = transformLayerExtent(resolved.extent, currentCrs.value)
+          const result = attachWmsLayer(runtime, {
+            extent,
+            minZoom: resolved.minZoom,
+            maxZoom: resolved.maxZoom,
+            visible: false,
           })
+          if (result === 'attached') {
+            runtime.visible = true
+            const selNext = new Set(selectedLayerIds.value)
+            selNext.add(layerId)
+            selectedLayerIds.value = selNext
+            const attachNext = new Set(lastBulkAttachedLayerIds.value)
+            attachNext.add(layerId)
+            lastBulkAttachedLayerIds.value = attachNext
+            if (bulkProgress.value) {
+              bulkProgress.value.succeeded++
+              bulkProgress.value.attachedLayerIds.push(layerId)
+            }
+          } else if (result === 'non-spatial') {
+            if (bulkProgress.value) bulkProgress.value.skipped++
+          } else {
+            if (bulkProgress.value) bulkProgress.value.skipped++
+          }
+        } catch (err) {
+          if (bulkProgress.value) {
+            bulkProgress.value.failed++
+            bulkProgress.value.errors.push({
+              layerId,
+              layerName: resolved.name,
+              message: err instanceof Error ? err.message : '加载失败',
+            })
+          }
+          const failedNext = new Map(failedLayerIds.value)
+          failedNext.set(layerId, err instanceof Error ? err.message : '加载失败')
+          failedLayerIds.value = failedNext
+        } finally {
+          const loadingFinal = new Set(loadingLayerIds.value)
+          loadingFinal.delete(layerId)
+          loadingLayerIds.value = loadingFinal
+          if (bulkProgress.value) bulkProgress.value.processed++
         }
-        const failedNext = new Map(failedLayerIds.value)
-        failedNext.set(layerId, err instanceof Error ? err.message : '加载失败')
-        failedLayerIds.value = failedNext
-      } finally {
-        const loadingFinal = new Set(loadingLayerIds.value)
-        loadingFinal.delete(layerId)
-        loadingLayerIds.value = loadingFinal
-        if (bulkProgress.value) bulkProgress.value.processed++
       }
     }
 
     // Wait between batches (unless cancelled or generation changed)
-    if (i + BULK_ATTACH_BATCH_SIZE < candidates.length) {
+    if (i + BULK_ATTACH_BATCH_SIZE < items.length) {
       try {
         await waitForBulkInterval(
           BULK_ATTACH_INTERVAL_MS,
@@ -1688,6 +1921,8 @@ onBeforeUnmount(() => {
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
+  tileRequestQueue.reset()
+  tileCache.clear()
   map?.setTarget(undefined)
   map = null
 })

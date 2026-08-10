@@ -59,6 +59,25 @@ export const ENABLE_GWC_TILES: boolean =
   typeof import.meta !== 'undefined' &&
   (import.meta as any).env?.VITE_ENABLE_GWC_TILES !== 'false'
 
+/** Feature flag: merge compatible layers into shared TileWMS sources in
+ *  standard mode, reducing HTTP request counts. Enabled by default;
+ *  disable with VITE_ENABLE_TILE_MERGING=false. */
+export const ENABLE_TILE_MERGING: boolean =
+  typeof import.meta !== 'undefined' &&
+  (import.meta as any).env?.VITE_ENABLE_TILE_MERGING !== 'false'
+
+/** Maximum number of entries in the LRU tile blob cache. */
+export const TILE_CACHE_MAX_ENTRIES = 2048
+
+/** Maximum approximate memory (bytes) used by the tile blob cache. */
+export const TILE_CACHE_MAX_BYTES = 50 * 1024 * 1024 // 50 MB
+
+/** Maximum concurrent in-flight tile fetch() calls across all WMS sources. */
+export const TILE_MAX_CONCURRENT_FETCH = 16
+
+/** Maximum queued tile fetch requests before oldest is dropped. */
+export const TILE_MAX_QUEUED_FETCH = 512
+
 // ── Pure helpers ────────────────────────────────────────────────────
 
 /**

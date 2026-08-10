@@ -5,6 +5,31 @@
 
 ---
 
+## 会话 #19 — WMS 瓦片请求合并（2026-08-10）
+
+### 修改了什么
+
+- **新建** `frontend/src/utils/tileCache.ts`：LRU 瓦片 Blob 缓存（Map 插入顺序 O(1)，2048 entries / 50MB）
+- **新建** `frontend/src/utils/tileRequestQueue.ts`：FIFO 并发请求队列（max 16 in-flight，512 queue，支持 AbortSignal）
+- **新建** `frontend/src/utils/mapTileMerger.ts`：图层分组合并逻辑（按 serviceUrl/renderTransport/styleName/objectClass 分组，每组共享一个 TileWMS 源，>20 层自动分割）
+- **修改** `frontend/src/utils/mapLayerBatch.ts`：新增 7 个 constants + `ENABLE_TILE_MERGING` feature flag
+- **修改** `frontend/src/views/MapWorkspaceView.vue`：
+  - `createRetryTileLoadFunction`：查缓存 → 走队列 → cache miss 时队列返回 Response → 缓存 Blob
+  - `attachWmsLayer`：新增 `sharedSource?` 参数
+  - `detachWmsLayer`：处理合并组成员（最后成员离开时销毁共享源）
+  - `loadResolvedLayersInBatches`：预分组 → 预创建共享源 → 组级 tile 事件 → 批量附加
+  - `onBeforeUnmount` / `switchProjection`：清缓存 + 清队列
+
+### 达到的效果
+
+- **请求数大幅减少**：同一合并组的图层共享一个 TileWMS 源（逗号分隔 LAYERS），HTTP 请求数从 `N层 × 16瓦片` 降为 `G组 × 16瓦片`（G << N）
+- **并发可控**：TileRequestQueue 上限 16 并发 fetch()，不再淹没浏览器连接池
+- **瓦片缓存**：平移回已访问区域直接命中内存缓存，零网络请求
+- **零回归**：77 前端测试全通过，vue-tsc 零错误，vite build 成功
+- **向后兼容**：`VITE_ENABLE_TILE_MERGING=false` 完全回退原逐层行为
+
+---
+
 ## 补充修复 — GWC 批量加载 400（会话 #18.2，2026-08-10）
 
 ### 修改了什么

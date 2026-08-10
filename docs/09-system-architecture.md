@@ -531,6 +531,73 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 
 调度器 bundle 分支（`RenderPlanInput.attachedBundleIds`）真实四操作：视口内未挂载 → `attachBundles`；已挂载且视口内 → `activateBundles`；视口外 → `suspendBundles`；已挂载但不在新计划 → `detachBundles`（原恒空 TODO 导致图层泄漏）。`executeBundlePlan` activate 守卫仅激活 `status==='active'` 的 bundle（warming/failed/replacing 不强制显示）。renderMode 切换双向修复：切 standard 补 attach、切 smart/overview 清 per-layer 残留。
 
+## 5.9 WMS 瓦片请求合并与缓存基础设施 (会话 #19)
+
+标准模式批量加载 100+ 图层后，每次平移产生 `N×16` 并发 WMS fetch() 请求，远超浏览器连接池（HTTP/1.1 6-10/域名）。本节描述三层防线：
+
+### 防线 1: 瓦片 LRU 缓存 (`tileCache.ts`)
+
+- **位置**: `frontend/src/utils/tileCache.ts` — `LRUTileCache` 类
+- **数据结构**: `Map<string, Blob>` (URL → 瓦片图片)，利用 Map 插入顺序实现 O(1) LRU
+- **默认容量**: 2048 entries / 50MB
+- **集成点**: `createRetryTileLoadFunction()` — fetch 前 `cache.get(src)` 命中则直接 `URL.createObjectURL` 赋值 img.src
+- **失效时机**: 地图销毁 (`onBeforeUnmount`)、投影切换 (`switchProjection`) 时 `clear()`
+- **常量**: `TILE_CACHE_MAX_ENTRIES`、`TILE_CACHE_MAX_BYTES` (定义于 `mapLayerBatch.ts`)
+
+### 防线 2: 并发请求队列 (`tileRequestQueue.ts`)
+
+- **位置**: `frontend/src/utils/tileRequestQueue.ts` — `TileRequestQueue` 类
+- **默认参数**: maxConcurrent=16, maxQueue=512 (FIFO)
+- **返回值**: 原始 `Response`（不消费 body），由调用方自行 `response.blob()` + 状态码判断 + 重试
+- **AbortSignal 支持**: 排队中请求可被移除；进行中由 fetch signal 自然中断
+- **重试解耦**: 队列只控并发，不重试——retry 逻辑完全由 `createRetryTileLoadFunction` 的 `tryLoad` `setTimeout` 递归处理
+- **集成点**: `createRetryTileLoadFunction()` 中 `fetch()` 替换为 `tileRequestQueue.fetch(src, signal)`
+- **常量**: `TILE_MAX_CONCURRENT_FETCH`、`TILE_MAX_QUEUED_FETCH` (定义于 `mapLayerBatch.ts`)
+
+### 防线 3: TileWMS 源合并 (`mapTileMerger.ts`)
+
+标准模式逐层 `attachWmsLayer()` 为每个图层创建独立 TileWMS 源。合并逻辑将共享参数的图层归为一组，每组一个 TileWMS 源（逗号分隔 LAYERS/STYLES），直接减少源数量 → 请求数量。
+
+- **位置**: `frontend/src/utils/mapTileMerger.ts`
+- **核心类型**:
+  - `MergeGroupKey`: `{ serviceUrl, renderTransport, styleName, objectClass }` — 合并键
+  - `MergeGroup`: `{ key, layerIds[], layerNames[], styles[], minZoom, maxZoom }` — 合并组
+- **核心函数**:
+  - `computeMergeKey(layer)` → 从 `BulkResolvedLayer` 计算键（GWC 图层使用 `tileServiceUrl` 而非 `serviceUrl`）
+  - `groupResolvedLayers(candidates)` → 分组 + 排序 + 分割 (>20 层自动分块)
+  - `createMergedTileSource(group, TileWMSCtor, tileLoadFn)` → 创建共享 TileWMS（逗号 LAYERS/STYLES，GWC 加 VERSION: 1.1.1）
+- **Feature Flag**: `ENABLE_TILE_MERGING`（默认 on，`VITE_ENABLE_TILE_MERGING=false` 回退逐层）
+- **变更点** (MapWorkspaceView.vue):
+  - `attachWmsLayer(runtime, opts?, sharedSource?)`: 新增可选第三参数，传入时跳过 TileWMS 创建 + 事件接线
+  - `detachWmsLayer`: 合并组成员移除时检查组是否为空 → 最后成员销毁共享源
+  - `loadResolvedLayersInBatches`: 合并开启时预分组 → 预创建共享源 → 组级 tile 事件（更新所有成员 runtime）→ 批量附加
+
+### 瓦片加载请求流（完整管线）
+
+```
+OpenLayers tileUrlFunction 生成 URL
+    │
+    ▼
+createRetryTileLoadFunction(src, controller)
+    ├── ① tileCache.get(src) 命中? → Blob → img.src (零网络 I/O)
+    ├── ② tileRequestQueue.fetch(src, signal)
+    │       ├── 排队 (FIFO, maxQueue=512)
+    │       ├── 并发槽位可用? → fetch(src)
+    │       └── 返回 Response (原始，不消费)
+    ├── ③ response.ok? → response.blob()
+    │       ├── tileCache.set(src, blob) — 缓存成功响应
+    │       └── URL.createObjectURL(blob) → img.src
+    ├── ④ 429/502/503/504? → stats.recordRetry() → setTimeout(tryLoad, backoff)
+    └── ⑤ TypeError (网络失败)? → stats.recordRetry() → setTimeout(tryLoad, backoff)
+```
+
+### 设计决策
+
+1. **合并键使用 objectClass 而非 datasetId**：同一数据集的图层可能有不同样式/渲染传输，按 `(url, transport, style, class)` 更精确；不同数据集同参数图层也可共享源，效果 ≥ 按数据集分组
+2. **GWC 与普通 WMS 隔离分组**：不同端点 (gwc/service/wms vs polar_gis/wms) + 不同 WMS 版本 (1.1.1 vs 1.3.0) → 不可混用；`effectiveServiceUrl()` 为 GWC 图层选择 `tileServiceUrl`
+3. **队列返回 Response 不返回 Blob**：保留 HTTP 状态码供调用方 retry 决策（429/502/503/504），关注点分离
+4. **组级 tile 事件更新所有成员**：共享源每瓦片覆盖整组图层 → tileloadstart/end/error 同步更新组内所有 runtime 的 pendingTiles 和 loadState
+
 ---
 
 ## 6. 文件清单
@@ -541,9 +608,9 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 - 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
-### 前端 (31 source files)
+### 前端 (34 source files)
 - Vue 组件: `src/views/` (11), `src/components/` (1), `src/layouts/` (1) = 13
-- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (6), `src/router/` (1) = 12
+- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (9), `src/router/` (1) = 15
 - 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
 - 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
 

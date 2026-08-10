@@ -5,6 +5,73 @@
 
 ---
 
+## 会话 #19 — WMS 瓦片请求合并（缓解批量加载卡顿）
+
+**日期**: 2026-08-10
+**目标**: 标准模式批量加载 100+ 图层后，每次平移触发 1600+ 并发 fetch() 请求 → 合并可共享 TileWMS 源的图层 + 并发限制 + 瓦片缓存
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | Component A: LRU 瓦片 Blob 缓存 (`tileCache.ts`) | ✅ 完成 |
+| 2 | Component B: 并发请求队列 (`tileRequestQueue.ts`) | ✅ 完成 |
+| 3 | Component C: TileWMS 源合并 (`mapTileMerger.ts`) | ✅ 完成 |
+| 4 | 文档更新 + TypeScript 验证 + 构建 + 测试 | ✅ 完成 |
+
+### 现象
+
+批量加载 100+ S-57 图层（标准 per-layer 模式）后，每次平移地图触发：`~16 tiles × 100+ layers ≈ 1600+` 并发 `fetch()` /geoserver 请求，远超浏览器 HTTP/1.1 连接池（6-10/域名），导致图层加载缓慢、UI 卡顿、地图大面积空白。
+
+Bundle 模式（智能渲染）已通过逗号分隔 LAYERS 参数合并同 bucket 的多图层请求，但标准模式每层创建一个独立 TileWMS 源，无合并。
+
+### 解决方案（三组件）
+
+**Component A: 瓦片 LRU 缓存** — 避免回访已加载区域重复请求相同瓦片
+- 新建 `LRUTileCache` 类（Map 插入顺序实现 O(1) LRU，默认 2048 entries / 50MB）
+- `createRetryTileLoadFunction()` 中 fetch 前查缓存命中直接返回 Blob
+- 缓存失效：地图销毁、投影切换时 clear()
+
+**Component B: 并发请求队列** — 上限同时进行中的 fetch() 数量
+- 新建 `TileRequestQueue` 类（FIFO 队列，默认 maxConcurrent=16，maxQueue=512）
+- 支持 AbortSignal（排队中请求可移除；进行中由 fetch signal 中断）
+- `createRetryTileLoadFunction()` 中 `fetch()` 替换为 `tileRequestQueue.fetch()`
+- 队列只控制并发，不重试（重试由现有 tryLoad setTimeout 递归处理）
+
+**Component C: TileWMS 源合并（核心）** — 同组图层共享一个 TileWMS 源
+- 新建 `mapTileMerger.ts`：`groupResolvedLayers()` 按 `(serviceUrl, renderTransport, styleName, objectClass)` 分组；>20 层/组自动分割
+- `createMergedTileSource()` 创建逗号分隔 LAYERS/STYLES 的共享源（同 bundle 模式模式）
+- `attachWmsLayer()` 新增 `sharedSource?` 参数：传入时跳过源创建和事件接线
+- `detachWmsLayer()` 处理合并组成员：最后成员移除时销毁共享源
+- `loadResolvedLayersInBatches()` 预分组 + 预创建共享源 + 组级 tile 事件（更新所有成员 runtime）
+- Feature flag：`ENABLE_TILE_MERGING`（默认 on，`VITE_ENABLE_TILE_MERGING=false` 关闭）
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-10 | `frontend/src/utils/tileCache.ts` | **新建** | LRU 瓦片 Blob 缓存类 |
+| 2026-08-10 | `frontend/src/utils/tileRequestQueue.ts` | **新建** | 并发限制请求队列类 |
+| 2026-08-10 | `frontend/src/utils/mapTileMerger.ts` | **新建** | 图层分组合并逻辑 + 共享源创建 |
+| 2026-08-10 | `frontend/src/utils/mapLayerBatch.ts` | 修改 | 新增 constants：TILE_CACHE_MAX_ENTRIES、TILE_CACHE_MAX_BYTES、TILE_MAX_CONCURRENT_FETCH、TILE_MAX_QUEUED_FETCH；新增 feature flag：ENABLE_TILE_MERGING |
+| 2026-08-10 | `frontend/src/views/MapWorkspaceView.vue` | 修改 | imports + `tileCache`/`tileRequestQueue`/`mergedGroupRuntimes`/`mergedGroupMembers` 实例；`createRetryTileLoadFunction` ①查缓存 ②走队列；`attachWmsLayer` 可选 `sharedSource` 参数；`detachWmsLayer` 处理合并组成员（组空则销毁共享源）；`loadResolvedLayersInBatches` 分组模式（预创建共享源 + 组级 tile 事件 + 共享源传递给 attachWmsLayer）；`onBeforeUnmount` 和 `switchProjection` 清缓存+清队列 |
+
+### 测试结果
+
+- 前端：77 passed ✅（所有现有测试通过，无回归）
+- TypeScript：vue-tsc 零错误 ✅
+- 构建：vite build 成功 ✅
+
+### 关键决策
+
+1. **合并键不含 datasetId**：用 `(serviceUrl, renderTransport, styleName, objectClass)` 更通用——不同数据集的同参数图层也能共享源，效果等同于或优于按数据集分组
+2. **GWC 图层单独分组**：GWC 端点 `/gwc/service/wms` + WMS 1.1.1 与普通 WMS `/polar_gis/wms` + 1.3.0 不可混用；`effectiveServiceUrl()` 为 GWC 图层选 `tileServiceUrl`
+3. **组级 tile 事件更新所有成员**：共享源加载的每个瓦片覆盖组内所有图层，tileloadstart/end/error 同步更新所有成员 runtimes 的 pendingTiles 和 loadState
+4. **队列不做重试**：TileRequestQueue 只控并发，返回原始 Response；retry 逻辑完全由 createRetryTileLoadFunction 的 tryLoad 递归处理，关注点分离
+5. **向后兼容**：`ENABLE_TILE_MERGING=false` 时完全回退原逐层行为；所有非批量调用点（单独 toggle、smart standalone）不受影响
+
+---
+
 ## 会话 #18.2 — GWC 批量加载 400 修复（图层/样式名 workspace 前缀缺失）
 
 **日期**: 2026-08-10
