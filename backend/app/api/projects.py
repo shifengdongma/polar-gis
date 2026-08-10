@@ -208,6 +208,14 @@ def get_project_dataset_map_layers(
     configs: list[MapLayerConfig] = []
     for link in links:
         cacheable, render_transport, tile_service_url = _gwc_transport_for_layer(link.layer)
+        workspace = link.layer.geoserver_workspace or settings.geoserver_workspace
+        layer_name = link.layer.geoserver_layer_name or link.layer.code
+        style_name = link.style.geoserver_style_name if link.style else None
+        # Emit workspace-qualified names ("ws:layer" / "ws:style"): the GWC
+        # WMS facade matches layer/style names exactly against its registry
+        # and rejects bare names with 400, while GeoServer's own WMS resolves
+        # them via the default namespace.  Same contract as the render-plan
+        # path (see _build_layer_render_input).
         configs.append(
             MapLayerConfig(
                 id=link.layer.id,
@@ -221,10 +229,10 @@ def get_project_dataset_map_layers(
                 exportable=link.layer.exportable,
                 service_url=(
                     f"{settings.geoserver_public_url.rstrip('/')}"
-                    f"/{link.layer.geoserver_workspace or settings.geoserver_workspace}/wms"
+                    f"/{workspace}/wms"
                 ),
-                service_layer_name=link.layer.geoserver_layer_name or link.layer.code,
-                style_name=link.style.geoserver_style_name if link.style else None,
+                service_layer_name=f"{workspace}:{layer_name}" if layer_name else layer_name,
+                style_name=f"{workspace}:{style_name}" if style_name else None,
                 geometry_type=link.layer.geometry_type,
                 metadata=link.layer.metadata_json,
                 cacheable=cacheable,
@@ -334,7 +342,7 @@ def _build_resolved_layer(
         if isinstance(fc, int):
             feature_count = fc
 
-    # Determine loadability
+    # Determine loadability (bare name — truthiness only)
     geoserver_layer_name = layer.geoserver_layer_name or layer.code
     published = bool(workspace and geoserver_layer_name)
     loadable = rule_obj.renderable and published
@@ -351,6 +359,17 @@ def _build_resolved_layer(
     # Core/navigation layers published to GeoServer are likely cacheable via GWC
     cacheable, render_transport, tile_service_url = _gwc_transport_for_layer(layer, rule_obj)
 
+    # Return workspace-qualified names — the GWC WMS facade requires exact
+    # "ws:layer" / "ws:style" matches (400 Unknown layer otherwise); GeoServer's
+    # own WMS accepts both forms, so qualification is safe for every transport.
+    qualified_layer_name = f"{workspace}:{geoserver_layer_name}" if workspace else geoserver_layer_name
+    raw_style_name = (
+        link.style.geoserver_style_name
+        if link.style
+        else (layer.metadata_json or {}).get("recommendedStyleCode")
+    )
+    qualified_style_name = f"{workspace}:{raw_style_name}" if raw_style_name and workspace else raw_style_name
+
     return BulkResolvedLayer(
         id=layer.id,
         code=layer.code,
@@ -359,13 +378,9 @@ def _build_resolved_layer(
         object_name_zh=rule_obj.object_name_zh,
         geometry_type=layer.geometry_type,
         geoserver_workspace=workspace,
-        geoserver_layer_name=geoserver_layer_name,
+        geoserver_layer_name=qualified_layer_name,
         service_url=service_url,
-        style_name=(
-            link.style.geoserver_style_name
-            if link.style
-            else (layer.metadata_json or {}).get("recommendedStyleCode")
-        ),
+        style_name=qualified_style_name,
         opacity=float(link.opacity),
         min_zoom=float(link.min_zoom) if link.min_zoom else None,
         max_zoom=float(link.max_zoom) if link.max_zoom else None,

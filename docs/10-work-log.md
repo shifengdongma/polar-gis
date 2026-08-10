@@ -915,3 +915,56 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 4. standard 模式 = 完全向后兼容，一键回退
 5. LRU 保护清单：底图/WMTS/AIS/气象/测量/选择高亮/编辑图层/属性查询图层 永不驱逐
 6. 新增 API 字段全部可选，旧客户端不受影响
+
+---
+
+## 会话 #18.2 — GWC 批量加载 400 修复（图层/样式名 workspace 前缀缺失）
+
+**日期**: 2026-08-10
+**目标**: 修复"批量加载图层"后前端报 `400 Bad Request`、图层加载失败
+
+### 现象
+
+浏览器对 `http://localhost:8088/geoserver/gwc/service/wms` 的瓦片请求返回 400，响应体：
+
+```
+400: Unknown layer s57_c110408a_1_depare. Check the logfiles, it may not have loaded properly.
+```
+
+用正确前缀 `polar_gis:s57_c110408a_1_depare` 重试后进一步暴露：
+
+```
+400: Style 's57_depth' is invalid.
+```
+
+### 根因分析
+
+1. **会话 #18 优化将 cacheable 图层切换到 GWC WMS facade**（`/gwc/service/wms`，commit 311eb66），批量加载（standard 模式逐层 TileWMS）随之走 GWC 端点
+2. **GWC 对图层/样式名做精确匹配**：其注册表键为全限定名（如 `polar_gis:s57_c110408a_1_depare`），裸名请求直接 400；而 GeoServer 自带 WMS 通过默认命名空间解析裸名，所以普通 WMS 路径一切正常——这是 GWC 专属故障
+3. **DB 存裸名**：`geoserver_layer_name = code`、`geoserver_style_name = preset.code`，workspace 单独存 `geoserver_workspace`
+4. **两个 API 端点返回裸名**：`get_project_dataset_map_layers`（懒加载 toggleDataset 路径，projects.py:226）与 `_build_resolved_layer`（批量 resolve 路径，projects.py:338/362-368）；而 bundle 渲染路径 `_build_layer_render_input`（projects.py:589-600）**早已正确拼接 `workspace:` 前缀**——故智能模式 bundle 正常、批量加载（逐层路径）失败
+5. 前端 `MapWorkspaceView.vue:1189` 仅透传后端字段（`geoserverLayerName ?? code`），非缺陷源
+
+### 修改记录
+
+| 时间 | 文件 | 操作 | 说明 |
+|------|------|------|------|
+| 2026-08-10 | `backend/app/api/projects.py` | 修改 | `get_project_dataset_map_layers`: `service_layer_name` / `style_name` 拼接 `workspace:` 前缀（复用 workspace 变量构建 service_url） |
+| 2026-08-10 | `backend/app/api/projects.py` | 修改 | `_build_resolved_layer`: 返回的 `geoserver_layer_name` / `style_name` 拼接 `workspace:` 前缀；本地裸名仅用于 published/loadable 真值判断 |
+| 2026-08-10 | `backend/tests/test_projects.py` | 修改 | 两处 `serviceLayerName` 断言更新为全限定名（`polar_gis:demo_depth` / `polar_gis:chart_cell_01_*`），先红后绿 |
+
+### 验证
+
+- 修复后 GWC 请求（`LAYERS=polar_gis:s57_c110408a_1_depare&STYLES=polar_gis:s57_depth`）→ **HTTP 200 PNG 瓦片** ✅
+- 普通 WMS 裸名请求 → 200（不受影响）✅
+- 后端全量测试：**168 passed** ✅（先改测试见红，再改代码转绿）
+
+### 关键决策
+
+1. **后端拼接前缀（单点修复）**：两处端点 + bundle 路径统一输出 `workspace:name` 全限定名，前端零改动；GeoServer 自带 WMS 接受全限定名，兼容所有 transport
+2. 全限定名与 `s57ObjectNames` 的 `split(':').pop()` 归一化逻辑兼容，图层标题显示不受影响
+3. 已发布的图层名（GWC 注册表键）即 `polar_gis:xxx` 形式，无需迁移
+
+### 注意
+
+- 修复需重启后端服务（dev `uvicorn --reload` 自动生效；docker 部署需 `docker compose up -d --build backend`）

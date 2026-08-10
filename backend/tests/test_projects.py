@@ -121,7 +121,10 @@ def test_published_project_is_visible(
         headers=user_headers,
     )
     assert map_layers.status_code == 200
-    assert map_layers.json()[0]["serviceLayerName"] == "demo_depth"
+    # Layer/style names must be workspace-qualified — the GWC WMS facade
+    # (gwc/service/wms) rejects bare names (400 Unknown layer / invalid style),
+    # unlike GeoServer's own WMS which resolves via the default namespace.
+    assert map_layers.json()[0]["serviceLayerName"] == "polar_gis:demo_depth"
     assert map_layers.json()[0]["serviceUrl"].startswith("/geoserver/")
     legend = client.get(f"/api/v1/layers/{layer.id}/legend", headers=user_headers)
     assert legend.status_code == 200
@@ -281,8 +284,8 @@ def test_dataset_layer_configuration_uses_current_version_and_expands_layers(
         headers=user_headers,
     )
     assert {item["serviceLayerName"] for item in map_layers.json()} == {
-        "chart_cell_01_soundg",
-        "chart_cell_01_wrecks",
+        "polar_gis:chart_cell_01_soundg",
+        "polar_gis:chart_cell_01_wrecks",
     }
 
 

@@ -513,6 +513,8 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 
 前端侧开关：`ENABLE_GWC_TILES`（`VITE_ENABLE_GWC_TILES=false` 回退普通 WMS）。cacheable 判定由后端 `_gwc_transport_for_layer()` 统一负责（`loadable` 且 `load_profile ∈ {core_chart, navigation_recommended}` → `cacheable=true / render_transport=gwc_wms / tile_service_url=/geoserver/gwc/service/wms`），经 `MapLayerConfig` 三字段透传前端。
 
+> **⚠ 命名契约（会话 #18.2）**：GWC WMS facade 对图层/样式名**精确匹配**注册表（键为全限定名），裸名请求返回 `400 Unknown layer / Style invalid`；GeoServer 自带 WMS 则经默认命名空间解析裸名。因此所有 API 输出（`MapLayerConfig.serviceLayerName/styleName`、`BulkResolvedLayer.geoserverLayerName/styleName`、render-plan 的 `LayerRenderInput`）必须为 `workspace:name` 全限定名（DB 仅存裸名，workspace 取 `layer.geoserver_workspace` 或默认 `polar_gis`）。
+
 ### GeoServer / GWC (后端)
 
 - **GridSet 创建**：发布 S-57 空间图层时 `ensure_gridset("EPSG:3413", "EPSG:3413", [-4194304, -4194304, 4194304, 4194304])` 幂等 PUT，extent 与 OpenLayers 默认 EPSG:3413 瓦片网格对齐；图层 GWC 启用覆盖三 gridset：`EPSG:3857` / `EPSG:4326` / `EPSG:3413`（mime 仅 image/png）
