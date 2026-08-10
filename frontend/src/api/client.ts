@@ -48,9 +48,22 @@ api.interceptors.response.use(
       .finally(() => {
         refreshPromise = null
       })
-    const token = await refreshPromise
-    config.headers.Authorization = `Bearer ${token}`
-    return api(config)
+    try {
+      const token = await refreshPromise
+      config.headers.Authorization = `Bearer ${token}`
+      return api(config)
+    } catch {
+      // refresh token also expired — clear auth and redirect to login
+      setAccessToken(null)
+      // Dynamically import router to avoid circular dependency
+      const { useAuthStore } = await import('../stores/auth')
+      const auth = useAuthStore()
+      auth.user = null
+      auth.ready = true
+      const { default: router } = await import('../router')
+      router.push({ name: 'login', query: { redirect: window.location.pathname } })
+      return Promise.reject(error)
+    }
   },
 )
 
