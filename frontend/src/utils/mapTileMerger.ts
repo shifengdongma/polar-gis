@@ -39,6 +39,9 @@ export interface MergeGroup {
   styles: string[]       // parallel to layerNames; "" = default
   minZoom: number | null
   maxZoom: number | null
+  /** Fallback regular WMS URL (always from layer.serviceUrl, never GWC).
+   *  Used for multi-layer groups since GWC WMS-C rejects comma-separated LAYERS. */
+  regularServiceUrl: string
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -134,6 +137,7 @@ export function groupResolvedLayers(candidates: BulkResolvedLayer[]): MergeGroup
         styles,
         minZoom,
         maxZoom,
+        regularServiceUrl: first.serviceUrl,
       })
     }
   }
@@ -185,10 +189,21 @@ export function createMergedTileSource(
   tileLoadFn: (tile: any, src: string) => void,
 ): TileWMS {
   const key = group.key
-  const useGwc = key.renderTransport === 'gwc_wms'
+  const isMultiLayer = group.layerNames.length > 1
+
+  // GWC WMS-C does NOT support comma-separated multi-layer requests.
+  // Multi-layer groups must route through the regular WMS endpoint.
+  // Single-layer GWC groups can still use the GWC tile endpoint.
+  const useGwc = !isMultiLayer && key.renderTransport === 'gwc_wms'
+
+  // For multi-layer groups we use the regular WMS URL; for single-layer
+  // GWC groups we use the GWC tile endpoint (key.serviceUrl).
+  const url = isMultiLayer
+    ? browserGeoServerUrl(group.regularServiceUrl)
+    : browserGeoServerUrl(key.serviceUrl)
 
   return new TileWMSCtor({
-    url: browserGeoServerUrl(key.serviceUrl),
+    url,
     params: {
       LAYERS: group.layerNames.join(','),
       TILED: true,
