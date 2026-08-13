@@ -556,21 +556,25 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 
 ### 防线 3: TileWMS 源合并 (`mapTileMerger.ts`)
 
-标准模式逐层 `attachWmsLayer()` 为每个图层创建独立 TileWMS 源。合并逻辑将共享参数的图层归为一组，每组一个 TileWMS 源（逗号分隔 LAYERS/STYLES），直接减少源数量 → 请求数量。
+标准模式逐层 `attachWmsLayer()` 为每个图层创建独立 TileWMS 源。合并逻辑将可共享端点的图层归为一组，每组一个 TileWMS 源（逗号分隔 LAYERS + 逐层 STYLES），直接减少源数量 → 请求数量。
 
 - **位置**: `frontend/src/utils/mapTileMerger.ts`
 - **核心类型**:
-  - `MergeGroupKey`: `{ serviceUrl, renderTransport, styleName, objectClass }` — 合并键
-  - `MergeGroup`: `{ key, layerIds[], layerNames[], styles[], minZoom, maxZoom }` — 合并组
+  - `MergeGroupKey`: `{ serviceUrl, renderTransport }` — 合并键（会话 #20 起放宽为仅端点+协议，跨样式/类别合并）
+  - `MergeGroup`: `{ key, layerIds[], layerNames[], styles[], minZoom, maxZoom, zIndex, regularServiceUrl }` — 合并组
 - **核心函数**:
-  - `computeMergeKey(layer)` → 从 `BulkResolvedLayer` 计算键（GWC 图层使用 `tileServiceUrl` 而非 `serviceUrl`）
-  - `groupResolvedLayers(candidates)` → 分组 + 排序 + 分割 (>20 层自动分块)
-  - `createMergedTileSource(group, TileWMSCtor, tileLoadFn)` → 创建共享 TileWMS（逗号 LAYERS/STYLES，GWC 加 VERSION: 1.1.1）
+  - `computeMergeKey(layer)` → 从 `MergeableLayer` 计算键（GWC 图层使用 `tileServiceUrl`，受 `ENABLE_GWC_TILES` 门控）
+  - `toMergeableLayer(config)` → 将 `MapLayerConfig` 适配为 `MergeableLayer`（buildMap/投影切换路径复用批量分组）
+  - `groupResolvedLayers(candidates)` → 分组 + 组内按 (zIndex, sortOrder, id) 排序（GeoServer 按 LAYERS 顺序自底向上绘制）+ 分割 (>20 层自动分块)
+  - `joinLayerParams(names, styles)` → 逗号拼接 LAYERS/STYLES（空位 = GeoServer 默认样式）
+  - `globalWmsUrl(url)` → `/geoserver/<ws>/wms` 改写为全局 `/geoserver/wms`（跨 workspace 限定名可解析）
+  - `createMergedTileSource(group, TileWMSCtor, tileLoadFn)` → 创建共享 TileWMS：多图层组强制普通 WMS（GWC WMS-C 不支持逗号 LAYERS）；单层 GWC 组保留 GWC 端点 + VERSION 1.1.1
 - **Feature Flag**: `ENABLE_TILE_MERGING`（默认 on，`VITE_ENABLE_TILE_MERGING=false` 回退逐层）
 - **变更点** (MapWorkspaceView.vue):
   - `attachWmsLayer(runtime, opts?, sharedSource?)`: 新增可选第三参数，传入时跳过 TileWMS 创建 + 事件接线
-  - `detachWmsLayer`: 合并组成员移除时检查组是否为空 → 最后成员销毁共享源
-  - `loadResolvedLayersInBatches`: 合并开启时预分组 → 预创建共享源 → 组级 tile 事件（更新所有成员 runtime）→ 批量附加
+  - `registerMergedGroup` / `syncMergedGroup` / `attachRuntimeGroups` / `flushDirtyMergedGroups`: 合并组运行时管理（事件闭包迭代 `grpRuntime.memberIds` 而非捕获快照）
+  - `detachWmsLayer`: 合并组成员移除 → 组空则销毁共享源，否则微任务合并重建 `updateParams(LAYERS/STYLES)`（已删图层名不再被请求）
+  - `loadResolvedLayersInBatches` / `buildMap` / 模式切换 / `switchProjection`: 全部走合并组挂载
 
 ### 瓦片加载请求流（完整管线）
 
@@ -581,22 +585,56 @@ OpenLayers tileUrlFunction 生成 URL
 createRetryTileLoadFunction(src, controller)
     ├── ① tileCache.get(src) 命中? → Blob → img.src (零网络 I/O)
     ├── ② tileRequestQueue.fetch(src, signal)
-    │       ├── 排队 (FIFO, maxQueue=512)
+    │       ├── 排队 (FIFO, maxQueue=512)；溢出 → 拒绝最新请求 (QuotaExceededError)
     │       ├── 并发槽位可用? → fetch(src)
     │       └── 返回 Response (原始，不消费)
     ├── ③ response.ok? → response.blob()
     │       ├── tileCache.set(src, blob) — 缓存成功响应
     │       └── URL.createObjectURL(blob) → img.src
     ├── ④ 429/502/503/504? → stats.recordRetry() → setTimeout(tryLoad, backoff)
-    └── ⑤ TypeError (网络失败)? → stats.recordRetry() → setTimeout(tryLoad, backoff)
+    │       （总尝试次数 ≤ TILE_RETRY_MAX_ATTEMPTS=2）
+    ├── ⑤ TypeError (网络失败)? → stats.recordRetry() → setTimeout(tryLoad, backoff)
+    └── ⑥ 不可恢复 / 重试耗尽 / 队列溢出? → tile.setState(TileState.ERROR)
+            → OL 派发 source tileloaderror → 下次渲染自动重取（不再卡 LOADING）
 ```
 
 ### 设计决策
 
-1. **合并键使用 objectClass 而非 datasetId**：同一数据集的图层可能有不同样式/渲染传输，按 `(url, transport, style, class)` 更精确；不同数据集同参数图层也可共享源，效果 ≥ 按数据集分组
-2. **GWC 与普通 WMS 隔离分组**：不同端点 (gwc/service/wms vs polar_gis/wms) + 不同 WMS 版本 (1.1.1 vs 1.3.0) → 不可混用；`effectiveServiceUrl()` 为 GWC 图层选择 `tileServiceUrl`
+1. **合并键为 (serviceUrl, renderTransport)**（会话 #20 放宽）：原键含 styleName/objectClass 时，S-57 各对象类几乎一图层一组，合并形同虚设；普通 WMS 支持逐层 STYLES 逗号拼接（bundle 模式已实证），样式/类别不再是共享源障碍。组内按 zIndex 排序保证 GeoServer 自底向上绘制与客户端堆叠一致
+2. **GWC 与普通 WMS 隔离分组**：不同端点 (gwc/service/wms vs 普通 wms) + 不同 WMS 版本 (1.1.1 vs 1.3.0) → 不可混用；多图层组强制普通 WMS 全局端点（GWC WMS-C 不支持逗号 LAYERS）；单层 GWC 组保留 GWC 瓦片缓存收益
 3. **队列返回 Response 不返回 Blob**：保留 HTTP 状态码供调用方 retry 决策（429/502/503/504），关注点分离
 4. **组级 tile 事件更新所有成员**：共享源每瓦片覆盖整组图层 → tileloadstart/end/error 同步更新组内所有 runtime 的 pendingTiles 和 loadState
+5. **组成员移除 → `updateParams` 重建而非 dispose+recreate**：OL `TileWMS.updateParams` 合并进现有 params 并 `changed()` 触发重取（瓦片缓存键含 sourceKey），免重绑事件、免逐成员换源；微任务合并批量 detach 为一次重建
+6. **队列溢出拒绝最新而非丢弃最老**：最新瓦片转 ERROR 后 OL 会在下次渲染重取；丢弃最老会让已加载中的瓦片永久搁置（空白无重试路径）
+7. **`reset()` 不清零 inFlight**：在飞请求完成时自然递减计数，避免卸载/投影切换后 `tryDequeue` 瞬时超发
+
+---
+
+## 5.10 Smart 模式批量加载去重 (会话 #20)
+
+**问题**：批量加载在 smart 模式下把全部图层挂为标准 TileWMS 层，随后 `reconcileRenderPlan` 又为同样 layerId 建 bundle；调度器有意跳过 bundle 覆盖图层的 per-layer 管理 → 批量挂载层永不 detach，同一图层每瓦片请求两次（一次 bundle 合并请求 + 一次单层 GWC 请求）。
+
+**去重流程**（"bundle 胜出"原则）：
+
+```
+loadSelectedDatasets (批量确认后)
+    │
+    ├── ① smart 模式 + bundles 开启 → fetchBundlePlanInputFor(selected ∪ candidates)
+    │       缓存键 = 排序选择集|CRS，与挂载后 reconcile 的键一致 → 不重复请求
+    │       失败 → bundleCoveredIds 为空（回退全量挂载，由安全网兜底）
+    ├── ② loadResolvedLayersInBatches(candidates, generation, bundleCoveredIds)
+    │       ├── 被覆盖图层：仅登记（selected/visible/progress），不创建 OL 层
+    │       └── 未覆盖图层（standalone）：合并组挂载（每成员自己的 minZoom/maxZoom）
+    └── ③ reconcileRenderPlan()（缓存命中）
+            ├── 挂 bundle（覆盖图层由 bundle 渲染）
+            ├── executeBundlePlan 安全网：bundledLayerIds 中仍存 wmsLayers 的层 → detachWmsLayer
+            └── standalone 层已被合并组挂载（attachedLayerIds 守卫跳过重挂）
+```
+
+**配套**：
+- `BundleRenderPlan` 新增 `bundledLayerIds`（调度器已计算的覆盖集，供安全网使用）
+- `layerStatusLabel`：smart 模式下 bundle 覆盖层显示"已显示"（不在 attached/active 集）
+- 各挂载路径统一走 `attachRuntimeGroups`（buildMap / 模式切换 / 投影切换 / 批量加载），`VITE_ENABLE_TILE_MERGING=false` 时回退逐层
 
 ---
 

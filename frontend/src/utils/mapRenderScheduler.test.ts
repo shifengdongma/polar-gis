@@ -514,6 +514,7 @@ describe('buildRenderPlan — bundle branch', () => {
     expect(plan.bundlePlan?.attachBundles.map((b) => b.bundleId)).toContain('b1')
     expect(plan.bundlePlan?.activateBundles).toEqual([])
     expect(plan.bundlePlan?.suspendBundles).toEqual([])
+    expect(plan.bundlePlan?.bundledLayerIds).toEqual(['l1', 'l2'])
   })
 
   it('34: attached + in viewport → activate only, no re-attach', () => {
@@ -560,7 +561,7 @@ describe('buildRenderPlan — bundle branch', () => {
   it('37: no attachedBundleIds (legacy callers) → all in-viewport bundles attach', () => {
     const bundles = [
       makeBundle({ bundleId: 'b1', extent: inViewExtent }),
-      makeBundle({ bundleId: 'b2', extent: inViewExtent }),
+      makeBundle({ bundleId: 'b2', extent: inViewExtent, layerIds: ['l3'] }),
     ]
     const input = makeInput({
       layers: [],
@@ -572,6 +573,8 @@ describe('buildRenderPlan — bundle branch', () => {
     expect(plan.bundlePlan?.activateBundles).toEqual([])
     expect(plan.bundlePlan?.suspendBundles).toEqual([])
     expect(plan.bundlePlan?.detachBundles).toEqual([])
+    // Union of member layer IDs across bundles — safety net input for the view
+    expect(plan.bundlePlan?.bundledLayerIds).toEqual(['l1', 'l2', 'l3'])
   })
 
   it('38: empty bundle plan with attached bundles → all detached (detach fallback)', () => {
@@ -588,6 +591,7 @@ describe('buildRenderPlan — bundle branch', () => {
     expect([...(plan.bundlePlan?.detachBundles ?? [])].sort()).toEqual(['b1', 'b2'])
     expect(plan.bundlePlan?.attachBundles).toEqual([])
     expect(plan.bundlePlan?.activateBundles).toEqual([])
+    expect(plan.bundlePlan?.bundledLayerIds).toEqual([])
     // Standalone layers still flow through the per-layer path — no loss.
     expect(plan.attach).toContain('l1')
   })

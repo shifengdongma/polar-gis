@@ -120,6 +120,8 @@ export interface BundleRenderPlan {
   suspendBundles: string[]
   /** Standalone layer IDs that continue through the per-layer path. */
   standaloneLayerIds: string[]
+  /** Union of all bundle layer IDs — "bundles win" safety net for the view. */
+  bundledLayerIds: string[]
 }
 
 // ── Viewport intersection ─────────────────────────────────────────────
@@ -554,6 +556,7 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
         activateBundles,
         suspendBundles,
         standaloneLayerIds: standaloneIds,
+        bundledLayerIds: [...bundledLayerIds],
       },
     }
   }

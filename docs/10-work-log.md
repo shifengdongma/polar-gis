@@ -1,7 +1,57 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-08-10
+> 最后更新: 2026-08-13
+
+---
+
+## 会话 #20 — WMS 请求合并修复：去重 + 合并键放宽 + 稳健性修复
+
+**日期**: 2026-08-13
+**目标**: 会话 #19 的合并方案上线后，批量加载的控制台网络请求仍大量发送（每可见瓦片 ≈ 10 个请求：7 单层 + 3 合并，覆盖相同的 7 个图层）。系统化调试（3 路并行代码探索 + 网络日志分析）定位两大根因 + 5 个附带 bug，逐一修复。
+
+### 根因分析（Phase 1 结论）
+
+1. **请求翻倍（smart 模式）**：`loadResolvedLayersInBatches` 无视 renderMode/bundle 覆盖把全部图层挂为标准 TileWMS 层，随后 `reconcileRenderPlan` 为同样 layerId 建 bundle；调度器 `mapRenderScheduler.ts:436-437` 有意跳过 bundle 覆盖图层的 per-layer 管理 → 批量挂载层永不 detach，与 bundle 并存 → 同一图层每瓦片请求两次（bundle 合并 1.3.0 + 单层 GWC 1.1.1）
+2. **合并退化（标准模式）**：合并键含 `styleName`/`objectClass` → 7 个 S-57 对象类 = 7 个单成员组 → 合并器形同虚设；bundle 请求已证明普通 WMS 支持逐层混合 STYLES
+3. 附带 bug：detach 残留 LAYERS 参数；重试 off-by-one（3 次而非 2 次）；队列溢出静默丢弃最老（瓦片永不 resolve → 空白）；不可恢复错误不置 ERROR（瓦片卡 LOADING）；`reset()` 清零 inFlight（并发瞬时超限）
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | `mapTileMerger.ts` 合并键放宽为 (serviceUrl, renderTransport) + joinLayerParams/globalWmsUrl/toMergeableLayer | ✅ 完成 |
+| 2 | `tileRequestQueue.ts` 溢出拒绝最新 + reset 不清 inFlight | ✅ 完成 |
+| 3 | `mapRenderScheduler.ts` BundleRenderPlan 暴露 bundledLayerIds | ✅ 完成 |
+| 4 | `MapWorkspaceView.vue` smart 去重（预取 plan→跳过覆盖→安全网）+ 合并组生命周期重构 + 三挂载点一致性 + 重试/ERROR 修复 | ✅ 完成 |
+| 5 | 测试 + typecheck + build 全绿 | ✅ 完成（99 前端测试，vue-tsc 零错误） |
+| 6 | 文档更新 + git 提交 | ✅ 完成 |
+
+### 修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/utils/mapTileMerger.ts` | 修改 | 合并键 `{serviceUrl, renderTransport}`（删除 styleName/objectClass）；新增 `MergeableLayer`/`toMergeableLayer`/`joinLayerParams`/`globalWmsUrl`；`effectiveServiceUrl` 加 `ENABLE_GWC_TILES` 门控；组内按 (zIndex, sortOrder, id) 排序；MergeGroup 增加 zIndex；多图层组走 `globalWmsUrl` 全局端点 |
+| `frontend/src/utils/tileRequestQueue.ts` | 修改 | 溢出改为拒绝最新请求（QuotaExceededError）；`reset()` 不再清零 inFlight |
+| `frontend/src/utils/mapRenderScheduler.ts` | 修改 | `BundleRenderPlan.bundledLayerIds` 字段 + 返回填充 |
+| `frontend/src/views/MapWorkspaceView.vue` | 修改 | ①重试守卫 `attempts < TILE_RETRY_MAX_ATTEMPTS` + 不可恢复/重试耗尽 `tile.setState(TileState.ERROR)`；②抽取 `registerMergedGroup`/`syncMergedGroup`/`flushDirtyMergedGroups`/`attachRuntimeGroups`（事件闭包迭代 memberIds）；③detach 组成员 → 微任务合并 `updateParams` 重建；④抽取 `fetchBundlePlanInputFor`（含缓存）；⑤批量加载预取 plan + 被覆盖图层仅登记 + toAttach 过滤 + 每成员缩放；⑥buildMap/模式切换/投影切换统一合并组挂载；⑦executeBundlePlan 安全网 detach 残留 per-layer；⑧layerStatusLabel bundle 覆盖层显示"已显示" |
+| `frontend/src/utils/mapTileMerger.test.ts` | **新建** | 17 用例（键/分组/排序/分块/缩放并集/参数拼接/全局 URL/源创建/适配器） |
+| `frontend/src/utils/tileRequestQueue.test.ts` | **新建** | 5 用例（溢出拒绝最新/FIFO/reset 计数/abortAll/预中止） |
+| `frontend/src/utils/mapRenderScheduler.test.ts` | 修改 | bundle 分支断言 `bundledLayerIds` |
+
+### 测试结果
+
+- 前端 99 个测试全部通过（8 个测试文件；新增 22 用例）
+- TypeScript vue-tsc 零错误
+- vite build 成功
+
+### 关键决策
+
+1. **updateParams 而非 dispose+recreate**：核对 OL 10.9.0 源码——`updateParams` 执行 `setParams_(Object.assign(this.params_, params))` 并 `changed()` 触发重取（瓦片缓存键含 sourceKey），免重绑三事件、免逐成员 `TileLayer.setSource`；已知限制：多图层组缩至单成员仍走普通 WMS（仅错过 GWC 优化）
+2. **"bundle 胜出"双层防线**：批量挂载前预取 plan 排除覆盖图层是主优化；`executeBundlePlan` 安全网 detach 残留 per-layer 是兜底（plan 预取失败等回退路径）
+3. **队列溢出拒绝最新**：被拒瓦片转 ERROR → OL 下次渲染自动重取（`ol/ImageTile` ERROR→IDLE）；丢弃最老会永久搁置加载中的瓦片
+4. **tile.setState(TileState.ERROR) 而非操作 img**：OL 官方 tileLoadFunction 文档模式，经 `UrlTile.handleTileChange` 派发 `tileloaderror`，三处事件绑定（单层/合并组/bundle）全部自动生效
+5. **合并键只保留正确性相关维度**：端点+协议是唯一硬约束；样式/类别/数据集均可共享源（每层 STYLES 位置对齐）
 
 ---
 

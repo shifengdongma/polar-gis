@@ -1,7 +1,39 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-08-10
+> 最后更新: 2026-08-13
+
+---
+
+## 会话 #20 — WMS 请求合并修复：去重 + 合并键放宽 + 稳健性修复（2026-08-13）
+
+### 修改了什么
+
+- **修改** `frontend/src/utils/mapTileMerger.ts`：
+  - 合并键放宽为 `(serviceUrl, renderTransport)` —— 跨样式/类别全量合并（原键含 styleName/objectClass 导致 S-57 图层几乎一图层一组）
+  - 新增 `MergeableLayer` 接口 + `toMergeableLayer()` 适配器（MapLayerConfig 路径复用分组）
+  - 新增 `joinLayerParams()`（逐层 STYLES 位置对齐，空位=默认样式）、`globalWmsUrl()`（跨 workspace 全局端点）
+  - `effectiveServiceUrl()` 增加 `ENABLE_GWC_TILES` 门控；组内按 (zIndex, sortOrder, id) 排序（GeoServer 自底向上绘制顺序）
+  - 多图层组强制普通 WMS 全局端点；单层 GWC 组保留 GWC + VERSION 1.1.1
+- **修改** `frontend/src/utils/tileRequestQueue.ts`：队列溢出拒绝最新请求（旧：丢弃最老 → 瓦片永久空白）；`reset()` 不再清零 inFlight（旧：并发瞬时超限）
+- **修改** `frontend/src/utils/mapRenderScheduler.ts`：`BundleRenderPlan` 暴露 `bundledLayerIds` 覆盖集
+- **修改** `frontend/src/views/MapWorkspaceView.vue`：
+  - **smart 模式去重（核心）**：批量加载预取 bundle plan（投影选择集缓存键，与 reconcile 一致）→ bundle 覆盖图层仅登记不建 OL 层 → 挂载后 reconcile 挂 bundle；`executeBundlePlan` 安全网 detach 残留 per-layer（"bundle 胜出"）
+  - **合并组生命周期重构**：`registerMergedGroup`/`syncMergedGroup`/`attachRuntimeGroups`/`flushDirtyMergedGroups`；事件闭包迭代 memberIds（支持成员集动态替换）
+  - **detach 重建**：组成员移除后微任务合并 `updateParams(LAYERS/STYLES)`——已删图层名不再被请求
+  - **重试修复**：重试守卫改为 `attempts < TILE_RETRY_MAX_ATTEMPTS`（严格 2 次尝试）；不可恢复 HTTP / 重试耗尽 / 队列溢出统一 `tile.setState(TileState.ERROR)`（旧：瓦片卡 LOADING 无错误回调）
+  - **一致性**：buildMap / 模式切换 smart→standard / switchProjection 全部改用合并组挂载
+  - `layerStatusLabel`：bundle 覆盖层显示"已显示"
+- **新建** `mapTileMerger.test.ts`（17 用例）、`tileRequestQueue.test.ts`（5 用例）；**更新** `mapRenderScheduler.test.ts`（bundledLayerIds 断言）
+
+### 达到的效果
+
+- **消除请求翻倍**：smart 模式批量加载后，bundle 覆盖图层不再产生单层 GWC 请求——每瓦片从"7 单层 + 3 合并"降为"3 合并"（bundle 数），消除约 70% 冗余请求
+- **标准模式合并真正生效**：7 个异样式/类别图层从 7 个单层 GWC 请求合并为 1 个普通 WMS 请求/瓦片（20 层/组分块）；100+ 图层时请求数降一个数量级
+- **空白/卡顿治理**：队列溢出不再静默丢弃（ERROR → 下次渲染重取）；错误瓦片不再卡 LOADING（tileloaderror 正常派发）；重试次数精确可控；并发计数在投影切换/卸载后不再瞬时超限
+- **一致性**：模式切换/投影切换/初始加载均走合并组，无路径遗漏
+- **测试保障**：99 前端测试全绿（+22 新增），vue-tsc 零错误，vite build 成功
+- **向后兼容**：`VITE_ENABLE_TILE_MERGING=false` 回退逐层；`VITE_ENABLE_GWC_TILES=false` 时合并组一律普通 WMS
 
 ---
 

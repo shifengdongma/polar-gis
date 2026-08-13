@@ -34,7 +34,8 @@ export class TileRequestQueue {
    * Enqueue a tile fetch request.
    *
    * Returns a Promise<Response> that resolves with the raw fetch Response.
-   * Rejects if the signal is already aborted, on queue overflow, or on
+   * Rejects if the signal is already aborted, on queue overflow (the NEWEST
+   * request is rejected so its tile errors and is re-requested later), or on
    * network failure. HTTP errors (4xx, 5xx) DO resolve successfully —
    * the caller inspects response.status for retry decisions.
    */
@@ -71,13 +72,14 @@ export class TileRequestQueue {
       // Start immediately if under limit; otherwise queue
       if (this.inFlight < this.maxConcurrent) {
         this.startRequest(request)
+      } else if (this.queue.length >= this.maxQueue) {
+        // Reject the newest request: its tile transitions to ERROR and
+        // OpenLayers re-requests it on the next render (pan-back/toggle).
+        // Dropping the oldest would strand already-loading tiles forever
+        // (blank tiles with no retry path).
+        request.reject(new DOMException('Tile queue overflow', 'QuotaExceededError'))
       } else {
         this.queue.push(request)
-        // Drop oldest if queue overflows
-        if (this.queue.length > this.maxQueue) {
-          const dropped = this.queue.shift()
-          dropped?.reject(new DOMException('Tile queue overflow', 'QuotaExceededError'))
-        }
       }
     })
   }
@@ -104,11 +106,12 @@ export class TileRequestQueue {
   }
 
   /**
-   * Full reset: abort queued + zero counter.
+   * Full reset: abort queued requests only. In-flight fetches keep their
+   * concurrency accounting — zeroing the counter would let tryDequeue()
+   * overshoot maxConcurrent after unmount/projection switches.
    */
   reset(): void {
     this.abortAll()
-    this.inFlight = 0
   }
 
   // ── Private ─────────────────────────────────────────────────────────

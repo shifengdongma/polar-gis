@@ -31,6 +31,7 @@ import BaseLayer from 'ol/layer/Base'
 import VectorLayer from 'ol/layer/Vector'
 import OSM from 'ol/source/OSM'
 import TileWMS from 'ol/source/TileWMS'
+import TileState from 'ol/TileState'
 import WMTS, { optionsFromCapabilities } from 'ol/source/WMTS'
 import XYZ from 'ol/source/XYZ'
 import VectorSource from 'ol/source/Vector'
@@ -53,6 +54,7 @@ import type {
   MapConfig,
   MapDatasetConfig,
   MapLayerConfig,
+  RenderBundleConfig,
   S57LoadProfile,
 } from '../types'
 import {
@@ -82,6 +84,8 @@ import { TileRequestQueue } from '../utils/tileRequestQueue'
 import {
   groupResolvedLayers,
   createMergedTileSource,
+  joinLayerParams,
+  toMergeableLayer,
   type MergeGroup,
 } from '../utils/mapTileMerger'
 import {
@@ -98,6 +102,7 @@ import {
   disposeAllBundles,
   getAllBundleRuntimes,
   getBundleRuntime,
+  isLayerCoveredByBundle,
   setBundleVisible,
 } from '../utils/mapRenderBundles'
 import { fetchRenderPlan } from '../api/projects'
@@ -198,7 +203,8 @@ const lastBulkAttachedLayerIds = ref(new Set<string>())
 /** Last profile used for batch loading — needed for bundle plan API. */
 const lastLoadProfile = ref<S57LoadProfile>('core_chart')
 let lastBundlePlanCacheKey = ''
-let lastBundlePlanCache: { bundles: import('../types').RenderBundleConfig[]; standaloneLayerIds: string[] } | undefined
+type BundlePlanInput = { bundles: RenderBundleConfig[]; standaloneLayerIds: string[] }
+let lastBundlePlanCache: BundlePlanInput | undefined
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
 let evictTimer: number | undefined
@@ -277,7 +283,8 @@ const tileRequestQueue = new TileRequestQueue(TILE_MAX_CONCURRENT_FETCH, TILE_MA
 
 // ── Merged group state (standard-mode TileWMS source sharing) ─────────
 // When ENABLE_TILE_MERGING is on, layers are grouped by (serviceUrl,
-// renderTransport, style, objectClass) and share one TileWMS source.
+// renderTransport) and share one TileWMS source with comma-separated
+// LAYERS / per-layer STYLES.
 interface MergedGroupRuntime {
   source: TileWMS
   memberIds: Set<string>
@@ -285,6 +292,8 @@ interface MergedGroupRuntime {
 }
 const mergedGroupRuntimes = new Map<string, MergedGroupRuntime>()
 const mergedGroupMembers = new Map<string, string>()  // layerId → groupId
+/** Groups whose shared-source params need rebuilding after member detach. */
+const dirtyMergedGroups = new Set<string>()
 
 const configuredBaseLayers = new globalThis.Map<string, TileLayer<XYZ | WMTS>>()
 const measureSource = new VectorSource()
@@ -324,14 +333,13 @@ watch(renderMode, (mode) => {
   if (!map) return
   if (mode === 'standard') {
     // Leaving smart mode: dispose composite bundles, then re-attach every
-    // selected layer as an individual TileWMS (standard semantics = all on).
+    // selected layer via shared merged-group TileWMS sources
+    // (standard semantics = all on).
     disposeAllBundles(map)
-    for (const runtime of runtimeLayers.value) {
-      const lid = runtime.config.id
-      if (selectedLayerIds.value.has(lid) && !wmsLayers.has(lid)) {
-        attachWmsLayer(runtime, { visible: true })
-      }
-    }
+    const selected = runtimeLayers.value.filter(
+      (rt) => selectedLayerIds.value.has(rt.config.id) && !wmsLayers.has(rt.config.id),
+    )
+    attachRuntimeGroups(selected, undefined, true)
     return
   }
   // Entering smart/overview: per-layer TileWMS leftovers from standard mode
@@ -478,13 +486,12 @@ async function buildMap() {
   })
   const layers: BaseLayer[] = [fallbackBaseLayer, ...(await createConfiguredBaseLayers())]
   map = new OlMap({ target: mapTarget.value, layers, view: createView(currentCrs.value) })
-  for (const runtime of runtimeLayers.value) {
-    if (runtime.visible) {
-      attachWmsLayer(runtime)
-      const next = new Set(selectedLayerIds.value)
-      next.add(runtime.config.id)
-      selectedLayerIds.value = next
-    }
+  const visibleRuntimes = runtimeLayers.value.filter((rt) => rt.visible)
+  attachRuntimeGroups(visibleRuntimes, undefined, true)
+  for (const runtime of visibleRuntimes) {
+    const next = new Set(selectedLayerIds.value)
+    next.add(runtime.config.id)
+    selectedLayerIds.value = next
   }
   map.addLayer(measureLayer)
   map.addLayer(aisLayer)
@@ -571,14 +578,18 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
           // Only retry recoverable HTTP errors: 429, 502, 503, 504
           if (
             [429, 502, 503, 504].includes(response.status) &&
-            attempts <= TILE_RETRY_MAX_ATTEMPTS
+            attempts < TILE_RETRY_MAX_ATTEMPTS
           ) {
             stats.recordRetry()
             const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
             setTimeout(tryLoad, delay)
             return null
           }
-          // Non-recoverable (400, 404, 500, etc.): don't retry
+          // Non-recoverable (400, 404, 500, etc.) or retries exhausted:
+          // mark the tile errored so OpenLayers fires tileloaderror (drains
+          // warming, marks the layer errored) and re-requests the tile on
+          // the next render. Without this the tile stays LOADING forever.
+          tile.setState(TileState.ERROR)
           return null
         })
         .then((blob) => {
@@ -593,10 +604,14 @@ function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, s
         .catch((err) => {
           if (controller.signal.aborted) return
           // Only retry on network failures (TypeError), not HTTP errors
-          if (err instanceof TypeError && attempts <= TILE_RETRY_MAX_ATTEMPTS) {
+          if (err instanceof TypeError && attempts < TILE_RETRY_MAX_ATTEMPTS) {
             stats.recordRetry()
             const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
             setTimeout(tryLoad, delay)
+          } else if (!controller.signal.aborted) {
+            // Retries exhausted or unrecoverable rejection (queue overflow
+            // QuotaExceededError etc.) — mark errored so OL retries later.
+            tile.setState(TileState.ERROR)
           }
         })
     }
@@ -706,7 +721,9 @@ function detachWmsLayer(runtime: RuntimeLayer) {
 
   if (groupId) {
     // Merged group member — release layer from group, dispose shared
-    // source only when the last member is detached.
+    // source only when the last member is detached. Remaining members'
+    // shared-source LAYERS/STYLES are rebuilt (coalesced via microtask)
+    // so the removed layer name stops being requested.
     mergedGroupMembers.delete(lid)
     const grp = mergedGroupRuntimes.get(groupId)
     if (grp) {
@@ -715,6 +732,10 @@ function detachWmsLayer(runtime: RuntimeLayer) {
         // Last member gone — dispose shared source and group runtime
         grp.source.dispose()
         mergedGroupRuntimes.delete(groupId)
+        dirtyMergedGroups.delete(groupId)
+      } else {
+        dirtyMergedGroups.add(groupId)
+        queueMicrotask(flushDirtyMergedGroups)
       }
     }
     // Dispose the individual TileLayer (shared source survives if group
@@ -745,6 +766,162 @@ function detachWmsLayer(runtime: RuntimeLayer) {
   suspendedLayerIds.value = nextSus
   layerLastInViewportTime.delete(lid)
   layerWarmingStartTime.delete(lid)
+}
+
+// ── Merged group lifecycle ────────────────────────────────────────────
+
+/**
+ * Register a shared merged-group source: member→group mapping, group
+ * runtime, and group-level tile events. Event closures iterate
+ * grpRuntime.memberIds (not a captured snapshot) so member-set updates in
+ * syncMergedGroup / detachWmsLayer stay reflected.
+ */
+function registerMergedGroup(gid: string, group: MergeGroup, source: TileWMS): void {
+  for (const lid of group.layerIds) {
+    mergedGroupMembers.set(lid, gid)
+  }
+
+  const grpRuntime: MergedGroupRuntime = { source, memberIds: new Set(group.layerIds), pendingTiles: 0 }
+  mergedGroupRuntimes.set(gid, grpRuntime)
+
+  // Group-level tile event wiring:
+  // When tiles load for the composite LAYERS param, update ALL member
+  // runtimes — each tile covers every layer in the group.
+  source.on('tileloadstart', () => {
+    grpRuntime.pendingTiles += 1
+    for (const lid of grpRuntime.memberIds) {
+      const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+      if (!rt) continue
+      rt.pendingTiles += 1
+      perfStats.recordTileStart(lid)
+      window.clearTimeout(rt.loadStateTimer)
+      rt.loadStateTimer = window.setTimeout(() => {
+        if (rt.pendingTiles > 0) rt.loadState = 'loading'
+      }, 300)
+    }
+  })
+  source.on('tileloadend', () => {
+    grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
+    for (const lid of grpRuntime.memberIds) {
+      const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+      if (!rt) continue
+      rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
+      perfStats.recordTileEnd(lid)
+      if (rt.pendingTiles === 0) {
+        window.clearTimeout(rt.loadStateTimer)
+        if (rt.loadState !== 'error') rt.loadState = 'loaded'
+        const nextWarm = new Set(warmingLayerIds.value)
+        if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
+      }
+    }
+  })
+  source.on('tileloaderror', () => {
+    grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
+    for (const lid of grpRuntime.memberIds) {
+      const rt = runtimeLayers.value.find((r) => r.config.id === lid)
+      if (!rt) continue
+      rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
+      perfStats.recordTileError(lid)
+      window.clearTimeout(rt.loadStateTimer)
+      rt.loadState = 'error'
+      const nextWarm = new Set(warmingLayerIds.value)
+      if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
+    }
+  })
+}
+
+/**
+ * Reuse an existing group runtime for a (possibly changed) group: update
+ * the member set and rebuild the shared source's LAYERS/STYLES params.
+ * Covers re-attaching a full group after a subset was detached.
+ */
+function syncMergedGroup(gid: string, group: MergeGroup): TileWMS {
+  const grp = mergedGroupRuntimes.get(gid)!
+  const incoming = new Set(group.layerIds)
+  const same =
+    incoming.size === grp.memberIds.size &&
+    [...incoming].every((id) => grp.memberIds.has(id))
+  if (!same) {
+    for (const id of grp.memberIds) if (!incoming.has(id)) mergedGroupMembers.delete(id)
+    for (const id of incoming) if (!grp.memberIds.has(id)) mergedGroupMembers.set(id, gid)
+    grp.memberIds = incoming
+    grp.source.updateParams(joinLayerParams(group.layerNames, group.styles))
+  }
+  return grp.source
+}
+
+/**
+ * Rebuild shared-source LAYERS/STYLES for groups whose membership changed.
+ * Coalesced via microtask: a synchronous detach burst (mode switch,
+ * projection switch, unload-all) triggers one rebuild instead of one per
+ * detached member.
+ */
+function flushDirtyMergedGroups(): void {
+  for (const gid of [...dirtyMergedGroups]) {
+    dirtyMergedGroups.delete(gid)
+    const grp = mergedGroupRuntimes.get(gid)
+    if (!grp || grp.memberIds.size === 0) continue
+    const names: string[] = []
+    const styles: string[] = []
+    for (const memberId of grp.memberIds) {
+      const rt = runtimeLayers.value.find((r) => r.config.id === memberId)
+      if (!rt) continue
+      names.push(rt.config.serviceLayerName)
+      styles.push(rt.config.styleName || '')
+    }
+    grp.source.updateParams(joinLayerParams(names, styles))
+  }
+}
+
+/**
+ * Attach runtime layers via shared merged-group TileWMS sources.
+ * When ENABLE_TILE_MERGING is off, falls back to per-layer sources.
+ * Members keep their own minZoom/maxZoom (and optionally extent) — the
+ * shared source only carries LAYERS/STYLES.
+ */
+function attachRuntimeGroups(
+  runtimes: RuntimeLayer[],
+  optionsFor?: (rt: RuntimeLayer) => { extent?: number[] } | undefined,
+  visible = true,
+): void {
+  if (!map) return
+  const eligible = runtimes.filter((rt) => !wmsLayers.has(rt.config.id) && !isNonSpatial(rt.config))
+  if (eligible.length === 0) return
+
+  if (!ENABLE_TILE_MERGING) {
+    for (const rt of eligible) {
+      attachWmsLayer(rt, {
+        ...(optionsFor?.(rt) ?? {}),
+        minZoom: rt.config.minZoom,
+        maxZoom: rt.config.maxZoom,
+        visible,
+      })
+    }
+    return
+  }
+
+  const groups = groupResolvedLayers(eligible.map((rt) => toMergeableLayer(rt.config)))
+  const tileLoadFn = createRetryTileLoadFunction(perfStats)
+  for (const group of groups) {
+    const gid = group.layerIds.slice().sort().join('|')
+    const source = mergedGroupRuntimes.has(gid)
+      ? syncMergedGroup(gid, group)
+      : (() => {
+          const s = createMergedTileSource(group, TileWMS, tileLoadFn)
+          registerMergedGroup(gid, group, s)
+          return s
+        })()
+    for (const lid of group.layerIds) {
+      const rt = eligible.find((r) => r.config.id === lid)
+      if (!rt) continue
+      attachWmsLayer(rt, {
+        extent: optionsFor?.(rt)?.extent,
+        minZoom: rt.config.minZoom,
+        maxZoom: rt.config.maxZoom,
+        visible,
+      }, source)
+    }
+  }
 }
 
 async function toggleDataset(dataset: RuntimeDataset) {
@@ -858,18 +1035,14 @@ function switchProjection(crs: string) {
   map.setView(createView(crs))
   fitProjectInitialExtent()
   reloadAisGeometry()
-  // Re-attach only previously selected layers
-  for (const runtime of runtimeLayers.value) {
-    if (savedSelectedIds.has(runtime.config.id)) {
-      runtime.visible = true
-      const extent = transformLayerExtent(runtime.config.extent, currentCrs.value)
-      attachWmsLayer(runtime, {
-        extent,
-        minZoom: runtime.config.minZoom,
-        maxZoom: runtime.config.maxZoom,
-      })
-    }
-  }
+  // Re-attach only previously selected layers (shared merged-group sources)
+  const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
+  for (const runtime of toReattach) runtime.visible = true
+  attachRuntimeGroups(
+    toReattach,
+    (rt) => ({ extent: transformLayerExtent(rt.config.extent, currentCrs.value) }),
+    true,
+  )
   // Restore selectedLayerIds (they survive the projection switch)
   selectedLayerIds.value = savedSelectedIds
   // Recalculate render plan for new projection
@@ -881,6 +1054,9 @@ function switchProjection(crs: string) {
 function layerStatusLabel(layerId: string): string {
   if (failedLayerIds.value.has(layerId)) return '加载失败'
   if (warmingLayerIds.value.has(layerId)) return '加载中'
+  // Bundled layers are selected but never enter attached/active sets —
+  // they render via composite bundles, so report them as displayed.
+  if (renderMode.value === 'smart' && isLayerCoveredByBundle(layerId)) return '已显示'
   if (activeLayerIds.value.has(layerId)) return '已显示'
   if (suspendedLayerIds.value.has(layerId)) {
     // Check specific suspension reasons if available
@@ -916,6 +1092,45 @@ function buildResolvedLayerMeta(): ResolvedLayerMeta[] {
   }))
 }
 
+/**
+ * Fetch (or reuse the cached) bundle render plan for a layer-id set.
+ * Cached by (sorted layer IDs + projection) — the bundle structure only
+ * changes when layer selection or projection changes. Returns undefined
+ * on fetch failure (caller falls back to per-layer rendering).
+ */
+async function fetchBundlePlanInputFor(
+  layerIds: ReadonlySet<string>,
+  crs: string,
+  viewExtent: number[],
+  zoom: number,
+): Promise<BundlePlanInput | undefined> {
+  const key = [...layerIds].sort().join(',') + '|' + crs
+  if (lastBundlePlanCacheKey === key && lastBundlePlanCache) return lastBundlePlanCache
+  if (!ENABLE_RENDER_BUNDLES || layerIds.size === 0) return undefined
+  const projectId = config.value?.project.id
+  if (!projectId) return undefined
+  try {
+    const renderPlanResp = await fetchRenderPlan(projectId, {
+      layerIds: [...layerIds],
+      profile: lastLoadProfile.value,
+      projection: crs,
+      renderMode: 'smart',
+      viewExtent,
+      zoom: Math.round(zoom),
+    })
+    const input: BundlePlanInput = {
+      bundles: renderPlanResp.bundles,
+      standaloneLayerIds: renderPlanResp.standaloneLayers.map((s) => s.layerId),
+    }
+    lastBundlePlanCacheKey = key
+    lastBundlePlanCache = input
+    return input
+  } catch {
+    // Fall back to per-layer smart mode on error
+    return undefined
+  }
+}
+
 async function reconcileRenderPlan() {
   if (!map || renderMode.value === 'standard') return
 
@@ -947,48 +1162,12 @@ async function reconcileRenderPlan() {
     (b) => b.name.includes('全球海图概览') && b.crs === currentCrs.value && b.isEnabled,
   )
 
-  // Phase 1: smart mode with bundles — fetch render plan from API.
-  // Cache by (sorted layer IDs + projection) to avoid redundant calls
-  // during pan/zoom — the bundle structure only changes when layer selection
-  // or projection changes.
-  let bundlePlanInput: {
-    bundles: import('../types').RenderBundleConfig[]
-    standaloneLayerIds: string[]
-  } | undefined
-
-  const bundleCacheKey = (
-    [...selectedLayerIds.value].sort().join(',')
-    + '|' + currentCrs.value
-  )
-
-  if (ENABLE_RENDER_BUNDLES && renderMode.value === 'smart') {
-    const projectId = config.value?.project.id
-    if (projectId && selectedLayerIds.value.size > 0) {
-      if (lastBundlePlanCacheKey === bundleCacheKey && lastBundlePlanCache) {
-        bundlePlanInput = lastBundlePlanCache
-      } else {
-        try {
-          const renderPlanResp = await fetchRenderPlan(projectId, {
-            layerIds: [...selectedLayerIds.value],
-            profile: lastLoadProfile.value,
-            projection: currentCrs.value,
-            renderMode: 'smart',
-            viewExtent: extent,
-            zoom: Math.round(zoom),
-          })
-          bundlePlanInput = {
-            bundles: renderPlanResp.bundles,
-            standaloneLayerIds: renderPlanResp.standaloneLayers.map((s) => s.layerId),
-          }
-          lastBundlePlanCacheKey = bundleCacheKey
-          lastBundlePlanCache = bundlePlanInput
-        } catch {
-          // Fall back to per-layer smart mode on error
-          bundlePlanInput = undefined
-        }
-      }
-    }
-  }
+  // Phase 1: smart mode with bundles — fetch render plan from API
+  // (cached by sorted layer IDs + projection).
+  const bundlePlanInput =
+    ENABLE_RENDER_BUNDLES && renderMode.value === 'smart'
+      ? await fetchBundlePlanInputFor(selectedLayerIds.value, currentCrs.value, extent, zoom)
+      : undefined
 
   // No bundle plan to reconcile against (empty selection or fetch failure):
   // dispose any attached bundles so stale composites don't leak on the map,
@@ -1094,6 +1273,18 @@ function executeBundlePlan(
   bundlePlan: BundleRenderPlan,
   plan: ReturnType<typeof buildRenderPlan>,
 ) {
+  // Safety net: per-layer TileWMS leftovers for bundle-covered layers (e.g.
+  // batch attach fallback when the plan fetch failed, or layers attached
+  // before the bundle plan existed) would double-render next to bundles —
+  // "bundles win", so detach them. The pre-fetch exclusion in the batch
+  // path makes this the rare fallback, not the common path.
+  for (const id of bundlePlan.bundledLayerIds) {
+    const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+    if (runtime && wmsLayers.has(id)) {
+      detachWmsLayer(runtime)
+    }
+  }
+
   // Detach removed bundles
   for (const bundleId of bundlePlan.detachBundles) {
     detachBundle(bundleId, map!)
@@ -1322,7 +1513,35 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
 
     bulkProgress.value.total = candidates.length
     bulkProgress.value.skipped = skipped
-    await loadResolvedLayersInBatches(candidates, generation)
+
+    // Smart-mode dedup: pre-fetch the bundle plan for the projected
+    // selection (selected ∪ candidates) so batch attach can skip
+    // bundle-covered layers — they render via composite bundles and must
+    // not get per-layer TileWMS sources. The cache key matches the one the
+    // final reconcileRenderPlan() computes after attach → no duplicate
+    // plan fetch. On failure bundleCoveredIds stays empty: the full merged
+    // batch attach runs and executeBundlePlan's safety net detaches the
+    // leftovers once the bundles exist.
+    let bundleCoveredIds = new Set<string>()
+    if (ENABLE_RENDER_BUNDLES && renderMode.value === 'smart' && map && candidates.length > 0) {
+      const view = map.getView()
+      const size = map.getSize()
+      if (view && size) {
+        const projected = new Set<string>([...selectedLayerIds.value, ...candidates.map((c) => c.id)])
+        const planInput = await fetchBundlePlanInputFor(
+          projected,
+          currentCrs.value,
+          view.calculateExtent(size) as number[],
+          view.getZoom() ?? 4,
+        )
+        if (planInput) {
+          for (const b of planInput.bundles) {
+            for (const lid of b.layerIds) bundleCoveredIds.add(lid)
+          }
+        }
+      }
+    }
+    await loadResolvedLayersInBatches(candidates, generation, bundleCoveredIds)
 
     // Completed — make all new layers visible at once, then reset UI state
     const p = bulkProgress.value
@@ -1351,13 +1570,43 @@ async function loadSelectedDatasets(profile: S57LoadProfile) {
 async function loadResolvedLayersInBatches(
   candidates: BulkResolvedLayer[],
   generation: number,
+  bundleCoveredIds: ReadonlySet<string> = new Set(),
 ) {
   if (!map || !config.value) return
+
+  // ── Smart-mode dedup: bundle-covered candidates render via composite
+  // bundles (created by the final reconcileRenderPlan) — record them as
+  // selected without creating per-layer OL sources, so they don't double
+  // render next to their bundles.
+  const toAttach: BulkResolvedLayer[] = []
+  for (const candidate of candidates) {
+    if (!bundleCoveredIds.has(candidate.id)) {
+      toAttach.push(candidate)
+      continue
+    }
+    const runtime = runtimeLayers.value.find((r) => r.config.id === candidate.id)
+    if (!runtime) continue
+    if (loadingLayerIds.value.has(candidate.id) || selectedLayerIds.value.has(candidate.id)) {
+      if (bulkProgress.value) bulkProgress.value.skipped++
+      continue
+    }
+    runtime.visible = true
+    const selNext = new Set(selectedLayerIds.value)
+    selNext.add(candidate.id)
+    selectedLayerIds.value = selNext
+    const attachNext = new Set(lastBulkAttachedLayerIds.value)
+    attachNext.add(candidate.id)
+    lastBulkAttachedLayerIds.value = attachNext
+    if (bulkProgress.value) {
+      bulkProgress.value.succeeded++
+      bulkProgress.value.processed++
+    }
+  }
 
   // ── Pre-group candidates when merging is enabled ──────────────────
   // Groups share one TileWMS source with comma-separated LAYERS param,
   // drastically reducing HTTP request count for same-dataset layers.
-  const groups = ENABLE_TILE_MERGING ? groupResolvedLayers(candidates) : null
+  const groups = ENABLE_TILE_MERGING ? groupResolvedLayers(toAttach) : null
   // Pre-create shared sources and wire group-level tile events
   const groupSourceMap = new Map<string, TileWMS>() // groupKey → shared source
   if (groups) {
@@ -1367,60 +1616,7 @@ async function loadResolvedLayersInBatches(
       if (mergedGroupRuntimes.has(gid)) continue   // already attached
       const source = createMergedTileSource(group, TileWMS, tileLoadFn)
       groupSourceMap.set(gid, source)
-
-      // Track member → group mapping for detachWmsLayer
-      for (const lid of group.layerIds) {
-        mergedGroupMembers.set(lid, gid)
-      }
-
-      // Group-level tile event wiring:
-      // When tiles load for the composite LAYERS param, update ALL member
-      // runtimes — each tile covers every layer in the group.
-      const memberIds = new Set(group.layerIds)
-      const grpRuntime: MergedGroupRuntime = { source, memberIds, pendingTiles: 0 }
-      mergedGroupRuntimes.set(gid, grpRuntime)
-
-      source.on('tileloadstart', () => {
-        grpRuntime.pendingTiles += 1
-        for (const lid of memberIds) {
-          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
-          if (!rt) continue
-          rt.pendingTiles += 1
-          perfStats.recordTileStart(lid)
-          window.clearTimeout(rt.loadStateTimer)
-          rt.loadStateTimer = window.setTimeout(() => {
-            if (rt.pendingTiles > 0) rt.loadState = 'loading'
-          }, 300)
-        }
-      })
-      source.on('tileloadend', () => {
-        grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
-        for (const lid of memberIds) {
-          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
-          if (!rt) continue
-          rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
-          perfStats.recordTileEnd(lid)
-          if (rt.pendingTiles === 0) {
-            window.clearTimeout(rt.loadStateTimer)
-            if (rt.loadState !== 'error') rt.loadState = 'loaded'
-            const nextWarm = new Set(warmingLayerIds.value)
-            if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
-          }
-        }
-      })
-      source.on('tileloaderror', () => {
-        grpRuntime.pendingTiles = Math.max(0, grpRuntime.pendingTiles - 1)
-        for (const lid of memberIds) {
-          const rt = runtimeLayers.value.find((r) => r.config.id === lid)
-          if (!rt) continue
-          rt.pendingTiles = Math.max(0, rt.pendingTiles - 1)
-          perfStats.recordTileError(lid)
-          window.clearTimeout(rt.loadStateTimer)
-          rt.loadState = 'error'
-          const nextWarm = new Set(warmingLayerIds.value)
-          if (nextWarm.delete(lid)) warmingLayerIds.value = nextWarm
-        }
-      })
+      registerMergedGroup(gid, group, source)
     }
   }
 
@@ -1433,7 +1629,7 @@ async function loadResolvedLayersInBatches(
 
   const items: BatchItem[] = (() => {
     if (!groups || !groupSourceMap) {
-      return candidates.map((c) => ({ kind: 'single' as const, candidate: c }))
+      return toAttach.map((c) => ({ kind: 'single' as const, candidate: c }))
     }
     const result: BatchItem[] = []
     const seenLayerIds = new Set<string>()
@@ -1445,7 +1641,7 @@ async function loadResolvedLayersInBatches(
       result.push({ kind: 'merged', group, source })
     }
     // Append any candidates not covered by any group (edge case)
-    for (const c of candidates) {
+    for (const c of toAttach) {
       if (!seenLayerIds.has(c.id)) {
         result.push({ kind: 'single', candidate: c })
       }
@@ -1476,10 +1672,12 @@ async function loadResolvedLayersInBatches(
           try {
             const resolved = candidates.find((c) => c.id === lid)
             const extent = resolved ? transformLayerExtent(resolved.extent, currentCrs.value) : undefined
+            // Per-member zoom ranges: the shared source only carries
+            // LAYERS/STYLES — each member's TileLayer gates its own range.
             const result = attachWmsLayer(runtime, {
               extent,
-              minZoom: item.group.minZoom ?? undefined,
-              maxZoom: item.group.maxZoom ?? undefined,
+              minZoom: resolved?.minZoom ?? undefined,
+              maxZoom: resolved?.maxZoom ?? undefined,
               visible: false,
             }, item.source)
             if (result === 'attached') {
