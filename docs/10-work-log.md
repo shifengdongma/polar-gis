@@ -5,6 +5,49 @@
 
 ---
 
+## 会话 #22 — 航路面板交互修复：modal-penetrable 指针穿透 + 经纬度范围标注
+
+**日期**: 2026-09-16
+**目标**: 修复部署后反馈的 3 个交互问题（地图绘制无效 / 拖拽编辑无效 / 面板打开后地图无法平移缩放）+ 1 个经纬度范围疑问。
+
+### 根因分析（Phase 1）
+
+Element Plus 2.11.5 的 `el-drawer` 设置 `:modal="false"` 只去掉遮罩，抽屉的 overlay 仍渲染为 `position: fixed; inset: 0` 的**全屏 div**（`overlay.mjs` 的 mask=false 分支，无 class 标记），且未设置 `modal-penetrable` 时不会获得 `is-penetrable` 类 → 该 div 拦截**整个视口**的指针事件。地图在 overlay 下层：
+
+1. 平移/缩放收不到 wheel/pointer 事件（问题 3）；
+2. "地图绘制/拖拽编辑"按钮都在面板内，面板必须开着才能点击按钮，但随后在地图上的点击被 overlay 吞掉 → Draw 收不到单击加顶点（问题 1）、Modify 收不到拖拽（问题 2）。
+
+**一个根因，三个症状**。EP 官方机制：`modal-penetrable` prop → overlay 获得 `is-penetrable` 类（`pointer-events: none`），仅抽屉面板本身保留交互（`theme-chalk/el-drawer.css` 内置该规则）。
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | `RoutePlannerPanel.vue` el-drawer 增加 `modal-penetrable` | ✅ 完成 |
+| 2 | 点表列标题标注真实范围（经度 ±180 / 纬度 ±90） | ✅ 完成 |
+| 3 | 新增 `RoutePlannerPanel.test.ts` 源码断言回归测试 | ✅ 完成 |
+| 4 | typecheck / 全量测试 / build 全绿 | ✅ 完成（177 测试） |
+
+### 修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/components/RoutePlannerPanel.vue` | 修改 | el-drawer 增加 `modal-penetrable`；点表列标题标注 `经度(-180~180)` / `纬度(-90~90)` |
+| `frontend/src/components/RoutePlannerPanel.test.ts` | 新建 | 源码断言守护 `:modal="false"` + `modal-penetrable` 组合与范围标注 |
+
+### 测试结果
+
+- `npm run typecheck`：零错误
+- `npm test`：11 个文件 177 个测试全部通过（新增 2）
+- `npm run build`：成功
+
+### 关键决策
+
+1. **经纬度范围并非无意义限制**：经度 ±180、纬度 ±90 是真实地理范围（任务书第五节坐标规则）。经度列本就允许 ±180，±90 只作用于纬度列；用户困惑源于 UI 未标注，已在列标题标明。
+2. **修复优先走 EP 官方机制**（`modal-penetrable`），而非自定义 CSS 改 `pointer-events` —— 官方类有对应内置样式与语义，且由源码断言测试防止重构回退。
+
+---
+
 ## 会话 #21 — 前端航路规划模拟（绘制/编辑/多航线/投影重建）
 
 **日期**: 2026-09-16

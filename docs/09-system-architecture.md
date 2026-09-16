@@ -686,6 +686,7 @@ loadSelectedDatasets (批量确认后)
 ### 交互互斥与生命周期
 
 - 进入航路绘制/编辑时视图回调 `deactivateOtherMapInteractions()`（关闭要素识别/气象/结束测量 Draw）；反向切换（测量/识别/气象/关闭面板）一律先 `routesStore.setInteractionMode('idle')`；`interactionMode` 的 watcher 用 `flush: 'sync'` 消除两个 Draw 并存的微任务窗口。
+- 航路抽屉为**非模态且可穿透**：`:modal="false"` 仅去掉遮罩，必须同时设置 `modal-penetrable`（EP 官方机制，overlay 获得 `is-penetrable` 类 → `pointer-events: none`），否则抽屉的全屏 overlay 会拦截整个视口的指针事件，导致地图平移/缩放/绘制/拖拽全部失效（会话 #22 根因，由 `RoutePlannerPanel.test.ts` 源码断言守护）。
 - `singleclick` 首行守卫：航路交互或测量进行中不触发要素识别/气象/航路选中。
 - `onBeforeUnmount` → `routeDrawing.dispose()`（移除交互、清 source、停 watcher）；**不清 localStorage 草稿**，页面回来自动恢复。
 - 与海图体系完全解耦：卸载全部海图 / 批量加载卸载 / smart↔standard 切换 / Render Bundle / Tile Merge / GWC / 瓦片缓存均不触碰航路层；截图功能遍历 `.ol-layer canvas` 自动包含航路。

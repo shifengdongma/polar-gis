@@ -181,10 +181,13 @@ function handleApplyBatch() {
 </script>
 
 <template>
+  <!-- modal-penetrable 必须与 :modal="false" 同时设置:否则抽屉的全屏 overlay
+       会拦截整个视口的指针事件,导致地图平移/缩放/绘制/拖拽全部失效 -->
   <el-drawer
     :model-value="visible"
     @update:model-value="emit('update:visible', $event)"
     :modal="false"
+    modal-penetrable
     :lock-scroll="false"
     direction="rtl"
     size="440px"
@@ -248,7 +251,7 @@ function handleApplyBatch() {
           <el-table-column label="#" width="40" align="center">
             <template #default="{ $index }">{{ $index + 1 }}</template>
           </el-table-column>
-          <el-table-column label="经度">
+          <el-table-column label="经度(-180~180)">
             <template #default="{ row }">
               <el-input-number
                 :model-value="row.lon"
@@ -259,7 +262,7 @@ function handleApplyBatch() {
               />
             </template>
           </el-table-column>
-          <el-table-column label="纬度">
+          <el-table-column label="纬度(-90~90)">
             <template #default="{ row }">
               <el-input-number
                 :model-value="row.lat"
