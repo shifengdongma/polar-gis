@@ -9,6 +9,7 @@ import {
   CaretRight,
   Check,
   Close,
+  Compass,
   DataAnalysis,
   Expand,
   Fold,
@@ -44,8 +45,11 @@ import { register } from 'ol/proj/proj4'
 import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
+import RoutePlannerPanel from '../components/RoutePlannerPanel.vue'
 import WeatherChart from '../components/WeatherChart.vue'
+import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useProjectsStore } from '../stores/projects'
+import { useRoutesStore } from '../stores/routes'
 import type {
   BaseMapRecord,
   BulkLayerProgress,
@@ -139,6 +143,7 @@ interface WeatherPoint {
 const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
+const routesStore = useRoutesStore()
 const mapTarget = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const config = ref<MapConfig | null>(null)
@@ -175,6 +180,43 @@ const identifyController = ref<AbortController | null>(null)
 const metadataVisible = ref(false)
 const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
+const routePanelVisible = ref(false)
+
+/** 结束测量 Draw 但保留已有测量结果(source / 文本不清除) */
+function stopMeasureInteraction() {
+  if (measureInteraction && map) map.removeInteraction(measureInteraction)
+  measureInteraction = null
+}
+
+/** 航路绘制/编辑与要素识别/气象/测量互斥:进入航路交互前关闭其余地图交互 */
+function deactivateOtherMapInteractions() {
+  queryMode.value = false
+  weatherMode.value = false
+  stopMeasureInteraction()
+}
+
+function toggleQueryMode() {
+  routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
+  queryMode.value = !queryMode.value
+  weatherMode.value = false
+}
+
+function toggleWeatherMode() {
+  routesStore.setInteractionMode('idle')
+  weatherMode.value = !weatherMode.value
+  queryMode.value = false
+}
+
+const routeDrawing = useRouteDrawing({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  deactivateOthers: deactivateOtherMapInteractions,
+  isSelectionEnabled: () => routePanelVisible.value,
+})
+// 关闭航路面板时结束绘制/编辑交互,不影响原地图浏览
+watch(routePanelVisible, (open) => {
+  if (!open) routesStore.setInteractionMode('idle')
+})
 
 // ── Batch loading state ────────────────────────────────────────────
 const selectedDatasetIds = shallowRef(new Set<string>())
@@ -495,6 +537,7 @@ async function buildMap() {
   }
   map.addLayer(measureLayer)
   map.addLayer(aisLayer)
+  map.addLayer(routeDrawing.layer)
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   map.on('pointermove', (event) => {
@@ -502,9 +545,12 @@ async function buildMap() {
     coordinateText.value = `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`
   })
   map.on('singleclick', async (event) => {
+    // 航路绘制/编辑或测量进行中时,不触发要素识别 / 气象查询 / 航路选中
+    if (routesStore.interactionMode !== 'idle' || measureInteraction) return
     const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
+    else if (routePanelVisible.value) routeDrawing.selectRouteAtPixel(event.pixel)
   })
   map.on('moveend', () => {
     window.clearTimeout(reconcileTimer)
@@ -1035,6 +1081,7 @@ function switchProjection(crs: string) {
   map.setView(createView(crs))
   fitProjectInitialExtent()
   reloadAisGeometry()
+  routeDrawing.reloadRouteGeometry()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -1882,6 +1929,7 @@ function zoomToLayer(runtime: RuntimeLayer) {
 
 function activateMeasure(type: 'LineString' | 'Polygon') {
   if (!map) return
+  routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
   if (measureInteraction) map.removeInteraction(measureInteraction)
   measureSource.clear()
   measureText.value = '单击开始绘制，双击结束'
@@ -2090,6 +2138,7 @@ onMounted(async () => {
     config.value = mapConfig
     baseMaps.value = baseMapResponse.data
     currentCrs.value = config.value.project.defaultCrs
+    routesStore.ensureLoaded(config.value.project.id)
     runtimeDatasets.value = config.value.datasets.map((dataset) => ({
       config: dataset,
       expanded: false,
@@ -2107,6 +2156,7 @@ onMounted(async () => {
     )
     await nextTick()
     await buildMap()
+    routeDrawing.syncRoutesToMap()
     startPerfPoll()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '项目地图加载失败'))
@@ -2116,6 +2166,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  routeDrawing.dispose()
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
@@ -2294,10 +2345,11 @@ onBeforeUnmount(() => {
     </aside>
     <div ref="mapTarget" class="map-canvas"></div>
     <div class="map-tools glass-panel">
-      <el-tooltip content="要素识别" placement="left"><button :class="{ active: queryMode }" @click="queryMode = !queryMode; weatherMode = false"><el-icon><Location /></el-icon></button></el-tooltip>
-      <el-tooltip content="点位气象演示" placement="left"><button :class="{ active: weatherMode }" @click="weatherMode = !weatherMode; queryMode = false"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
+      <el-tooltip content="要素识别" placement="left"><button :class="{ active: queryMode }" @click="toggleQueryMode"><el-icon><Location /></el-icon></button></el-tooltip>
+      <el-tooltip content="点位气象演示" placement="left"><button :class="{ active: weatherMode }" @click="toggleWeatherMode"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
       <el-tooltip content="测量距离" placement="left"><button @click="activateMeasure('LineString')"><el-icon><MapLocation /></el-icon></button></el-tooltip>
       <el-tooltip content="测量面积" placement="left"><button @click="activateMeasure('Polygon')"><el-icon><FullScreen /></el-icon></button></el-tooltip>
+      <el-tooltip content="航路规划模拟" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
       <el-tooltip content="地图截图" placement="left"><button @click="captureMap"><el-icon><Camera /></el-icon></button></el-tooltip>
       <el-tooltip content="打印地图" placement="left"><button @click="printMap"><el-icon><Printer /></el-icon></button></el-tooltip>
     </div>
@@ -2323,6 +2375,7 @@ onBeforeUnmount(() => {
       <div><span>P95耗时</span><span>{{ perfDisplay.p95TileDurationMs }}ms</span></div>
       <div><span>当前代</span><span>{{ perfDisplay.currentGeneration }}</span></div>
     </div>
+    <RoutePlannerPanel v-model:visible="routePanelVisible" :drawing="routeDrawing" />
     <el-drawer v-model="attributeVisible" :title="`${attributeLayer?.name || ''} · 属性表`" size="55%">
       <div class="tab-toolbar">
         <el-select v-model="attributeFilterField" clearable placeholder="筛选字段" style="width: 180px"><el-option v-for="field in attributeAllowedFields" :key="field" :label="field" :value="field" /></el-select>

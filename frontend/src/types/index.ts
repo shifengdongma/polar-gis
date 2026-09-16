@@ -474,3 +474,29 @@ export interface BundleViewState {
   failed: boolean
   errorMessage?: string
 }
+
+// ── 航路规划模拟 (Route Planning Sandbox) ────────────────────────────
+// 业务坐标唯一真值: WGS84 经纬度 [lon, lat]。地图投影坐标永远不得进入 Store。
+
+export interface RoutePoint {
+  id: string
+  /** 1-based 展示/排序序号,永远由 Store 重新编号 */
+  seq: number
+  /** WGS84 经度 [-180, 180] */
+  lon: number
+  /** WGS84 纬度 [-90, 90] */
+  lat: number
+}
+
+export interface RouteDraft {
+  id: string
+  projectId: string
+  name: string
+  description?: string
+  points: RoutePoint[]
+  visible: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type RouteInteractionMode = 'idle' | 'draw' | 'edit'

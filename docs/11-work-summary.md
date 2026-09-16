@@ -1,7 +1,38 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-08-13
+> 最后更新: 2026-09-16
+
+---
+
+## 会话 #21 — 前端航路规划模拟（2026-09-16）
+
+### 修改了什么
+
+- **新建** `frontend/src/utils/mapRoute.ts` + `mapRoute.test.ts`（54 用例）：纯 GIS 逻辑模块——坐标校验（空值/非数字/NaN/Infinity/越界）、批量坐标文本解析（逐行错误提示）、点位归一化、跨 180° 经线连续化（仅渲染层）、WGS84⇄投影双向转换、LineString 构建、球面长度、routeId 稳定颜色池、航路样式工厂（普通/选中/编辑三态 + 外描边 + 节点标记）、Feature 构建、extent 平移
+- **新建** `frontend/src/stores/routes.ts` + `routes.test.ts`（22 用例）：Pinia Setup Store 持有 WGS84 航路真值；revision 单调计数通知地图同步；localStorage 按 projectId 隔离（`polar-gis:route-drafts:${projectId}:v1`）且全容错解析（损坏 JSON/旧结构/非法坐标一律降级不崩溃）；全部 13 个变更动作统一 touch() 持久化
+- **新建** `frontend/src/composables/useRouteDrawing.ts`：1 个 VectorLayer（zIndex 95）+ N 个 LineString Feature；Draw 自由绘制（草图独立 Collection + overlay 抬升）；Modify 拖拽编辑（Collection 限定 activeRoute + 拖拽期间 reconcile 短路）；点击命中测试选中；投影切换全量重建；fitRoute 定位；dispose 清理
+- **新建** `frontend/src/components/RoutePlannerPanel.vue`：非模态 440px 抽屉（`:modal="false"`，打开时可同时绘制）——新建/删除/显隐/定位列表、点表编辑（el-input-number 即时校验回退）、添加/删除点、地图绘制/撤销点/取消绘制、拖拽编辑/结束编辑、批量坐标输入（逐行错误提示）、航路长度显示、模拟免责声明
+- **修改** `frontend/src/types/index.ts`：追加 RoutePoint / RouteDraft / RouteInteractionMode
+- **修改** `frontend/src/views/MapWorkspaceView.vue`（16 处最小侵入）：Compass 工具栏按钮 + RoutePlannerPanel 挂载；routeLayer 加入地图；switchProjection 追加 reloadRouteGeometry；singleclick 增加航路/测量互斥守卫与航路命中选中；activateMeasure / 识别 / 气象入口归零航路交互；onMounted 恢复本地草稿；onBeforeUnmount dispose
+- **修改** `frontend/src/styles.css`：航路面板样式块 + print 隐藏
+- **修改** `docs/09-system-architecture.md`（§5.11 + 目录树 + 文件清单）、`docs/10-work-log.md`、`docs/11-work-summary.md`、`docs/12-user-manual.md`（§4.3.7）
+
+### 达到的效果
+
+- **经纬度绘制**：表格 / 批量粘贴两种方式输入坐标，修改后地图线路立即更新，非法输入明确提示且不写入 Store
+- **自由绘制**：地图连续点击 + 双击完成；撤销点 / 取消绘制；drawend 自动 toLonLat 转 WGS84 落库
+- **拖拽编辑**：Modify 只作用于当前选中航路；modifyend 双向同步——地图拖拽 → 经纬度表立即变化，刷新页面后修改仍在
+- **多航线显示**：单层 N Feature，支持任意多条同显；单条显隐（style function 返回空值）；选中高亮（4.5px + 节点标记）；编辑中虚线区分；routeId 稳定配色
+- **缩放/平移**：VectorLayer + View resolution 自然跟随，无 zoom/moveend 重建，0 次 API / GeoServer 请求
+- **投影切换**：EPSG:3857 ⇄ EPSG:3413 任意次循环，全部航路从 WGS84 全量重建，位置正确、无残留、无累积误差；跨 180° 经线航路正确渲染
+- **本地保存**：按项目隔离持久化，页面刷新自动恢复；损坏数据容错不阻断地图加载
+- **对原系统零影响**：S-57 / WMS / GWC / Bundle / TileCache / 调度器 / 测量 / AIS / 截图全部保持原行为；航路层与海图卸载、批量加载、smart↔standard 切换完全解耦
+
+### 验证结果
+
+- 自动验证：`npm run typecheck` 零错误；`npm test` 175 测试全绿（10 文件）；`npm run build` 成功
+- 手工验收场景（任务书 1-12）待浏览器验证：经纬度创建、自由绘制、表格修改、拖拽修改+刷新恢复、多航路显隐、缩放 5+5、拖动、投影切换 3 循环、测量兼容、AIS 共存、批量加载/卸载、smart/standard 切换
 
 ---
 

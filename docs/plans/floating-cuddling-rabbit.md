@@ -39,6 +39,7 @@ Bundle 模式（`createBundleTileSource()`）已通过逗号分隔 LAYERS 实现
 **直接减少 TileWMS 源数量 → 减少 HTTP 请求数。** 将同一组的多个图层合并到一个共享 TileWMS 源。
 
 **合并键**: `(serviceUrl, renderTransport, styleName, objectClass)`
+
 - `serviceUrl` — 必须指向同一 GeoServer 实例
 - `renderTransport` — `wms` 和 `gwc_wms` 使用不同端点/WMS 版本，不可混用
 - `styleName` — 单个 WMS 请求只能应用一套样式；不同样式的图层需分开

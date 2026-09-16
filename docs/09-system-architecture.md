@@ -242,13 +242,17 @@ frontend/
 └── src/
     ├── main.ts                 # 应用入口 (Vue + Pinia + Router + Element Plus)
     ├── App.vue                 # 根组件 (<RouterView />)
-    ├── styles.css              # 全局样式 (1284行, CSS 自定义属性)
+    ├── styles.css              # 全局样式 (1383行, CSS 自定义属性)
     │
     ├── api/
     │   └── client.ts           # Axios 实例 + 自动令牌刷新
     │
     ├── components/
-    │   └── WeatherChart.vue    # ECharts 天气图表组件
+    │   ├── WeatherChart.vue    # ECharts 天气图表组件
+    │   └── RoutePlannerPanel.vue # 航路规划模拟面板 (非模态抽屉)
+    │
+    ├── composables/
+    │   └── useRouteDrawing.ts  # 航路地图交互 (Draw/Modify/重建/定位)
     │
     ├── layouts/
     │   └── AppLayout.vue       # 应用外壳 (侧边栏 + 顶栏 + 内容区)
@@ -259,14 +263,18 @@ frontend/
     ├── stores/
     │   ├── auth.ts             # 认证状态 (登录/引导/登出)
     │   ├── projects.ts         # 项目列表状态
-    │   └── projects.test.ts    # Store 单元测试
+    │   ├── routes.ts           # 航路草稿状态 (WGS84 真值 + localStorage)
+    │   ├── projects.test.ts    # Store 单元测试
+    │   └── routes.test.ts      # 航路 Store 单元测试
     │
     ├── types/
-    │   └── index.ts            # TypeScript 类型定义
+    │   └── index.ts            # TypeScript 类型定义 (含 RouteDraft)
     │
     ├── utils/
     │   ├── mapExtent.ts        # 地图范围解析
     │   ├── mapExtent.test.ts   # 工具函数测试
+    │   ├── mapRoute.ts         # 航路纯 GIS 逻辑 (校验/解析/投影/样式)
+    │   ├── mapRoute.test.ts    # 航路工具函数测试
     │   └── s57ObjectNames.ts   # S-57 对象名称映射
     │
     └── views/
@@ -291,7 +299,8 @@ frontend/
 Vue 3 (Composition API + <script setup>)
 ├── Pinia (状态管理)
 │   ├── useAuthStore    → 登录/引导/登出 + 令牌管理
-│   └── useProjectsStore → 项目列表分页加载
+│   ├── useProjectsStore → 项目列表分页加载
+│   └── useRoutesStore  → 航路草稿 (WGS84 真值 + localStorage 持久化)
 ├── Vue Router (路由 + 导航守卫)
 │   ├── beforeEach: 认证检查 + 角色检查
 │   └── Lazy loading: 所有路由组件动态 import
@@ -638,6 +647,51 @@ loadSelectedDatasets (批量确认后)
 
 ---
 
+## 5.11 前端航路规划模拟 (会话 #21)
+
+**定位**：纯前端航路规划沙箱（Route Planning Sandbox），模拟未来正式航线规划模块。不改后端、不新增数据库表，航路草稿存浏览器 localStorage，未来接入 Route API 时仅需替换 Store 的持久化入口。
+
+### 数据不变量
+
+- **业务坐标唯一真值 = WGS84 经纬度 `[lon, lat]`**，永远保存在 `RouteStore` 的 `RoutePoint[]` 中；`EPSG:3857` / `EPSG:3413` 投影坐标绝不落库。
+- OpenLayers `Feature<LineString>` 仅为渲染结果：`Route Store → fromLonLat → Feature`，反向 `Modify/Draw → toLonLat → Store`。Feature 永远不是业务真值来源。
+- 合法范围：经度 `[-180, 180]`、纬度 `[-90, 90]`；航路至少 2 个航路点；所有输入经 `validateRouteCoordinate()` 校验，错误输入拒绝写入 Store 并提示用户。
+
+### Route Store 与 localStorage 草稿
+
+- `stores/routes.ts`（Pinia Setup Store）：状态 `routes / activeRouteId / interactionMode / revision / loadedProjectId`；`revision` 为单调递增通知计数，地图同步只 watch 它（不做 deep watch）。
+- 持久化 key：`polar-gis:route-drafts:${projectId}:v1`（按项目隔离）；payload `{ version: 1, routes }`。
+- 容错读取（`parseStoredRoutes`）：JSON 损坏 / 旧版本结构 / 裸数组外形 / 字段缺失 / 非法经纬度 / 重复 id 一律降级处理，绝不抛异常、绝不阻断地图工作台加载；< 2 点的草稿只保留在内存、不写盘。
+- 每次数据变更（新增/删除/改名/点位增删改/显隐/拖拽回写）统一经 `touch()` → `revision++` + 持久化。
+
+### routeLayer 与样式
+
+- `composables/useRouteDrawing.ts` 持有 1 个 `VectorLayer`（zIndex **95**：高于海图 WMS 10-40，低于测量层 100 / AIS 110）+ 1 个 `VectorSource({ wrapX: true })` + N 个 `Feature<LineString>`（属性 `routeId / routeName / routeType='route-draft'`）。
+- 单条显隐：style function 对隐藏航路返回空值（绝不 `routeLayer.setVisible(false)`）。
+- 样式工厂 `createRouteStyle()`：颜色由 routeId 哈希映射固定 8 色池（刷新后颜色稳定）；普通 2.5px、选中 4.5px、编辑中虚线 + 深色外描边（halo）；选中（非编辑）时叠加航路点圆点标记；线样式按 (color, variant) 模块级缓存。
+- 缩放/平移零重建：VectorLayer + View resolution 自然完成，**不监听 zoom/moveend**，zoom/pan 全程 0 次 API / GeoServer 请求。
+
+### Draw / Modify / 选中
+
+- 自由绘制：`Draw({ type: 'LineString', minPoints: 2 })`，草图走**独立 `Collection<Feature>`**（绝不落入 routeSource，避免重复线与海图遮挡），草图 overlay zIndex 抬到 96；`drawend` → `toLonLat` 全部坐标 → 写回 Store → 自动回到 idle；`removeLastPoint()` 撤销点、`abortDrawing()` 取消绘制（空草稿一并删除）。
+- 拖拽编辑：`Modify({ features: Collection([activeFeature]) })` 只允许拖动当前选中航路；`modifyend` → `toLonLat` → `replaceRoutePoints`（按索引复用 point id，表格状态稳定）。
+- **拖拽安全**：`modifystart/modifyend` 维护 `isDragging`，拖拽期间 reconcile 直接短路；坐标不变（1e-6 米容差 `coordinatesEqual`）绝不 `setGeometry`，保证 Feature 身份稳定、不打断 Modify 内部 rBush。
+- 点击选中：不用 Select interaction，复用 `singleclick` 里的 `forEachFeatureAtPixel` 命中测试（layerFilter 限定 routeLayer + hitTolerance 6），守卫 `interactionMode === 'idle' && !measureInteraction && 面板打开`，避免与测量/要素识别交互竞争。
+
+### 投影处理
+
+- `switchProjection()` 中紧跟 `reloadAisGeometry()` 调用 `reloadRouteGeometry()`：先强制回到 idle，再从 **Store 原始 WGS84 点全量重建**所有 Feature 几何——与 AIS 范式一致，杜绝 `3857 → 3413 → 3857` 累积 transform。
+- 跨 180° 经线：`unwrapLongitudes()` 连续化**仅作用于渲染几何**（3857 下 179→-179 展开为 179→181），业务数据永不改写；回写时 `normalizeLongitude()` 收拢到 ±180；`fitRoute()` 的 extent 经 `shiftExtentIntoProjection()` 平移回投影范围。EPSG:3413 下 proj4 `adjust_lon` 天然回绕。
+
+### 交互互斥与生命周期
+
+- 进入航路绘制/编辑时视图回调 `deactivateOtherMapInteractions()`（关闭要素识别/气象/结束测量 Draw）；反向切换（测量/识别/气象/关闭面板）一律先 `routesStore.setInteractionMode('idle')`；`interactionMode` 的 watcher 用 `flush: 'sync'` 消除两个 Draw 并存的微任务窗口。
+- `singleclick` 首行守卫：航路交互或测量进行中不触发要素识别/气象/航路选中。
+- `onBeforeUnmount` → `routeDrawing.dispose()`（移除交互、清 source、停 watcher）；**不清 localStorage 草稿**，页面回来自动恢复。
+- 与海图体系完全解耦：卸载全部海图 / 批量加载卸载 / smart↔standard 切换 / Render Bundle / Tile Merge / GWC / 瓦片缓存均不触碰航路层；截图功能遍历 `.ol-layer canvas` 自动包含航路。
+
+---
+
 ## 6. 文件清单
 
 ### 后端 (52 files)
@@ -646,9 +700,9 @@ loadSelectedDatasets (批量确认后)
 - 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
-### 前端 (34 source files)
-- Vue 组件: `src/views/` (11), `src/components/` (1), `src/layouts/` (1) = 13
-- TypeScript 模块: `src/api/` (1), `src/stores/` (3), `src/types/` (1), `src/utils/` (9), `src/router/` (1) = 15
+### 前端 (40 source files)
+- Vue 组件: `src/views/` (11), `src/components/` (2), `src/layouts/` (1) = 14
+- TypeScript 模块: `src/api/` (1), `src/stores/` (5), `src/types/` (1), `src/utils/` (11), `src/composables/` (1), `src/router/` (1) = 20
 - 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
 - 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
 

@@ -1,7 +1,59 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-08-13
+> 最后更新: 2026-09-16
+
+---
+
+## 会话 #21 — 前端航路规划模拟（绘制/编辑/多航线/投影重建）
+
+**日期**: 2026-09-16
+**目标**: 按任务书实现前端航路规划沙箱：经纬度输入绘制、地图自由绘制、拖拽编辑、多航路同显与单条显隐、投影切换重建、localStorage 按项目隔离持久化。纯前端改动，不触碰后端 / S-57 / WMS / GWC / Bundle / TileCache / 调度器；本阶段不新增数据库表，未来以 Route API 替换持久化层。
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | `types/index.ts` 追加 RoutePoint / RouteDraft / RouteInteractionMode | ✅ 完成 |
+| 2 | `utils/mapRoute.ts` 纯 GIS 模块 + `mapRoute.test.ts` | ✅ 完成（54 用例） |
+| 3 | `stores/routes.ts` 航路 Store + `routes.test.ts` | ✅ 完成（22 用例） |
+| 4 | `composables/useRouteDrawing.ts` 地图交互（Draw/Modify/重建/定位） | ✅ 完成 |
+| 5 | `components/RoutePlannerPanel.vue` + `styles.css` | ✅ 完成 |
+| 6 | `MapWorkspaceView.vue` 最小侵入接入（16 处） | ✅ 完成 |
+| 7 | typecheck / 全量测试 / build 全绿 | ✅ 完成（175 测试，vue-tsc 零错误） |
+| 8 | 文档 09/10/11/12 更新 + git 提交 | ✅ 完成 |
+
+### 修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/types/index.ts` | 修改 | 追加 RoutePoint / RouteDraft / RouteInteractionMode 类型 |
+| `frontend/src/utils/mapRoute.ts` | 新建 | 校验 / 坐标文本解析（逐行错误）/ normalize / 跨 180° unwrap / 投影转换 / LineString 构建 / 球面长度 / 稳定颜色池 / 样式工厂 / Feature 构建 |
+| `frontend/src/utils/mapRoute.test.ts` | 新建 | 54 用例（含测试内注册 proj4 EPSG:3413 的真实变换、跨 180° 经线、round-trip） |
+| `frontend/src/stores/routes.ts` | 新建 | Pinia Setup Store：revision 通知计数 + localStorage 按 projectId 隔离 + 全容错解析 |
+| `frontend/src/stores/routes.test.ts` | 新建 | 22 用例（CRUD / 显隐 / 持久化恢复 / 项目隔离 / 损坏数据容错） |
+| `frontend/src/composables/useRouteDrawing.ts` | 新建 | routeLayer（zIndex 95）/ Draw 草图独立 Collection / Modify 拖拽 / 命中测试选中 / reloadRouteGeometry / fitRoute / dispose |
+| `frontend/src/components/RoutePlannerPanel.vue` | 新建 | 非模态 440px 抽屉：新建 / 显隐 / 列表 / 点表 / 地图绘制 / 拖拽编辑 / 批量坐标 |
+| `frontend/src/views/MapWorkspaceView.vue` | 修改 | 16 处最小侵入接入（见关键决策） |
+| `frontend/src/styles.css` | 修改 | 航路面板样式块 + print 隐藏 |
+
+### 测试结果
+
+- `npm run typecheck`（vue-tsc -b）：零错误
+- `npm test`（vitest run）：10 个文件 175 个测试全部通过（新增 mapRoute 54 + routes store 22）
+- `npm run build`：成功（MapWorkspaceView chunk 体积警告为既有问题）
+- dev server 冒烟：页面 200，MapWorkspaceView / useRouteDrawing / RoutePlannerPanel 模块转换无错误
+
+### 关键决策
+
+1. **草图走独立 Collection**：Draw 使用 `features` 选项而非 `source`——OL 在 drawend 分发后才把草图 push 进目标 source，直写 routeSource 会残留未样式化重复线；Draw 内部 overlay 默认 zIndex 0 会被海图（10-40）盖住，抬到 96。
+2. **拖拽安全**：Modify 对 feature 的 change 事件会重建 rBush，拖拽期间 reconcile 短路（isDragging 标志）+ `coordinatesEqual`（1e-6 米容差）短路 setGeometry，保证 Feature 身份稳定、不打断拖拽。
+3. **弃 Select interaction**：singleclick 里 `forEachFeatureAtPixel` 命中测试选航路（layerFilter + hitTolerance 6），避免第二套选中状态与测量 Draw 的交互竞争。
+4. **revision 计数器代替 deep watch**：20 航路 × 数百点规模下 O(1) 变更检测；zoom/pan 全程 0 次 API / GeoServer 请求（验收项）。
+5. **跨 180° 经线**：unwrapLongitudes 仅作用于渲染几何（3857 下 179→-179 展开为 179→181），业务数据永不改写；回写 normalizeLongitude 收拢 ±180；fitRoute extent 平移回投影范围。
+6. **抽屉 `:modal="false"`**：默认遮罩会挡住地图绘制/拖拽；关闭面板自动结束航路交互。
+7. **`crypto.randomUUID()` 降级**：局域网 http 部署（非安全上下文）下为 undefined，createId() 提供 getRandomValues UUID v4 回退。
+8. **投影重建跟随 AIS 范式**：switchProjection 中 `reloadRouteGeometry()` 紧跟 `reloadAisGeometry()`，从 Store WGS84 全量重建，杜绝 3857→3413→3857 累积 transform。
 
 ---
 
