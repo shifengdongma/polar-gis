@@ -10,8 +10,8 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { RouteDrawingApi } from '../composables/useRouteDrawing'
 import { useRoutesStore } from '../stores/routes'
-import type { RoutePoint } from '../types'
-import { calculateRouteLength, parseRouteCoordinateText } from '../utils/mapRoute'
+import type { RoutePoint, RoutePointRow } from '../types'
+import { calculateRouteLength, parseRouteCoordinateText, routePointRole, routePointRoleLabel } from '../utils/mapRoute'
 
 const props = defineProps<{ visible: boolean; drawing: RouteDrawingApi }>()
 const emit = defineEmits<{ (e: 'update:visible', value: boolean): void }>()
@@ -24,6 +24,18 @@ const rowVersion = ref(0)
 
 const activeRoute = computed(() => store.activeRoute)
 const interactionMode = computed(() => store.interactionMode)
+
+/**
+ * 点表数据:在原航路点上挂载方向角色。
+ * 途经点先后顺序即航路方向 —— 首点为起点、末点为终点(按 seq 判定,见 mapRoute)。
+ */
+const pointRows = computed<RoutePointRow[]>(() => {
+  const points = activeRoute.value?.points ?? []
+  return points.map((point, index) => {
+    const role = routePointRole(points, index)
+    return { ...point, role, roleLabel: routePointRoleLabel(role) }
+  })
+})
 
 const activeRouteLengthText = computed(() => {
   if (!activeRoute.value) return ''
@@ -247,9 +259,17 @@ function handleApplyBatch() {
           <el-input v-model="nameInput" size="small" class="route-name-input" @change="commitName" />
         </div>
 
-        <el-table :key="rowVersion" :data="activeRoute.points" size="small" class="route-point-table" max-height="280">
+        <el-table :key="rowVersion" :data="pointRows" size="small" class="route-point-table" max-height="280">
           <el-table-column label="#" width="40" align="center">
             <template #default="{ $index }">{{ $index + 1 }}</template>
+          </el-table-column>
+          <el-table-column label="说明" width="52" align="center">
+            <template #header>
+              <span title="航路方向:按途经点先后顺序,首点为起点、末点为终点">说明</span>
+            </template>
+            <template #default="{ row }">
+              <span class="route-role-tag" :class="`is-${row.role}`">{{ row.roleLabel }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="经度(-180~180)">
             <template #default="{ row }">
@@ -307,6 +327,15 @@ function handleApplyBatch() {
         </div>
         <div v-if="activeRoute.points.length >= 2" class="route-length">航路长度：{{ activeRouteLengthText }}</div>
         <div v-else class="route-length route-warning">航路至少需要两个航路点</div>
+        <div class="route-direction-legend">
+          <span class="route-direction-item">
+            <i class="route-direction-dot route-start-dot" />起点（第 1 个航路点）
+          </span>
+          <span class="route-direction-item">
+            <i class="route-direction-dot route-end-dot" />终点（最后 1 个航路点）
+          </span>
+          <span class="route-direction-note">航路方向：按途经点先后顺序，由起点驶向终点</span>
+        </div>
       </div>
     </template>
     <el-empty v-else description="请先选择或新建一条航路" :image-size="60" />

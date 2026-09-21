@@ -500,3 +500,15 @@ export interface RouteDraft {
 }
 
 export type RouteInteractionMode = 'idle' | 'draw' | 'edit'
+
+/**
+ * 航路点方向角色。航路方向由途经点先后顺序定义:
+ * seq 最小者 = 起点,最大者 = 终点,其余为途经点。
+ */
+export type RoutePointRole = 'start' | 'via' | 'end' | 'invalid'
+
+/** 点表行:航路点 + 由 seq 推导出的方向角色(派生数据,不进入 Store) */
+export interface RoutePointRow extends RoutePoint {
+  role: RoutePointRole
+  roleLabel: string
+}

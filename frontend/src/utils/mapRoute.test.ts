@@ -2,18 +2,23 @@ import { describe, expect, it } from 'vitest'
 import type { FeatureLike } from 'ol/Feature'
 import { get as getProjection, toLonLat } from 'ol/proj'
 import { register } from 'ol/proj/proj4'
+import type CircleStyle from 'ol/style/Circle'
 import type { Style } from 'ol/style'
 import type { StyleFunction } from 'ol/style/Style'
 import proj4 from 'proj4'
 import type { RouteDraft, RoutePoint } from '../types'
 import {
   ROUTE_COLOR_POOL,
+  ROUTE_END_COLOR,
   ROUTE_MIN_POINTS,
+  ROUTE_START_COLOR,
+  ROUTE_VIA_COLOR,
   buildRouteFeature,
   buildRouteLineString,
   calculateRouteLength,
   coordinatesEqual,
   createId,
+  createRoutePointStyles,
   createRouteStyle,
   longitudeDelta,
   normalizeLongitude,
@@ -21,6 +26,8 @@ import {
   parseRouteCoordinateText,
   projectedCoordinatesToRoutePoints,
   routeColor,
+  routePointRole,
+  routePointRoleLabel,
   routePointsToProjectedCoordinates,
   shiftExtentIntoProjection,
   unwrapLongitudes,
@@ -300,10 +307,25 @@ describe('createRouteStyle', () => {
     expect(styles[1]!.getStroke()!.getLineDash()).toEqual([8, 6])
   })
 
-  it('选中(非编辑)航路叠加航路点标记', () => {
+  it('选中(非编辑)航路叠加全部航路点标记', () => {
     const styleFn = buildStyleFn()
     const styles = styleFn(featureA as FeatureLike, 0) as Style[]
-    expect(styles).toHaveLength(3) // halo + 主线 + 节点标记
+    expect(styles).toHaveLength(4) // halo + 主线 + 起点标记 + 终点标记(2 点航路无途经点)
+  })
+
+  it('未选中航路也带起点 / 终点方向标记,但不显示途经点', () => {
+    const styleFn = buildStyleFn()
+    const styles = styleFn(featureC as FeatureLike, 0) as Style[] // C 未选中
+    expect(styles).toHaveLength(4) // halo + 主线 + 起点 + 终点
+    const colors = styles.slice(2).map((style) => (style.getImage() as unknown as CircleStyle).getFill()?.getColor())
+    expect(colors).toEqual([ROUTE_START_COLOR, ROUTE_END_COLOR])
+  })
+
+  it('编辑中航路仍标明方向(起点 / 终点标记保留)', () => {
+    const styleFn = buildStyleFn({ editing: (id) => id === 'A' })
+    const styles = styleFn(featureA as FeatureLike, 0) as Style[]
+    const colors = styles.slice(2).map((style) => (style.getImage() as unknown as CircleStyle).getFill()?.getColor())
+    expect(colors).toEqual([ROUTE_START_COLOR, ROUTE_END_COLOR])
   })
 
   it('无 routeId 的要素不渲染', () => {
@@ -311,6 +333,124 @@ describe('createRouteStyle', () => {
     const stray = buildRouteFeature(routeA, 'EPSG:3857')!
     stray.unset('routeId')
     expect(styleFn(stray as FeatureLike, 0)).toBeFalsy()
+  })
+})
+
+describe('routePointRole / routePointRoleLabel', () => {
+  it('空航路无角色可言', () => {
+    expect(routePointRole(makePoints([]), 0)).toBe('invalid')
+  })
+
+  it('单点航路首点即起点也是终点(优先显示起点)', () => {
+    expect(routePointRole(makePoints([[120, 72]]), 0)).toBe('start')
+  })
+
+  it('多点航路:首点=起点、末点=终点、其余=途经', () => {
+    const points = makePoints([[120, 72], [122, 73], [125, 74], [127, 75]])
+    expect(routePointRole(points, 0)).toBe('start')
+    expect(routePointRole(points, 1)).toBe('via')
+    expect(routePointRole(points, 2)).toBe('via')
+    expect(routePointRole(points, 3)).toBe('end')
+  })
+
+  it('两个航路点:起点 + 终点,无途经点', () => {
+    const points = makePoints([[120, 72], [122, 73]])
+    expect(points.map((_, index) => routePointRole(points, index))).toEqual(['start', 'end'])
+  })
+
+  it('角色由 seq(航路方向)决定,而非数组下标', () => {
+    // 数组顺序被打乱,seq 才是方向真值
+    const points: RoutePoint[] = [
+      { id: 'c', seq: 3, lon: 125, lat: 74 },
+      { id: 'a', seq: 1, lon: 120, lat: 72 },
+      { id: 'b', seq: 2, lon: 122, lat: 73 },
+    ]
+    expect(routePointRole(points, 1)).toBe('start') // 数组下标 1 但 seq=1
+    expect(routePointRole(points, 0)).toBe('end') // 数组下标 0 但 seq=3
+    expect(routePointRole(points, 2)).toBe('via') // seq=2
+  })
+
+  it('下标越界返回 invalid', () => {
+    const points = makePoints([[120, 72], [122, 73]])
+    expect(routePointRole(points, 2)).toBe('invalid')
+    expect(routePointRole(points, -1)).toBe('invalid')
+  })
+
+  it('中文标注:起点 / 终点 / 途经', () => {
+    expect(routePointRoleLabel('start')).toBe('起点')
+    expect(routePointRoleLabel('end')).toBe('终点')
+    expect(routePointRoleLabel('via')).toBe('途经')
+    expect(routePointRoleLabel('invalid')).toBe('')
+  })
+})
+
+describe('createRoutePointStyles(起点 / 途经 / 终点 标记)', () => {
+  // 用类投影量级的坐标,避免与 unwrap 边界纠缠
+  const projected = [
+    [1.3e7, 1.0e7],
+    [1.31e7, 1.01e7],
+    [1.32e7, 1.02e7],
+    [1.33e7, 1.03e7],
+  ]
+
+  function markerColor(style: Style): unknown {
+    const image = style.getImage() as unknown as CircleStyle | null
+    return image ? (image.getFill()?.getColor() ?? null) : null
+  }
+
+  /** 标记几何恒为 Point;Style.getGeometry() 的联合类型需收窄后才能取坐标 */
+  function markerCoordinates(style: Style): number[] | undefined {
+    const geometry = style.getGeometry() as unknown as { getCoordinates: () => number[] } | undefined
+    return geometry?.getCoordinates()
+  }
+
+  it('每个航路点一个标记', () => {
+    expect(createRoutePointStyles('A', projected)).toHaveLength(projected.length)
+  })
+
+  it('起点 / 途经 / 终点 三色互不相同,且起点终点颜色按角色固定', () => {
+    const styles = createRoutePointStyles('A', projected)
+    const colors = styles.map(markerColor)
+    expect(colors[0]).toBe(ROUTE_START_COLOR)
+    expect(colors[1]).toBe(ROUTE_VIA_COLOR)
+    expect(colors[2]).toBe(ROUTE_VIA_COLOR)
+    expect(colors[3]).toBe(ROUTE_END_COLOR)
+    expect(new Set([ROUTE_START_COLOR, ROUTE_VIA_COLOR, ROUTE_END_COLOR]).size).toBe(3)
+    expect(ROUTE_START_COLOR).not.toBe(ROUTE_END_COLOR)
+  })
+
+  it('起点终点颜色与航路配色池不同,不会被线路颜色淹没', () => {
+    for (const color of ROUTE_COLOR_POOL) {
+      expect(ROUTE_START_COLOR).not.toBe(color)
+      expect(ROUTE_END_COLOR).not.toBe(color)
+    }
+  })
+
+  it('标记落在对应航路点的投影坐标上', () => {
+    const styles = createRoutePointStyles('A', projected)
+    expect(markerCoordinates(styles[0]!)).toEqual(projected[0])
+    expect(markerCoordinates(styles[3]!)).toEqual(projected[3])
+  })
+
+  it('起点终点半径大于途经点,方向端更醒目', () => {
+    const styles = createRoutePointStyles('A', projected)
+    const startRadius = (styles[0]!.getImage() as CircleStyle).getRadius()
+    const viaRadius = (styles[1]!.getImage() as CircleStyle).getRadius()
+    const endRadius = (styles[3]!.getImage() as CircleStyle).getRadius()
+    expect(startRadius).toBe(endRadius)
+    expect(startRadius).toBeGreaterThan(viaRadius)
+  })
+
+  it('颜色不随航路配色变化(同角色恒定)', () => {
+    const first = createRoutePointStyles('A', projected)
+    const second = createRoutePointStyles('B', projected)
+    expect(markerColor(first[0]!)).toBe(markerColor(second[0]!))
+    expect(markerColor(first[3]!)).toBe(markerColor(second[3]!))
+    expect(routeColor('A')).not.toBe(routeColor('B')) // 前提:两条航路线色确实不同
+  })
+
+  it('空坐标返回空数组', () => {
+    expect(createRoutePointStyles('A', [])).toEqual([])
   })
 })
 

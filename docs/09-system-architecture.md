@@ -268,12 +268,12 @@ frontend/
     │   └── routes.test.ts      # 航路 Store 单元测试
     │
     ├── types/
-    │   └── index.ts            # TypeScript 类型定义 (含 RouteDraft)
+    │   └── index.ts            # TypeScript 类型定义 (含 RouteDraft / RoutePointRole)
     │
     ├── utils/
     │   ├── mapExtent.ts        # 地图范围解析
     │   ├── mapExtent.test.ts   # 工具函数测试
-    │   ├── mapRoute.ts         # 航路纯 GIS 逻辑 (校验/解析/投影/样式)
+    │   ├── mapRoute.ts         # 航路纯 GIS 逻辑 (校验/解析/投影/样式/方向角色)
     │   ├── mapRoute.test.ts    # 航路工具函数测试
     │   └── s57ObjectNames.ts   # S-57 对象名称映射
     │
@@ -647,7 +647,7 @@ loadSelectedDatasets (批量确认后)
 
 ---
 
-## 5.11 前端航路规划模拟 (会话 #21)
+## 5.11 前端航路规划模拟 (会话 #21 / #23)
 
 **定位**：纯前端航路规划沙箱（Route Planning Sandbox），模拟未来正式航线规划模块。不改后端、不新增数据库表，航路草稿存浏览器 localStorage，未来接入 Route API 时仅需替换 Store 的持久化入口。
 
@@ -670,6 +670,15 @@ loadSelectedDatasets (批量确认后)
 - 单条显隐：style function 对隐藏航路返回空值（绝不 `routeLayer.setVisible(false)`）。
 - 样式工厂 `createRouteStyle()`：颜色由 routeId 哈希映射固定 8 色池（刷新后颜色稳定）；普通 2.5px、选中 4.5px、编辑中虚线 + 深色外描边（halo）；选中（非编辑）时叠加航路点圆点标记；线样式按 (color, variant) 模块级缓存。
 - 缩放/平移零重建：VectorLayer + View resolution 自然完成，**不监听 zoom/moveend**，zoom/pan 全程 0 次 API / GeoServer 请求。
+
+### 航路方向标记（起点 / 途经 / 终点，会话 #23）
+
+- **方向语义**：途经点先后顺序即航路方向 —— `seq` 最小者 = 起点，最大者 = 终点，其余为途经点。角色一律由 `routePointRole(points, index)` 按 **seq** 判定（非数组下标），保证面板点表与地图标记方向一致。
+- **渲染**：`createRoutePointStyles(routeId, coordinates)` 为每个投影坐标生成一个 `Point` 几何 + 圆形标记；起点绿 `#2e9e4f`（r=7）、终点红 `#e5484d`（r=7）、途经灰 `#8a94a6`（r=4.5），方向端半径更大且描边更粗；标记 image 按角色模块级缓存（起点/终点颜色恒定，与 routeId 无关），几何每帧新建，绝不跨坐标复用。
+- **起点 / 终点标记始终随航路显示**（普通、选中、编辑中三态均含），缩远状态下也能读出航路方向；**途经点仅在选中且非编辑时**叠加，避免多航路同显时节点铺满屏幕。
+- 颜色常量 `ROUTE_START_COLOR` / `ROUTE_END_COLOR` 刻意不取自 8 色配色池，避免方向端被线路本身颜色淹没；`styles.css` 中的图例与点表角色色值必须与之逐字一致（由 `RoutePlannerPanel.test.ts` 断言守护，杜绝两套色）。
+- **UI 呈现**：点表新增「说明」列（`RoutePointRow.role` / `roleLabel`，派生数据不入 Store），首行标「起点」、末行标「终点」、中间标「途经」；详情区底部给出起点 / 终点图例与「按途经点先后顺序，由起点驶向终点」说明。
+- Store 与持久化格式**零改动**：方向完全由既有 `seq` 推导，旧草稿刷新后自动获得方向标记。
 
 ### Draw / Modify / 选中
 

@@ -1,7 +1,52 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-09-16
+> 最后更新: 2026-09-21
+
+---
+
+## 会话 #23 — 航路方向标记（起点 / 中途点 / 终点）
+
+**日期**: 2026-09-21
+**目标**: 航路绘制需指明航行方向——按途经点先后顺序区分并标记起点与终点。纯前端改动，Store 与 localStorage 持久化格式零改动。
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | `mapRoute.ts` 方向角色 `routePointRole` / `routePointRoleLabel`(先红后绿) | ✅ 完成 |
+| 2 | `mapRoute.ts` 起点/终点/途经标记样式工厂 `createRoutePointStyles` + 三色常量 | ✅ 完成 |
+| 3 | `createRouteStyle` 接入方向标记(起终点常显、途经点选中时显) | ✅ 完成 |
+| 4 | `RoutePlannerPanel.vue` 点表「说明」列 + 方向图例 | ✅ 完成 |
+| 5 | `styles.css` 角色标签与图例样式(色值与地图标记逐字一致) | ✅ 完成 |
+| 6 | typecheck / 全量测试 / build 全绿 | ✅ 完成(197 测试) |
+| 7 | 文档 09/10/11/12 更新 + git 提交 | ✅ 完成 |
+
+### 修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/utils/mapRoute.ts` | 修改 | 新增 `RoutePointRole` 类型 + `routePointRole()`(按 seq 判定首点=起点/末点=终点/其余=途经)+ `routePointRoleLabel()`;新增 `ROUTE_START_COLOR`/`ROUTE_END_COLOR`/`ROUTE_VIA_COLOR` 与半径常量 + `createRoutePointStyles()`(Point 几何 + 角色化圆形标记,image 按角色缓存);`createRouteStyle()` 接入——起终点标记常显、途经点仅选中且非编辑时显示;`MultiPoint` → `Point` |
+| `frontend/src/utils/mapRoute.test.ts` | 修改 | 新增 16 用例:角色判定(空/单点/首末/乱序 seq/越界)+ 中文标注(7);标记工厂(数量/三色/配色池区分/坐标落点/半径/跨航路恒定/空输入)(7);`createRouteStyle` 方向标记三态断言(2,原「选中叠加节点」用例由 3 条样式更新为 4 条) |
+| `frontend/src/types/index.ts` | 修改 | 新增 `RoutePointRole` 与 `RoutePointRow`(点表行,派生数据不入 Store) |
+| `frontend/src/components/RoutePlannerPanel.vue` | 修改 | 新增 `pointRows` computed(挂载 role/roleLabel,点表数据源改为它);点表新增「说明」列(起点/途经/终点,列标题悬停提示方向规则);详情区底部新增起点/终点图例 + 方向说明 |
+| `frontend/src/components/RoutePlannerPanel.test.ts` | 修改 | 新增 4 用例源码断言:「说明」列存在、方向规则文案、图例存在、**图例/CSS 色值必须等于地图标记色常量**(防两套色漂移) |
+| `frontend/src/styles.css` | 修改 | 角色标签 `.route-role-tag.is-start/.is-end/.is-via` 与图例 `.route-direction-*` 样式 |
+
+### 测试结果
+
+- `npm run typecheck`(vue-tsc -b):零错误
+- `npm test`(vitest run):11 个文件 **197** 个测试全部通过(177 → 197,新增 20)
+- `npm run build`:成功(MapWorkspaceView chunk 体积警告为既有问题)
+
+### 关键决策
+
+1. **方向以 `seq` 为真值,不用数组下标**:`routePointRole()` 按 seq 最小/最大判定首末点,与 `buildRouteLineString` 的排序口径完全一致;即便数组顺序被打乱(乱序输入/容错解析),点表标注与地图标记方向也不会分叉(已由用例锁定)。
+2. **起点/终点标记常显,途经点仅选中时显示**:方向是航路的固有属性,不选中也应可读;途经点在多航路同显时会铺满屏幕,故沿用原「仅选中显示」策略。编辑态同样保留起终点标记——拖拽节点时方向不丢失。
+3. **方向色不取自 8 色配色池**:起点绿 `#2e9e4f`、终点红 `#e5484d` 与配色池(橙/青/蓝/紫/红/沙/绿/浅蓝)刻意分离,避免方向端被线路自身颜色淹没。配色池中的 `#e63946` 与终点红不同色,已由断言区分。
+4. **一处定义、两处引用**:颜色常量在 `mapRoute.ts` 定义,`styles.css` 通过**源码断言**(而非 CSS 变量注入)保证逐字一致——panel 测试直接 import 常量与 `styles.css` 比对,色值漂移即测试失败。
+5. **几何每帧新建、image 按角色缓存**:标记坐标随视图变化不可复用,必须每帧建 `Point`;但起点/终点颜色与 routeId 无关(恒定),故 `CircleStyle` 按角色缓存跨帧复用,避免 styleFunction 每帧为每点 new 一个圆点样式。
+6. **零 Store / 持久化改动**:方向完全由既有 `seq` 推导,未新增字段、未升版本号,旧草稿刷新后自动获得方向标记。
 
 ---
 

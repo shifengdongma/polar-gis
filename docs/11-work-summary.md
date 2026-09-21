@@ -1,7 +1,37 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-09-16
+> 最后更新: 2026-09-21
+
+---
+
+## 会话 #23 — 航路方向标记（2026-09-21）
+
+### 修改了什么
+
+- **修改** `frontend/src/utils/mapRoute.ts`：
+  - 新增 `RoutePointRole` 类型 + `routePointRole(points, index)`（**按 seq 判定**：seq 最小者 = 起点、最大者 = 终点、其余 = 途经点）+ `routePointRoleLabel()`（起点 / 终点 / 途经）
+  - 新增 `createRoutePointStyles()` 标记工厂：每个航路点一个 `Point` 几何 + 圆形标记；起点绿 `#2e9e4f`（r=7）、终点红 `#e5484d`（r=7）、途经灰 `#8a94a6`（r=4.5）；`CircleStyle` 按角色缓存跨帧复用
+  - `createRouteStyle()` 接入方向标记：**起点 / 终点始终显示**，途经点仅选中且非编辑时显示
+- **修改** `frontend/src/components/RoutePlannerPanel.vue`：点表新增「说明」列（逐行标出起点 / 途经 / 终点，列标题悬停提示方向规则）；详情区底部新增起点 / 终点图例与「按途经点先后顺序，由起点驶向终点」说明
+- **修改** `frontend/src/types/index.ts`：新增 `RoutePointRole` / `RoutePointRow`（点表派生行，不入 Store）
+- **修改** `frontend/src/styles.css`：角色标签与图例样式（色值与地图标记逐字一致）
+- **修改** 测试：`mapRoute.test.ts`（+16 用例）、`RoutePlannerPanel.test.ts`（+4 用例源码断言，含色值一致性守护）
+- **修改** docs 09 / 10 / 11 / 12
+
+### 达到的效果
+
+- **方向一目了然**：地图上绿色圆点 = 起点、红色圆点 = 终点，方向端更大更醒目且**始终显示**（缩远、未选中、编辑中均可见），途经点选中时以小灰点叠加
+- **顺序即方向**：方向完全由途经点先后顺序（`seq`）推导，无独立「方向」设置项；面板点表「说明」列与地图标记同源同口径，不会出现标注与图形相反的情况
+- **零侵入**：Store 与 localStorage 持久化格式未改动（未新增字段、未升版本号），**旧草稿刷新后自动获得方向标记**；后端 / S-57 / WMS / GWC / Bundle / TileCache / 调度器 / 测量 / AIS 全部未触碰
+- **颜色不漂移**：地图标记色与面板 CSS 色值由源码断言绑定，重构时若只改一处会立即测试失败
+
+### 验证结果
+
+- `npm run typecheck`（vue-tsc -b）：零错误
+- `npm test`（vitest run）：11 个文件 **197** 个测试全部通过（177 → 197，新增 20）
+- `npm run build`：成功（MapWorkspaceView chunk 体积警告为既有问题）
+- 浏览器手工确认项（建议）：绘制/批量坐标/拖拽后起点终点标记位置正确、颜色可辨；切换投影后标记仍贴附首末点；编辑拖拽时方向标记不丢失
 
 ---
 

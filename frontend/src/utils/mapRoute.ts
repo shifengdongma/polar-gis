@@ -11,7 +11,7 @@ import Feature from 'ol/Feature'
 import type { Extent } from 'ol/extent'
 import { getWidth } from 'ol/extent'
 import LineString from 'ol/geom/LineString'
-import MultiPoint from 'ol/geom/MultiPoint'
+import Point from 'ol/geom/Point'
 import { fromLonLat, get as getProjection, toLonLat } from 'ol/proj'
 import { getLength } from 'ol/sphere'
 import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style'
@@ -219,6 +219,44 @@ export function calculateRouteLength(points: RoutePoint[]): number {
   return getLength(line, { projection: 'EPSG:4326' })
 }
 
+// ── 航路方向(起点 / 途经 / 终点) ─────────────────────────────────────
+
+/**
+ * 航路点角色。航路方向由途经点先后顺序定义:seq 最小者 = 起点,最大者 = 终点,
+ * 其余为途经点。角色以 seq(方向真值)而非数组下标判定。
+ */
+export type RoutePointRole = 'start' | 'via' | 'end' | 'invalid'
+
+/** 按 seq 判定第 index 个航路点的方向角色;空航路 / 下标越界返回 invalid */
+export function routePointRole(points: RoutePoint[], index: number): RoutePointRole {
+  const point = points[index]
+  if (!point) return 'invalid'
+  if (points.length === 1) return 'start' // 单点航路:既是起点也是终点,优先显示起点
+  let minSeq = Infinity
+  let maxSeq = -Infinity
+  for (const item of points) {
+    if (item.seq < minSeq) minSeq = item.seq
+    if (item.seq > maxSeq) maxSeq = item.seq
+  }
+  if (point.seq === minSeq) return 'start'
+  if (point.seq === maxSeq) return 'end'
+  return 'via'
+}
+
+/** 航路点角色中文标注(点表「说明」列);非法角色返回空串 */
+export function routePointRoleLabel(role: RoutePointRole): string {
+  switch (role) {
+    case 'start':
+      return '起点'
+    case 'end':
+      return '终点'
+    case 'via':
+      return '途经'
+    default:
+      return ''
+  }
+}
+
 // ── 样式 ──────────────────────────────────────────────────────────────
 
 /** routeId → 颜色池稳定映射(字符串哈希,不随机,刷新后颜色一致) */
@@ -227,6 +265,16 @@ export function routeColor(routeId: string): string {
   for (let i = 0; i < routeId.length; i++) hash = (hash * 31 + routeId.charCodeAt(i)) >>> 0
   return ROUTE_COLOR_POOL[hash % ROUTE_COLOR_POOL.length]!
 }
+
+/** 起点标记色 — 故意不使用配色池中的颜色,保证方向端不被线路颜色淹没 */
+export const ROUTE_START_COLOR = '#2e9e4f'
+/** 终点标记色 */
+export const ROUTE_END_COLOR = '#e5484d'
+/** 途经点标记色(跟随航路配色) */
+export const ROUTE_VIA_COLOR = '#8a94a6'
+
+export const ROUTE_START_END_MARKER_RADIUS = 7
+export const ROUTE_VIA_MARKER_RADIUS = 4.5
 
 export interface RouteStyleContext {
   isRouteVisible: (routeId: string) => boolean
@@ -258,11 +306,50 @@ function getCachedLineStyles(color: string, active: boolean, editing: boolean): 
   return cached
 }
 
+// 标记 image 与航路无关(起点恒绿、终点恒红),按角色缓存的 image 可跨帧复用
+const markerImageCache = new Map<RoutePointRole, CircleStyle>()
+
+function getMarkerImage(role: RoutePointRole): CircleStyle {
+  let image = markerImageCache.get(role)
+  if (!image) {
+    // 方向端 = 起点 / 终点:加大并加粗描边,缩远时依然可辨
+    const isDirectionEnd = role === 'start' || role === 'end'
+    const color = role === 'start' ? ROUTE_START_COLOR : role === 'end' ? ROUTE_END_COLOR : ROUTE_VIA_COLOR
+    image = new CircleStyle({
+      radius: isDirectionEnd ? ROUTE_START_END_MARKER_RADIUS : ROUTE_VIA_MARKER_RADIUS,
+      fill: new Fill({ color }),
+      stroke: new Stroke({ color: '#ffffff', width: isDirectionEnd ? 2.5 : 2 }),
+    })
+    markerImageCache.set(role, image)
+  }
+  return image
+}
+
+/**
+ * 航路点标记样式:数组下标 i 对应第 i 个投影坐标。
+ * 按途经点先后顺序即航路方向 —— 首点 = 起点(绿)、末点 = 终点(红)、其余 = 途经点;
+ * 单点航路按起点显示。几何每次新建,坐标不同不可跨帧复用;image 按角色缓存。
+ */
+export function createRoutePointStyles(_routeId: string, coordinates: number[][]): Style[] {
+  return coordinates.map((coordinate, index) => {
+    const role: RoutePointRole =
+      index === 0 || coordinates.length === 1
+        ? 'start'
+        : index === coordinates.length - 1
+          ? 'end'
+          : 'via'
+    const style = new Style({ image: getMarkerImage(role) })
+    style.setGeometry(new Point(coordinate))
+    return style
+  })
+}
+
 /**
  * 航路样式工厂:
  * - 隐藏航路返回 undefined(单条显隐,绝不使用 routeLayer.setVisible(false));
  * - 普通 2.5px、选中 4.5px、编辑中虚线(Modify 自带顶点手柄,不额外渲染节点);
- * - 选中(非编辑)时叠加航路点小圆点,便于识别节点位置。
+ * - 起点(绿)/ 终点(红)标记始终随航路显示,标明航路方向;
+ * - 选中(非编辑)时额外叠加途经点小圆点。
  */
 export function createRouteStyle(ctx: RouteStyleContext): StyleFunction {
   return (feature: FeatureLike): Style | Style[] | undefined => {
@@ -271,21 +358,13 @@ export function createRouteStyle(ctx: RouteStyleContext): StyleFunction {
     const active = ctx.isRouteActive(routeId)
     const editing = ctx.isRouteEditing(routeId)
     const lineStyles = getCachedLineStyles(routeColor(routeId), active, editing)
-    if (!active || editing) return lineStyles
     const geometry = feature.getGeometry() as LineString | undefined
     const coordinates = geometry?.getCoordinates() ?? []
     if (coordinates.length < ROUTE_MIN_POINTS) return lineStyles
-    return [
-      ...lineStyles,
-      new Style({
-        geometry: new MultiPoint(coordinates),
-        image: new CircleStyle({
-          radius: 4.5,
-          fill: new Fill({ color: routeColor(routeId) }),
-          stroke: new Stroke({ color: '#ffffff', width: 2 }),
-        }),
-      }),
-    ]
+    const directionStyles = createRoutePointStyles(routeId, coordinates)
+    // 选中且非编辑时,途经点也一并显示;其余情况只保留起点 / 终点方向标记
+    if (!active || editing) return [...lineStyles, ...directionStyles.filter((_, index) => index === 0 || index === coordinates.length - 1)]
+    return [...lineStyles, ...directionStyles]
   }
 }
 

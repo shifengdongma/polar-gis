@@ -1374,6 +1374,17 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .route-planner-drawer .route-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 6px; }
 .route-planner-drawer .route-length { font-size: 12px; color: var(--muted); }
 
+/* 航路方向:颜色与地图画面标记严格一致(mapRoute.ts ROUTE_START_COLOR / ROUTE_END_COLOR) */
+.route-planner-drawer .route-role-tag { font-size: 11px; font-weight: 700; line-height: 1.2; }
+.route-planner-drawer .route-role-tag.is-start { color: #2e9e4f; }
+.route-planner-drawer .route-role-tag.is-end { color: #e5484d; }
+.route-planner-drawer .route-role-tag.is-via { color: var(--muted); }
+.route-planner-drawer .route-direction-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.route-planner-drawer .route-direction-item { display: inline-flex; align-items: center; gap: 4px; }
+.route-planner-drawer .route-direction-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #ffffff; box-shadow: 0 0 0 1px rgba(6, 20, 32, 0.35); }
+.route-planner-drawer .route-start-dot { background: #2e9e4f; }
+.route-planner-drawer .route-end-dot { background: #e5484d; }
+
 .route-planner-drawer .route-batch { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .route-planner-drawer .route-batch-title { margin-bottom: 8px; font-size: 12px; color: var(--muted); }
 .route-planner-drawer .route-batch-apply { margin-top: 8px; }
