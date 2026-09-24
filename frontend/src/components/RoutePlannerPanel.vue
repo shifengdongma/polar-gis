@@ -11,7 +11,15 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { RouteDrawingApi } from '../composables/useRouteDrawing'
 import { useRoutesStore } from '../stores/routes'
 import type { RoutePoint, RoutePointRow } from '../types'
-import { calculateRouteLength, parseRouteCoordinateText, routePointRole, routePointRoleLabel } from '../utils/mapRoute'
+import {
+  calculateRouteLength,
+  formatBearing,
+  formatDistance,
+  parseRouteCoordinateText,
+  routePointRole,
+  routePointRoleLabel,
+  routeSegments,
+} from '../utils/mapRoute'
 
 const props = defineProps<{ visible: boolean; drawing: RouteDrawingApi }>()
 const emit = defineEmits<{ (e: 'update:visible', value: boolean): void }>()
@@ -26,21 +34,32 @@ const activeRoute = computed(() => store.activeRoute)
 const interactionMode = computed(() => store.interactionMode)
 
 /**
- * 点表数据:在原航路点上挂载方向角色。
+ * 点表数据:在原航路点上挂载方向角色与「入站航段」信息。
  * 途经点先后顺序即航路方向 —— 首点为起点、末点为终点(按 seq 判定,见 mapRoute)。
+ * 航段信息与地图浮窗共用 mapRoute.routeSegments 同一份计算结果,不会出现两套数字。
+ * 起点没有入站航段,按约定显示占位符。
  */
 const pointRows = computed<RoutePointRow[]>(() => {
   const points = activeRoute.value?.points ?? []
-  return points.map((point, index) => {
+  const sorted = [...points].sort((a, b) => a.seq - b.seq)
+  const segments = routeSegments(points)
+  return sorted.map((point, index) => {
     const role = routePointRole(points, index)
-    return { ...point, role, roleLabel: routePointRoleLabel(role) }
+    const inbound = index > 0 ? segments[index - 1] : undefined
+    return {
+      ...point,
+      role,
+      roleLabel: routePointRoleLabel(role),
+      // 起点没有入站航段 → 占位符;累计距离在起点是真实有效的 0,如实显示
+      inboundLegText: inbound ? `${formatDistance(inbound.distanceMeters)} · 初始真方位 ${formatBearing(inbound.initialBearingDeg)}` : '—',
+      cumulativeDistanceText: inbound ? formatDistance(inbound.cumulativeMeters) : formatDistance(0),
+    }
   })
 })
 
 const activeRouteLengthText = computed(() => {
   if (!activeRoute.value) return ''
-  const meters = calculateRouteLength(activeRoute.value.points)
-  return meters > 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters.toFixed(1)} m`
+  return formatDistance(calculateRouteLength(activeRoute.value.points))
 })
 
 watch(
@@ -127,6 +146,30 @@ function handleAddPoint() {
   if (!result.ok) ElMessage.error(result.error)
 }
 
+/**
+ * 点表行点击 → 在地图上定位并短暂高亮该航路点。
+ * 只做定位:不改航路数据、不进入绘制/编辑、不触发测量或要素识别。
+ * 点中输入框 / 按钮时不定位 —— 否则编辑坐标或删除航路点时地图会乱飞。
+ */
+function handleLocatePoint(row: RoutePointRow, _column?: unknown, event?: Event) {
+  const target = event?.target as HTMLElement | null | undefined
+  if (target?.closest('input, button, .el-input, .el-button')) return
+  locatePoint(row)
+}
+
+/** 「#」列按钮(el-table 的 row-click 不带下标,这里按下标取行) */
+function handleLocateRow(index: number) {
+  const row = pointRows.value[index]
+  if (row) locatePoint(row)
+}
+
+function locatePoint(row: RoutePointRow) {
+  if (!activeRoute.value) return
+  // 绘制/拖拽编辑中不抢视图,避免与 Modify 拖拽互相打断
+  if (interactionMode.value !== 'idle') return
+  props.drawing.locateRoutePoint(activeRoute.value.id, row.id)
+}
+
 function handleRemovePoint(point: RoutePoint) {
   if (!activeRoute.value) return
   if (activeRoute.value.points.length <= 2) {
@@ -202,7 +245,7 @@ function handleApplyBatch() {
     modal-penetrable
     :lock-scroll="false"
     direction="rtl"
-    size="440px"
+    size="520px"
     class="route-planner-drawer"
   >
     <template #header>
@@ -259,9 +302,13 @@ function handleApplyBatch() {
           <el-input v-model="nameInput" size="small" class="route-name-input" @change="commitName" />
         </div>
 
-        <el-table :key="rowVersion" :data="pointRows" size="small" class="route-point-table" max-height="280">
-          <el-table-column label="#" width="40" align="center">
-            <template #default="{ $index }">{{ $index + 1 }}</template>
+        <el-table :key="rowVersion" :data="pointRows" size="small" class="route-point-table" max-height="280" @row-click="handleLocatePoint">
+          <el-table-column label="#" width="58" align="center">
+            <template #default="{ $index }">
+              <el-button size="small" text type="primary" title="在地图上定位该航路点" @click.stop="handleLocateRow($index)">
+                {{ $index + 1 }}
+              </el-button>
+            </template>
           </el-table-column>
           <el-table-column label="说明" width="52" align="center">
             <template #header>
@@ -269,6 +316,22 @@ function handleApplyBatch() {
             </template>
             <template #default="{ row }">
               <span class="route-role-tag" :class="`is-${row.role}`">{{ row.roleLabel }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="入站航段" min-width="150">
+            <template #header>
+              <span title="该点与前一个航路点之间的球面最短路径(大圆)距离,以及该段的初始真方位角(非磁方位,也不代表整段恒定航向);起点没有入站航段">入站航段</span>
+            </template>
+            <template #default="{ row }">
+              <span class="route-leg-text">{{ row.inboundLegText }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="累计" min-width="104">
+            <template #header>
+              <span title="从起点沿航路点顺序累加至该点的距离">累计</span>
+            </template>
+            <template #default="{ row }">
+              <span class="route-leg-text">{{ row.cumulativeDistanceText }}</span>
             </template>
           </el-table-column>
           <el-table-column label="经度(-180~180)">
@@ -336,6 +399,11 @@ function handleApplyBatch() {
           </span>
           <span class="route-direction-note">航路方向：按途经点先后顺序，由起点驶向终点</span>
         </div>
+        <p class="route-units-note">
+          坐标：WGS84 经纬度（经度, 纬度）· 距离：km / NM（1 NM = 1852 m）· 方位：初始真方位角（非磁方位）
+          · 距离为按航路点顺序的球面最短路径（大圆）分段之和，为近似地表距离。
+          <strong>模拟航路，仅供展示与交互验证，不作为实际导航依据。</strong>
+        </p>
       </div>
     </template>
     <el-empty v-else description="请先选择或新建一条航路" :image-size="60" />

@@ -26,6 +26,8 @@ import OlMap from 'ol/Map'
 import View from 'ol/View'
 import Feature from 'ol/Feature'
 import Point from 'ol/geom/Point'
+import type LineString from 'ol/geom/LineString'
+import type Polygon from 'ol/geom/Polygon'
 import Draw from 'ol/interaction/Draw'
 import TileLayer from 'ol/layer/Tile'
 import BaseLayer from 'ol/layer/Base'
@@ -38,18 +40,28 @@ import XYZ from 'ol/source/XYZ'
 import VectorSource from 'ol/source/Vector'
 import WMTSCapabilities from 'ol/format/WMTSCapabilities'
 import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style'
-import { getArea, getLength } from 'ol/sphere'
 import { fromLonLat, toLonLat, transformExtent } from 'ol/proj'
-import { get as getProjection } from 'ol/proj'
+import { get as getProjection, getPointResolution } from 'ol/proj'
 import { register } from 'ol/proj/proj4'
+import { unByKey } from 'ol/Observable'
 import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
+import RouteInfoFlyout from '../components/RouteInfoFlyout.vue'
 import RoutePlannerPanel from '../components/RoutePlannerPanel.vue'
 import WeatherChart from '../components/WeatherChart.vue'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useProjectsStore } from '../stores/projects'
 import { useRoutesStore } from '../stores/routes'
+import {
+  HOVER_MIN_GROUND_RESOLUTION_METERS,
+  buildMeasureGeometry,
+  formatMeasureResult,
+  hoverDecimalsForGroundResolution,
+  measureGeometryToDraft,
+  projectedToLonLatSafe,
+  type MeasureDraft,
+} from '../utils/mapMeasure'
 import type {
   BaseMapRecord,
   BulkLayerProgress,
@@ -112,6 +124,7 @@ import {
 import { fetchRenderPlan } from '../api/projects'
 import type { MapTilePerformanceStats } from '../types'
 import { parseWgs84Extent } from '../utils/mapExtent'
+import { formatLonLat, shiftCoordinateIntoWorldCopy } from '../utils/mapRoute'
 import { s57LayerTitle } from '../utils/s57ObjectNames'
 
 interface RuntimeLayer {
@@ -159,6 +172,23 @@ const layerPanelCollapsed = ref(false)
 const aisVisible = ref(false)
 const coordinateText = ref('—')
 const measureText = ref('')
+/** 测量激活态(唯一真值):驱动工具栏高亮、singleclick 守卫与 Draw 生命周期 */
+const measureMode = ref<'none' | 'LineString' | 'Polygon'>('none')
+/** 测量真值(WGS84)。结果显示只由它推导,故与投影无关 */
+const measureDraft = shallowRef<MeasureDraft | null>(null)
+
+// ── 地图内坐标提示 ───────────────────────────────────────────────────
+// 复用下方 pointermove 监听 + requestAnimationFrame 合帧:每帧最多更新一次。
+// 与底部状态栏(恒显五位小数)不同,这里只在视口地面分辨率足够细时出现,
+// 且小数位随分辨率变化 —— 避免暗示地图本身给不出的定位精度。
+const hover = ref<{ x: number; y: number; flipX: boolean; flipY: boolean; text: string } | null>(null)
+let hoverCoordinate: number[] | null = null
+let hoverPixel: number[] | null = null
+let hoverRaf = 0
+/** 触控设备没有 hover 能力;逐事件再按 pointerType 兜底(混合设备) */
+let hoverEnabled = true
+/** 地图视口元素,用于卸载时摘掉 pointerleave 监听 */
+let hoverViewport: HTMLElement | null = null
 const queryMode = ref(false)
 const weatherMode = ref(false)
 const weatherVisible = ref(false)
@@ -182,10 +212,73 @@ const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
 const routePanelVisible = ref(false)
 
-/** 结束测量 Draw 但保留已有测量结果(source / 文本不清除) */
+/**
+ * 指针所在位置的地面分辨率(米/像素)。
+ *
+ * 必须用 getPointResolution 而不是 zoom:同一个 zoom 数字在 EPSG:3857 与
+ * EPSG:3413 下的地面精度相差数倍(实测 3857 zoom4 ≈ 2532 m/px,3413 zoom4
+ * ≈ 39500 m/px),且同一投影内也随纬度变化。传入指针坐标即可得到该点的真实值。
+ */
+function groundResolutionMeters(coordinate: number[]): number {
+  if (!map) return Number.NaN
+  const view = map.getView()
+  const resolution = view.getResolution()
+  if (resolution === undefined || !Number.isFinite(resolution)) return Number.NaN
+  return getPointResolution(view.getProjection(), resolution, coordinate, 'm')
+}
+
+/** rAF 回调:一帧最多一次 DOM 更新 */
+function flushHover() {
+  hoverRaf = 0
+  const coordinate = hoverCoordinate
+  const pixel = hoverPixel
+  if (!hoverEnabled || !coordinate || !pixel || routeFlyout.value) {
+    hover.value = null
+    return
+  }
+  const groundResolution = groundResolutionMeters(coordinate)
+  if (!Number.isFinite(groundResolution) || groundResolution > HOVER_MIN_GROUND_RESOLUTION_METERS) {
+    // 视图太粗:显示经纬度只会暗示地图给不出的精度
+    hover.value = null
+    return
+  }
+  // 投影范围外 / 非法坐标 -> 不显示(proj4 对 3413 越界坐标会给「有限但无意义」
+  // 的值,不会返回 NaN,所以必须显式判定)
+  const lonLat = projectedToLonLatSafe(coordinate, currentCrs.value)
+  if (!lonLat) {
+    hover.value = null
+    return
+  }
+  const [width, height] = map?.getSize() ?? [0, 0]
+  hover.value = {
+    x: pixel[0],
+    y: pixel[1],
+    flipX: pixel[0] > width * 0.6,
+    flipY: pixel[1] > height * 0.65,
+    text: formatLonLat(lonLat[0], lonLat[1], hoverDecimalsForGroundResolution(groundResolution)),
+  }
+}
+
+function scheduleHover() {
+  if (!hoverRaf) hoverRaf = requestAnimationFrame(flushHover)
+}
+
+/** 隐藏提示并丢弃待处理帧(地图外 / 拖动 / 触控 / 销毁 / 非法坐标) */
+function hideHover() {
+  hoverCoordinate = null
+  hoverPixel = null
+  if (hoverRaf) {
+    cancelAnimationFrame(hoverRaf)
+    hoverRaf = 0
+  }
+  hover.value = null
+}
+
+/** 结束测量 Draw 但保留已有测量结果(source / 真值 / 文本不清除) */
 function stopMeasureInteraction() {
   if (measureInteraction && map) map.removeInteraction(measureInteraction)
   measureInteraction = null
+  measureMode.value = 'none'
 }
 
 /** 航路绘制/编辑与要素识别/气象/测量互斥:进入航路交互前关闭其余地图交互 */
@@ -197,12 +290,16 @@ function deactivateOtherMapInteractions() {
 
 function toggleQueryMode() {
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
+  stopMeasureInteraction() // 互斥:否则残留的测量 Draw 会静默吃掉所有点击
+  closeRouteFlyout() // 识别模式下不让航路浮窗抢占点击
   queryMode.value = !queryMode.value
   weatherMode.value = false
 }
 
 function toggleWeatherMode() {
   routesStore.setInteractionMode('idle')
+  stopMeasureInteraction()
+  closeRouteFlyout()
   weatherMode.value = !weatherMode.value
   queryMode.value = false
 }
@@ -217,6 +314,128 @@ const routeDrawing = useRouteDrawing({
 watch(routePanelVisible, (open) => {
   if (!open) routesStore.setInteractionMode('idle')
 })
+
+// ── 航线信息浮窗(地图内) ──────────────────────────────────────────
+// 不用 ol/Overlay:浮层挂在 .map-canvas 的兄弟节点 .map-overlay-root 上(与
+// .map-tools / .map-status 同一模式),几何上与地图视口完全重合 ——
+// 既不与 OpenLayers 争抢 target 的子节点,也不参与地图的指针事件。
+interface RouteFlyoutState {
+  routeId: string
+  /** 点击处 WGS84 真值(业务真值,不落 Store),投影切换后据此重锚 */
+  lonLat: [number, number]
+  /** 锚点投影坐标,可能是渲染几何所在的世界副本 */
+  projected: number[]
+  /** projected 所属投影 */
+  crs: string
+  /** 选中航段(1-based);null 表示只选中了整条航路 */
+  segmentIndex: number | null
+}
+
+const routeFlyout = shallowRef<RouteFlyoutState | null>(null)
+const routeFlyoutPixel = ref({ x: 0, y: 0, flipX: false, flipY: false })
+let stopRouteFlyoutRender: (() => void) | null = null
+
+const routeFlyoutRoute = computed(() => {
+  const state = routeFlyout.value
+  if (!state) return null
+  return routesStore.routes.find((route) => route.id === state.routeId) ?? null
+})
+const routeFlyoutSegmentIndex = computed(() => routeFlyout.value?.segmentIndex ?? null)
+
+/** 只在浮窗打开期间挂 postrender:平移/缩放时重锚,关闭后零开销 */
+function attachRouteFlyoutRender() {
+  if (!map || stopRouteFlyoutRender) return
+  const key = map.on('postrender', updateRouteFlyoutPixel)
+  stopRouteFlyoutRender = () => unByKey(key)
+}
+
+function detachRouteFlyoutRender() {
+  if (stopRouteFlyoutRender) {
+    stopRouteFlyoutRender()
+    stopRouteFlyoutRender = null
+  }
+}
+
+/**
+ * 重算浮窗锚点像素并夹取在地图视口内(右侧让开航路面板抽屉)。
+ * 位置只由 map.getSize() 推导,不读 DOM 布局,因此可以安全地每帧调用。
+ */
+function updateRouteFlyoutPixel() {
+  const state = routeFlyout.value
+  if (!map || !state) return
+  if (state.crs !== currentCrs.value) {
+    // 投影切换:由 WGS84 真值重算,再平移到与渲染几何同一世界副本
+    // (3857 下 fromLonLat 不回绕、toLonLat 会回绕,不这么做锚点会跑到另一个副本)
+    const extent = routeDrawing.getRouteExtent(state.routeId)
+    const projected = fromLonLat(state.lonLat, currentCrs.value)
+    state.projected = extent ? shiftCoordinateIntoWorldCopy(projected, extent, currentCrs.value) : projected
+    state.crs = currentCrs.value
+  }
+  const pixel = map.getPixelFromCoordinate(state.projected)
+  if (!pixel) return
+  const [width, height] = map.getSize() ?? [0, 0]
+  const reservedRight = routePanelVisible.value ? 540 : 16
+  const maxX = Math.max(24, width - reservedRight)
+  const x = Math.min(Math.max(pixel[0], 8), maxX)
+  const y = Math.min(Math.max(pixel[1], 8), Math.max(24, height - 12))
+  const flipX = x > maxX - 320
+  const flipY = y > height - 300
+  // postrender 每帧都会调用;仅当锚点真的移动时才写 ref,避免每帧重渲染浮窗
+  const current = routeFlyoutPixel.value
+  if (current.x === x && current.y === y && current.flipX === flipX && current.flipY === flipY) return
+  routeFlyoutPixel.value = { x, y, flipX, flipY }
+}
+
+function openRouteFlyout(routeId: string, coordinate: number[], lonLat: [number, number], segmentIndex: number | null) {
+  routeFlyout.value = {
+    routeId,
+    lonLat,
+    projected: [...coordinate],
+    crs: currentCrs.value,
+    segmentIndex,
+  }
+  routeDrawing.highlightSegment(routeId, segmentIndex)
+  attachRouteFlyoutRender()
+  updateRouteFlyoutPixel()
+}
+
+/** 关闭浮窗。只清地图侧展示态,绝不改动航路数据与选中航路 */
+function closeRouteFlyout() {
+  if (!routeFlyout.value) return
+  routeFlyout.value = null
+  routeDrawing.highlightSegment(null, null)
+  detachRouteFlyoutRender()
+}
+
+/**
+ * 浮窗与 Store 对账:航路被删除 / 隐藏 / 面板关闭 / 进入绘制编辑态 → 关闭;
+ * 航段序号失效(航点被删) → 清掉高亮;其余情况内容直接读 Store 实时刷新。
+ */
+function syncRouteFlyout() {
+  const state = routeFlyout.value
+  if (!state) return
+  const route = routesStore.routes.find((item) => item.id === state.routeId)
+  if (!route || !route.visible || !routePanelVisible.value || routesStore.interactionMode !== 'idle') {
+    closeRouteFlyout()
+    return
+  }
+  if (state.segmentIndex !== null && state.segmentIndex > route.points.length - 1) {
+    routeFlyout.value = { ...state, segmentIndex: null }
+    routeDrawing.highlightSegment(null, null)
+  }
+  updateRouteFlyoutPixel()
+}
+
+watch(
+  [
+    () => routesStore.revision,
+    () => routesStore.activeRouteId,
+    () => routesStore.interactionMode,
+    routePanelVisible,
+    () => currentCrs.value,
+  ],
+  () => syncRouteFlyout(),
+)
 
 // ── Batch loading state ────────────────────────────────────────────
 const selectedDatasetIds = shallowRef(new Set<string>())
@@ -540,21 +759,40 @@ async function buildMap() {
   map.addLayer(routeDrawing.layer)
   applyBaseMapVisibility()
   fitProjectInitialExtent()
+  hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
+  hoverViewport = map.getViewport()
+  hoverViewport.addEventListener('pointerleave', hideHover)
   map.on('pointermove', (event) => {
     const [longitude, latitude] = toLonLat(event.coordinate, currentCrs.value)
     coordinateText.value = `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`
+    // 拖动期间不显示(平移时提示会跟着乱跑);非鼠标指针(触控)没有悬停语义
+    const original = event.originalEvent as PointerEvent | undefined
+    if (!hoverEnabled || event.dragging || original?.pointerType === 'touch' || original?.pointerType === 'pen') {
+      hideHover()
+      return
+    }
+    hoverCoordinate = event.coordinate
+    hoverPixel = event.pixel
+    scheduleHover()
   })
   map.on('singleclick', async (event) => {
     // 航路绘制/编辑或测量进行中时,不触发要素识别 / 气象查询 / 航路选中
-    if (routesStore.interactionMode !== 'idle' || measureInteraction) return
+    if (routesStore.interactionMode !== 'idle' || measureMode.value !== 'none') return
     const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
-    else if (routePanelVisible.value) routeDrawing.selectRouteAtPixel(event.pixel)
+    else if (routePanelVisible.value) {
+      // 命中航路 → 选中并弹浮窗;命中空白 → 只关浮窗,不动选中航路
+      const pick = routeDrawing.pickRouteAtPixel(event.pixel, event.coordinate)
+      if (pick) openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
+      else closeRouteFlyout()
+    }
   })
   map.on('moveend', () => {
     window.clearTimeout(reconcileTimer)
     reconcileTimer = window.setTimeout(reconcileRenderPlan, SMART_RECONCILE_DEBOUNCE_MS)
+    // 滚轮缩放后指针没动,提示里的坐标/小数位需要按新分辨率自校正
+    if (hoverCoordinate) scheduleHover()
   })
   // Initial reconcile
   reconcileRenderPlan()
@@ -1082,6 +1320,7 @@ function switchProjection(crs: string) {
   fitProjectInitialExtent()
   reloadAisGeometry()
   routeDrawing.reloadRouteGeometry()
+  syncMeasureForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -1927,34 +2166,84 @@ function zoomToLayer(runtime: RuntimeLayer) {
   map.getView().fit(extent as [number, number, number, number], { padding: [70, 70, 70, 390], duration: 500 })
 }
 
+/**
+ * 记录测量真值并生成结果文本。
+ * 文本一律由 WGS84 真值生成(与当前投影无关),因此切换投影后重算必然同值 ——
+ * 不存在「旧投影几何配上新投影解释」的错值。
+ */
+function setMeasureDraft(draft: MeasureDraft | null) {
+  measureDraft.value = draft
+  measureText.value = draft ? formatMeasureResult(draft) : ''
+}
+
+/**
+ * 按当前投影从真值重建测量显示几何。
+ * 只在投影切换后调用:常规测量路径下 ol Draw 画出的要素本身就是当前投影的正确
+ * 几何,不需要重建 —— 而且 drawend 是在 ol 把要素加入 source **之前**派发的
+ * (ol/interaction/Draw.js finishDrawing),若在 drawend 里 clear source,
+ * 会与 ol 随后的 addFeature 撞成重复图形。
+ */
+function rebuildMeasureGeometry() {
+  measureSource.clear()
+  const draft = measureDraft.value
+  if (!draft) return
+  const geometry = buildMeasureGeometry(draft, currentCrs.value)
+  if (geometry) measureSource.addFeature(new Feature(geometry))
+}
+
 function activateMeasure(type: 'LineString' | 'Polygon') {
   if (!map) return
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
+  queryMode.value = false
+  weatherMode.value = false
+  closeRouteFlyout() // 测量期间不弹航路浮窗,也不误选航线
   if (measureInteraction) map.removeInteraction(measureInteraction)
   measureSource.clear()
+  measureDraft.value = null // 开始新测量即作废旧结果
   measureText.value = '单击开始绘制，双击结束'
   measureInteraction = new Draw({ source: measureSource, type })
+  measureMode.value = type
   measureInteraction.on('drawend', (event) => {
     const geometry = event.feature.getGeometry()
-    if (!geometry) return
-    if (type === 'LineString') {
-      const meters = getLength(geometry, { projection: currentCrs.value })
-      measureText.value = meters > 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters.toFixed(1)} m`
-    } else {
-      const squareMeters = getArea(geometry, { projection: currentCrs.value })
-      measureText.value = squareMeters > 1_000_000 ? `${(squareMeters / 1_000_000).toFixed(2)} km²` : `${squareMeters.toFixed(1)} m²`
-    }
+    // 先摘掉 Draw 再取真值,避免测量态残留阻塞 singleclick
     if (measureInteraction && map) map.removeInteraction(measureInteraction)
     measureInteraction = null
+    measureMode.value = 'none'
+    if (!geometry) return
+    // 只落真值与文本;显示几何由 ol 随后加入 source(即用户实际画出的形状)
+    setMeasureDraft(measureGeometryToDraft(geometry as LineString | Polygon, currentCrs.value))
   })
   map.addInteraction(measureInteraction)
 }
 
 function clearMeasure() {
   measureSource.clear()
-  measureText.value = ''
+  setMeasureDraft(null)
   if (measureInteraction && map) map.removeInteraction(measureInteraction)
   measureInteraction = null
+  measureMode.value = 'none'
+}
+
+/**
+ * 投影切换后的测量生命周期(与 reloadAisGeometry / reloadRouteGeometry 同范式)。
+ *
+ * 绘制进行中:结束 Draw 并提示重新测量 —— 绝不把旧 CRS 的草图坐标当作新 CRS
+ * 几何参与计算。
+ * 已完成:保留 WGS84 真值,按新投影重建显示几何,结果由同一组地理点重新生成,
+ * 因此数值不随投影变化,同时不会留下「位置错误却看似有效」的旧图形。
+ */
+function syncMeasureForProjection() {
+  if (measureMode.value !== 'none') {
+    stopMeasureInteraction()
+    measureSource.clear()
+    setMeasureDraft(null)
+    measureText.value = '投影已切换，请重新测量'
+    ElMessage.warning('投影已切换，测量已取消，请重新测量')
+    return
+  }
+  if (!measureDraft.value) return
+  rebuildMeasureGeometry()
+  setMeasureDraft(measureDraft.value)
 }
 
 async function captureMap() {
@@ -2166,6 +2455,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  closeRouteFlyout()
+  hideHover()
+  hoverViewport?.removeEventListener('pointerleave', hideHover)
+  hoverViewport = null
   routeDrawing.dispose()
   stopPerfPoll()
   bulkAbortController?.abort()
@@ -2344,17 +2637,38 @@ onBeforeUnmount(() => {
       </div>
     </aside>
     <div ref="mapTarget" class="map-canvas"></div>
+    <!-- 地图内浮层容器:与 .map-canvas 同级同框(不放进 OpenLayers 的 target),
+         容器本身 pointer-events:none,不吞地图指针事件;只有浮窗面板可交互 -->
+    <div class="map-overlay-root">
+      <div
+        v-if="hover"
+        class="map-hover-coord"
+        :class="{ 'is-flip-x': hover.flipX, 'is-flip-y': hover.flipY }"
+        :style="{ left: `${hover.x}px`, top: `${hover.y}px` }"
+      >{{ hover.text }}</div>
+      <RouteInfoFlyout
+        v-if="routeFlyoutRoute"
+        :route="routeFlyoutRoute"
+        :pixel="routeFlyoutPixel"
+        :segment-index="routeFlyoutSegmentIndex"
+        :drawing="routeDrawing"
+        @close="closeRouteFlyout"
+      />
+    </div>
     <div class="map-tools glass-panel">
       <el-tooltip content="要素识别" placement="left"><button :class="{ active: queryMode }" @click="toggleQueryMode"><el-icon><Location /></el-icon></button></el-tooltip>
       <el-tooltip content="点位气象演示" placement="left"><button :class="{ active: weatherMode }" @click="toggleWeatherMode"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
-      <el-tooltip content="测量距离" placement="left"><button @click="activateMeasure('LineString')"><el-icon><MapLocation /></el-icon></button></el-tooltip>
-      <el-tooltip content="测量面积" placement="left"><button @click="activateMeasure('Polygon')"><el-icon><FullScreen /></el-icon></button></el-tooltip>
-      <el-tooltip content="航路规划模拟" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
+      <el-tooltip content="测量距离" placement="left"><button :class="{ active: measureMode === 'LineString' }" @click="activateMeasure('LineString')"><el-icon><MapLocation /></el-icon></button></el-tooltip>
+      <el-tooltip content="测量面积" placement="left"><button :class="{ active: measureMode === 'Polygon' }" @click="activateMeasure('Polygon')"><el-icon><FullScreen /></el-icon></button></el-tooltip>
+      <el-tooltip content="航路规划模拟 · 打开后可在地图上点选航路查看详情" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
       <el-tooltip content="地图截图" placement="left"><button @click="captureMap"><el-icon><Camera /></el-icon></button></el-tooltip>
       <el-tooltip content="打印地图" placement="left"><button @click="printMap"><el-icon><Printer /></el-icon></button></el-tooltip>
     </div>
     <div class="map-status">
-      <span>{{ coordinateText }}</span><span>{{ currentCrs }}</span><span v-if="measureText" class="measure-result">{{ measureText }} <button @click="clearMeasure">清除</button></span>
+      <span>{{ coordinateText }}</span><span>{{ currentCrs }}</span>
+      <!-- 可发现性:航路选中仅在面板打开时可用,这里把该条件说清楚 -->
+      <span v-if="routePanelVisible" class="route-select-hint">点击地图上的航路可查看详情</span>
+      <span v-if="measureText" class="measure-result">{{ measureText }} <button @click="clearMeasure">清除</button></span>
       <template v-if="perfDisplay">
         <span class="perf-stat" title="活动图层">活动 {{ perfDisplay.activeLayerCount }}</span>
         <span class="perf-stat" title="等待瓦片">瓦片 {{ perfDisplay.pendingTileCount }}</span>

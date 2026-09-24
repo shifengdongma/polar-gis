@@ -60,3 +60,59 @@ describe('RoutePlannerPanel 航路方向标注', () => {
     expect(styles).toContain(`.route-role-tag.is-via`)
   })
 })
+
+/**
+ * 航段信息(任务 C1)与单位说明(任务 C3):
+ * 航段必须与地图浮窗同源(mapRoute.routeSegments),起点没有入站航段要显示占位符,
+ * 单位与方位口径必须写在界面上,不能只在代码里正确。
+ */
+describe('RoutePlannerPanel 航段与单位说明', () => {
+  it('点表必须有「入站航段」与「累计」两列,且数据来自 routeSegments', () => {
+    expect(source).toContain('label="入站航段"')
+    expect(source).toContain('label="累计"')
+    expect(source).toContain('routeSegments')
+    expect(source).toContain('inboundLegText')
+    expect(source).toContain('cumulativeDistanceText')
+  })
+
+  it('起点没有入站航段,必须显示占位符', () => {
+    expect(source).toContain(": '—'")
+  })
+
+  it('方位角必须写明是「初始真方位」,不得暗示磁方位或整段恒定航向', () => {
+    expect(source).toContain('初始真方位')
+    expect(source).toContain('非磁方位')
+    expect(source).not.toContain('磁方位角')
+  })
+
+  it('必须给出坐标系、经纬度顺序、km/NM 与 1 NM = 1852 m 的说明', () => {
+    expect(source).toContain('WGS84')
+    expect(source).toContain('经度, 纬度')
+    expect(source).toContain('1 NM = 1852 m')
+    expect(source).toContain('不作为实际导航依据')
+  })
+
+  it('点表可定位航路点,且定位路径只调用 locateRoutePoint(不改数据、不入编辑态、不触发测量)', () => {
+    expect(source).toContain('@row-click="handleLocatePoint"')
+    // 精确断言 locatePoint 函数体:定位不得写数据、不得进入绘制/编辑、不得触发测量
+    const locateBody = source.match(/function locatePoint\([\s\S]*?\n\}/)?.[0] ?? ''
+    expect(locateBody).toContain('locateRoutePoint')
+    for (const forbidden of [
+      'replaceRoutePoints',
+      'updateRoutePoint',
+      'addRoutePoint',
+      'removeRoutePoint',
+      'deleteRoute',
+      'startRouteModify',
+      'startRouteDraw',
+      'setInteractionMode',
+      'fitRoute',
+    ]) {
+      expect(locateBody).not.toContain(forbidden)
+    }
+  })
+
+  it('抽屉宽度与 fitRoute 右侧让位保持配套(520px 抽屉)', () => {
+    expect(source).toContain('size="520px"')
+  })
+})

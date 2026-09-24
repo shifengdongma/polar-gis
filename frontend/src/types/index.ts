@@ -507,8 +507,16 @@ export type RouteInteractionMode = 'idle' | 'draw' | 'edit'
  */
 export type RoutePointRole = 'start' | 'via' | 'end' | 'invalid'
 
-/** 点表行:航路点 + 由 seq 推导出的方向角色(派生数据,不进入 Store) */
-export interface RoutePointRow extends RoutePoint {
+/** 航路点派生行:航路点 + 由 seq 推导出的方向角色(不进入 Store) */
+export interface RoutePointRoleRow extends RoutePoint {
   role: RoutePointRole
   roleLabel: string
+}
+
+/** 面板点表行:在派生行基础上再加「入站航段 / 累计」两列的文本 */
+export interface RoutePointRow extends RoutePointRoleRow {
+  /** 「入站航段」列:该段距离 · 初始真方位角;起点没有入站航段 → 「—」 */
+  inboundLegText: string
+  /** 「累计」列:从起点累加至该点的距离 */
+  cumulativeDistanceText: string
 }

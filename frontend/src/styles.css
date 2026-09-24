@@ -1385,10 +1385,89 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .route-planner-drawer .route-start-dot { background: #2e9e4f; }
 .route-planner-drawer .route-end-dot { background: #e5484d; }
 
+/* 航段列(入站航段 / 累计):窄列内换行,避免数字被截断 */
+.route-planner-drawer .route-point-table .route-leg-text { display: inline-block; font-size: 11px; line-height: 1.35; white-space: normal; }
+.route-planner-drawer .route-point-table .el-button.is-text { padding: 0 2px; }
+/* 坐标与单位说明:常驻一行文字,不占地图面积,不采用可折叠帮助块 */
+.route-planner-drawer .route-units-note { margin: 8px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.route-planner-drawer .route-units-note strong { color: #c46a1c; }
+
 .route-planner-drawer .route-batch { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .route-planner-drawer .route-batch-title { margin-bottom: 8px; font-size: 12px; color: var(--muted); }
 .route-planner-drawer .route-batch-apply { margin-top: 8px; }
 
 @media print {
   .route-planner-drawer { display: none !important; }
+}
+
+/* ── 地图内浮层(坐标提示 / 航线信息浮窗)────────────────────────────────
+   容器与 .map-canvas 同级同框,pointer-events:none —— 地图平移/缩放/绘制/
+   航点拖拽的指针事件完全不受影响;只有浮窗面板(.route-info-flyout)例外。
+   坐标提示恒为 pointer-events:none,既不被指针遮挡也不拦截事件。
+   坐标值颜色与 .route-flyout-role 的三个方向色必须与 mapRoute.ts 的
+   ROUTE_START_COLOR / ROUTE_END_COLOR / ROUTE_VIA_COLOR 逐字一致。 */
+.map-overlay-root { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+
+.map-hover-coord {
+  position: absolute; padding: 3px 7px; white-space: nowrap; pointer-events: none;
+  color: #d7e8ef; font-size: 10px; line-height: 1.4;
+  border: 1px solid rgba(104, 193, 207, .28); border-radius: 4px;
+  background: rgba(7, 25, 37, .88); box-shadow: 0 6px 18px rgba(7, 17, 29, .28);
+  transform: translate(14px, 14px);
+}
+/* 靠近视口右/下边缘时翻到指针另一侧,避免提示越出地图 */
+.map-hover-coord.is-flip-x { transform: translate(calc(-100% - 14px), 14px); }
+.map-hover-coord.is-flip-y { transform: translate(14px, calc(-100% - 14px)); }
+.map-hover-coord.is-flip-x.is-flip-y { transform: translate(calc(-100% - 14px), calc(-100% - 14px)); }
+
+.route-info-flyout {
+  position: absolute; display: flex; flex-direction: column;
+  width: 320px; max-height: calc(100% - 24px);
+  padding: 10px 12px; pointer-events: auto;
+  color: #d9eaf1; font-size: 11px;
+  border: 1px solid rgba(178, 211, 220, .24); border-radius: 6px;
+  background: rgba(8, 27, 38, .94); box-shadow: 0 12px 32px rgba(7, 17, 29, .32);
+  backdrop-filter: blur(12px);
+  transform: translate(12px, 12px);
+}
+.route-info-flyout.is-flip-x { transform: translate(calc(-100% - 12px), 12px); }
+.route-info-flyout.is-flip-y { transform: translate(12px, calc(-100% - 12px)); }
+.route-info-flyout.is-flip-x.is-flip-y { transform: translate(calc(-100% - 12px), calc(-100% - 12px)); }
+
+.route-flyout-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.route-flyout-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.route-flyout-close { flex: none; width: 18px; height: 18px; padding: 0; color: #cfe3ea; font-size: 14px; line-height: 1; cursor: pointer; border: 0; border-radius: 3px; background: transparent; }
+.route-flyout-close:hover { background: rgba(53, 195, 214, .18); }
+
+.route-flyout-summary { display: grid; gap: 3px; margin-bottom: 8px; }
+.route-flyout-row { display: flex; justify-content: space-between; gap: 10px; }
+.route-flyout-label { flex: none; color: #88aeba; }
+
+.route-flyout-segment { margin-bottom: 8px; padding: 6px 8px; border: 1px solid rgba(255, 209, 102, .35); border-radius: 4px; background: rgba(255, 209, 102, .08); }
+.route-flyout-segment-title { margin-bottom: 4px; font-weight: 700; color: #ffd166; }
+
+.route-flyout-points { max-height: 168px; margin-bottom: 8px; overflow-y: auto; border-top: 1px solid rgba(178, 211, 220, .14); border-bottom: 1px solid rgba(178, 211, 220, .14); }
+.route-flyout-point { display: grid; grid-template-columns: 22px 34px 1fr 1fr; gap: 6px; padding: 3px 2px; cursor: pointer; }
+.route-flyout-point:hover { background: rgba(53, 195, 214, .1); }
+.route-flyout-point.is-selected { background: rgba(53, 195, 214, .16); }
+.route-flyout-point.is-head { cursor: default; color: #88aeba; }
+.route-flyout-point.is-head:hover { background: transparent; }
+.route-flyout-seq { color: #88aeba; }
+.route-flyout-role { font-weight: 700; }
+.route-flyout-role.is-start { color: #2e9e4f; }
+.route-flyout-role.is-end { color: #e5484d; }
+/* 途经点色取自 mapRoute.ts ROUTE_VIA_COLOR(不用 --muted:那是另一种灰,会与地图标记色漂移) */
+.route-flyout-role.is-via { color: #8a94a6; }
+
+.route-flyout-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+.route-flyout-actions button { flex: 1; padding: 4px 6px; color: #d9eaf1; font-size: 11px; cursor: pointer; border: 1px solid rgba(178, 211, 220, .24); border-radius: 4px; background: rgba(53, 195, 214, .12); }
+.route-flyout-actions button:hover:not(:disabled) { background: rgba(53, 195, 214, .22); }
+.route-flyout-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+.route-flyout-note { margin: 0; color: #7f9baa; font-size: 9px; line-height: 1.5; }
+
+.map-status .route-select-hint { color: #78e0e8; }
+
+@media print {
+  .map-overlay-root { display: none !important; }
 }

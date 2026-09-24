@@ -1,10 +1,64 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-09-21
+> 最后更新: 2026-09-25
 
 ---
 
+## 会话 #24 — 测量投影修复 + 航段计算 + 航线浮窗 + 坐标悬停提示（2026-09-25）
+
+### 修改了什么
+
+- **新建** `frontend/src/utils/mapMeasure.ts`：
+  - `sphericalRingArea()`——Van Oosterom–Strackee 球面三角形立体角 + 0 号顶点扇形三角化，边按大圆、半径取 `ol/sphere` 的 `DEFAULT_RADIUS`，取环两侧较小侧；**与经度回绕无关、对环绕极点的环同样成立**
+  - `projectedToLonLatSafe()`——有限性 → 投影范围（3857 因 `canWrapX()` 为 true 只校验纬度带）→ 纬度范围 → 经度收拢
+  - `measureGeometryToDraft()` / `buildMeasureGeometry()`——投影几何 ↔ WGS84 真值（多边形统一去掉/补回闭合点）
+  - `formatMeasureResult()` / `hoverDecimalsForGroundResolution()` / `HOVER_MIN_GROUND_RESOLUTION_METERS`
+- **修改** `frontend/src/utils/mapRoute.ts`：`METERS_PER_NAUTICAL_MILE` / `formatDistance`(km+NM,短距离兼显 m) / `formatArea`(m²/km²,永不换算海里) / `formatBearing` / `formatLonLat`(显式标注经纬度顺序与方位) / `initialBearing`(初始真方位,[0,360)) / `routeSegments`(航段唯一口径) / `calculateRouteLength` **重写为分段和** / `shiftCoordinateIntoWorldCopy` / `routePointIndexById` / `unwrapLongitudeSequence`；`RouteStyleContext` 增加**可选**高亮 getter + 段/点高亮样式
+- **修改** `frontend/src/views/MapWorkspaceView.vue`：
+  - 测量:`measureMode`(激活态唯一真值) + `measureDraft`(WGS84 真值);`setMeasureDraft()` 只由真值生成文本;`rebuildMeasureGeometry()` 仅在投影切换时重建;**drawend 里不清 source**(OL 是先派发事件再 addFeature)
+  - `syncMeasureForProjection()` 接入 `switchProjection()`(与 AIS/航路同范式);互斥缺口修复(两个 toggle 补 `stopMeasureInteraction()`、`activateMeasure` 关识别/气象/浮窗);测量按钮加激活态
+  - 浮层:`.map-overlay-root` 容器 + `RouteInfoFlyout` + `postrender` 重锚定(仅锚点移动时写 ref)+ 生命周期对账 watch
+  - 悬停提示:复用 `pointermove` + `requestAnimationFrame` 合帧;`getPointResolution` 地面分辨率门槛;拖动/离开/触控/浮窗打开/销毁时隐藏
+  - 可发现性:工具栏 tooltip 与状态栏提示「点击地图上的航路可查看详情」
+- **新建** `frontend/src/components/RouteInfoFlyout.vue`：航路名 / 总长(km+NM) / 航路点数 / 起终点坐标 / 可滚动航点表(经度、纬度分列) / 航段块(段号·起终航点·段距离·累计距离·**初始真方位**) / 定位整条航路 / 定位所选航点 / 关闭 / 大圆分段与免责说明。**只读**：无任何写接口，不进入绘制编辑态
+- **修改** `frontend/src/components/RoutePlannerPanel.vue`：点表新增「入站航段」「累计」两列(起点显示「—」)、行点击与 `#` 按钮定位航点(排除输入框/按钮)、单位与免责说明、抽屉 440→520px
+- **修改** `frontend/src/composables/useRouteDrawing.ts`：`pickRouteAtPixel`(顶点先于航段的视空间命中细节 + 3857 世界副本对齐)、`highlightSegment`、`locateRoutePoint`、`getRouteExtent`、`ROUTE_FIT_PADDING`
+- **新建** `frontend/src/types/routePlanning.ts`：任务 D 只读规划结果契约草案(纯类型,零运行时/零 API/零演示数值)
+- **修改** `frontend/src/types/index.ts`：`RoutePointRoleRow` + `RoutePointRow` 增加 `inboundLegText` / `cumulativeDistanceText`
+- **修改** `frontend/src/styles.css`：浮层、浮窗、坐标提示、航段列与说明样式;指针事件与打印规则
+- **修改** 测试:`mapMeasure.test.ts`(新,23)、`MapWorkspaceView.test.ts`(新,18)、`RouteInfoFlyout.test.ts`(新,10)、`mapRoute.test.ts`(+30)、`RoutePlannerPanel.test.ts`(+6)
+
+### 达到的效果
+
+- **修掉一个真实的静默失效**:测量后点「要素识别」原本毫无反应(残余测量 Draw 让 `singleclick` 守卫永久提前 return),现为双向互斥且测量按钮有激活态、可见可退出
+- **投影切换不再产生错值**:测量结果由 WGS84 真值生成,**两种投影下文本逐字符相同**(实测 `2642.27 km（1426.71 NM）`);显示几何按新投影重建,绘制中切换会明确提示重新测量
+- **面积在极区终于正确**:环绕极点的环原本恒为 0(80°N 环真值 3,874,523 km²),跨 180° 的环原本偏大 17 倍,现分别给出正确值并与解析闭式吻合到 0.001%
+- **一处定义、多处引用**:`routeSegments` 同时供给面板两列与地图浮窗,`calculateRouteLength` 是其逐位求和,「分段之和 ≡ 总长」由构造成立
+- **地图上可直接读航路**:点选航线弹出浮窗,含总长(km+NM)、航点表、点中航段时的段距离/累计/初始真方位;高亮走样式层,不新增图层与交互,隐藏航路天然不可命中
+- **对齐了「专业读图」习惯**:视口足够细时才出现的悬停经纬度提示(明确标注经纬度顺序与方位),门槛按地面分辨率而非 zoom,小数位不细于 1 像素
+- **零侵入**:Store 与 localStorage payload 版本未改;后端、S-57、WMS/GWC/Bundle/TileCache、AIS、要素识别、气象、截图、海图批量加载与投影切换全部未触碰
+
+### 验证结果
+
+- `npm run typecheck`（vue-tsc -b）：零错误
+- `npm test`（vitest run）：14 个文件 **284** 个测试全部通过（197 → 284，新增 87）
+- `npm run build`：成功（`MapWorkspaceView` chunk 体积警告为既有问题）
+- **浏览器手工验收项（需可运行的前后端环境，本次未执行）**：
+  1. 悬停门槛上下(3857 约 z6@72°N / z8@0°；3413 约 z6 起)、小数位随分辨率变化、拖动与离开隐藏、滚轮后自校正、触控设备不显示
+  2. 浮窗:单条/多条/隐藏航路、点航段 vs 点顶点 vs 点空白(只关浮窗不改选中)、边缘翻转、1280×720 下不与 520px 抽屉重叠、定位操作不进入绘制/编辑、投影切换后重锚定且高亮存活、改名/拖拽/删除/隐藏后刷新或关闭
+  3. 测量投影切换(进行中 / 完成后两种)、跨 180° 与极点多边形面积
+  4. 回归:海图批量加载与卸载、smart/standard、AIS、要素识别、气象、航路 localStorage 恢复、截图(浮层不得进入截图)、平移缩放
+- **无法验证的场景**（依赖运行中的后端/GeoServer，不写「全部通过」）：要素识别与气象的端到端接口、真实 S-57 海图渲染与 RenderPlan/bundle 路径、GWC 瓦片缓存、底图/WMTS capabilities、项目切换 API、真实瓦片上的截图合成
+
+### 已知限制
+
+- 面积语义变更:大范围高纬多边形相对旧 `ol/sphere.getArea` 变化 ≤1.76%(小多边形 0.000%),属**刻意的更正**(实现 OL 自称的大圆边语义,与 `getLength` 一致),已在文档与界面文案中说明
+- 球面模型本身比 WGS84 椭球测地线偏短 0.28%–0.42%:界面按「近似地表距离」表述,不宣称航海认证精度
+- 浮层不进入截图/打印(`@media print` 隐藏)——与既有 `.map-status` 行为一致
+- 任务 D 仅有类型草案与接入说明,**当前无任何页面消费**,不含假数据
+
+---
 ## 会话 #23 — 航路方向标记（2026-09-21）
 
 ### 修改了什么

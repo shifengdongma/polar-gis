@@ -20,16 +20,24 @@ import {
   createId,
   createRoutePointStyles,
   createRouteStyle,
+  formatArea,
+  formatBearing,
+  formatDistance,
+  initialBearing,
   longitudeDelta,
   normalizeLongitude,
   normalizeRoutePoints,
   parseRouteCoordinateText,
   projectedCoordinatesToRoutePoints,
   routeColor,
+  routePointIndexById,
   routePointRole,
   routePointRoleLabel,
   routePointsToProjectedCoordinates,
+  routeSegments,
+  shiftCoordinateIntoWorldCopy,
   shiftExtentIntoProjection,
+  unwrapLongitudeSequence,
   unwrapLongitudes,
   validateRouteCoordinate,
   validateRoutePoints,
@@ -528,5 +536,181 @@ describe('shiftExtentIntoProjection', () => {
 describe('ROUTE_MIN_POINTS', () => {
   it('最小航路点数为 2', () => {
     expect(ROUTE_MIN_POINTS).toBe(2)
+  })
+})
+
+/**
+ * 航段:长度的唯一计算口径。期望值取自独立推导 ——
+ * ol/sphere.getLength 内部即 getDistance 逐段求和,故分段和与总长逐位相同;
+ * 下列米值由 getDistance 直接算出后固化,用于锁定行为不漂移。
+ */
+describe('routeSegments 航段切分', () => {
+  const points = makePoints([[10, 70], [30, 75], [50, 72], [20, 78]])
+
+  it('按 seq 升序切分,n 点 → n−1 段,index 从 1 开始', () => {
+    const segments = routeSegments(points)
+    expect(segments).toHaveLength(3)
+    expect(segments.map((segment) => segment.index)).toEqual([1, 2, 3])
+    expect(segments[0]!.from.lon).toBe(10)
+    expect(segments[2]!.to.lat).toBe(78)
+  })
+
+  it('段距离与累计距离(独立计算的金值)', () => {
+    const segments = routeSegments(points)
+    expect(segments[0]!.distanceMeters).toBeCloseTo(862219.4837, 3)
+    expect(segments[1]!.distanceMeters).toBeCloseTo(709458.2598, 3)
+    expect(segments[2]!.distanceMeters).toBeCloseTo(1070592.2576, 3)
+    expect(segments[0]!.cumulativeMeters).toBeCloseTo(862219.4837, 3)
+    expect(segments[1]!.cumulativeMeters).toBeCloseTo(1571677.7435, 3)
+    expect(segments[2]!.cumulativeMeters).toBeCloseTo(2642270.0011, 3)
+  })
+
+  it('分段之和与 calculateRouteLength 逐位相同(面板与浮窗不可能对不上)', () => {
+    const sum = routeSegments(points).reduce((total, segment) => total + segment.distanceMeters, 0)
+    expect(sum).toBe(calculateRouteLength(points))
+  })
+
+  it('乱序数组仍按 seq 计算,不依赖数组偶然顺序', () => {
+    const shuffled = [points[2]!, points[0]!, points[3]!, points[1]!]
+    expect(routeSegments(shuffled)).toEqual(routeSegments(points))
+    expect(calculateRouteLength(shuffled)).toBe(calculateRouteLength(points))
+  })
+
+  it('重复航点产生零长段(距离 0、方位 null),且不打断累计', () => {
+    const duplicated = makePoints([[120, 72], [120, 72], [121, 72]])
+    const segments = routeSegments(duplicated)
+    expect(segments).toHaveLength(2)
+    expect(segments[0]!.distanceMeters).toBe(0)
+    expect(segments[0]!.initialBearingDeg).toBeNull()
+    expect(segments[1]!.cumulativeMeters).toBeCloseTo(segments[1]!.distanceMeters, 6)
+  })
+
+  it('不足 2 点没有航段,总长为 0', () => {
+    expect(routeSegments([])).toEqual([])
+    expect(routeSegments(makePoints([[10, 70]]))).toEqual([])
+    expect(calculateRouteLength(makePoints([[10, 70]]))).toBe(0)
+  })
+
+  it('非有限坐标不抛异常', () => {
+    const bad: RoutePoint[] = [
+      { id: 'a', seq: 1, lon: 10, lat: 70 },
+      { id: 'b', seq: 2, lon: Number.NaN, lat: 70 },
+      { id: 'c', seq: 3, lon: 20, lat: 71 },
+    ]
+    expect(() => routeSegments(bad)).not.toThrow()
+    expect(routeSegments(bad)).toHaveLength(2)
+    expect(routeSegments(bad)[0]!.initialBearingDeg).toBeNull()
+  })
+
+  it('起点没有入站航段,«入站航段» 列应显示占位符', () => {
+    // 面板把首行渲染为 '—',这里锁定「首行不来自任何航段」这一数据前提
+    const segments = routeSegments(points)
+    expect(segments.every((segment) => segment.from.seq >= 1)).toBe(true)
+    expect(segments[0]!.from).toEqual(points[0])
+  })
+})
+
+describe('initialBearing 初始真方位角', () => {
+  it.each([
+    // [fromLon, fromLat, toLon, toLat, 期望, 说明]
+    [0, 0, 0, 90, 0, '赤道向正北'],
+    [0, 0, 90, 0, 90, '赤道向正东'],
+    [0, 0, 0, -90, 180, '赤道向正南'],
+    [0, 0, -90, 0, 270, '赤道向正西'],
+    [0, 0, 100, 50, 39.5687, '赤道斜向东北'],
+    [0, 45, 90, 45, 54.7356, '45°N 沿纬圈向东(大圆先偏向极)'],
+    [10, 70, 30, 75, 41.0025, '北极海域典型航段'],
+    [30, 75, 50, 72, 107.9971, '向南偏东航段'],
+    [50, 72, 20, 78, 321.5703, '向西北航段'],
+    [179, 70, -179, 72, 17.0905, '跨 180° 经线走短弧'],
+    // 外部参考:JFK → LHR 的大圆初始方位角约 51°21′(公开资料),此处 51.3525°
+    [-73.7781, 40.6413, -0.4543, 51.47, 51.3525, 'JFK → LHR(外部参考值)'],
+  ])('(%s, %s) → (%s, %s) 应为 %s°(%s)', (fromLon, fromLat, toLon, toLat, expected) => {
+    expect(initialBearing(fromLon, fromLat, toLon, toLat)).toBeCloseTo(expected as number, 3)
+  })
+
+  it('取值范围恒为 [0, 360)', () => {
+    for (let lon = -180; lon <= 180; lon += 15) {
+      for (let lat = -75; lat <= 75; lat += 15) {
+        if (lon === 0 && lat === 0) continue // 与起点重合,另行断言为 null
+        const value = initialBearing(0, 0, lon, lat)
+        expect(value).not.toBeNull()
+        expect(value!).toBeGreaterThanOrEqual(0)
+        expect(value!).toBeLessThan(360)
+      }
+    }
+  })
+
+  it('重合点与非有限输入返回 null', () => {
+    expect(initialBearing(10, 70, 10, 70)).toBeNull()
+    expect(initialBearing(Number.NaN, 70, 10, 70)).toBeNull()
+    expect(initialBearing(10, 70, 10, Number.POSITIVE_INFINITY)).toBeNull()
+  })
+})
+
+describe('formatDistance / formatArea / formatBearing 单位文本', () => {
+  it('短距离兼显米与海里', () => {
+    expect(formatDistance(812.3)).toBe('812.3 m（0.44 NM）')
+  })
+
+  it('长距离用千米与海里(1 NM = 1852 m)', () => {
+    expect(formatDistance(2642270.001)).toBe('2642.27 km（1426.71 NM）')
+    expect(formatDistance(1852)).toBe('1.85 km（1.00 NM）')
+  })
+
+  it('面积只用 m² / km²,绝不出现海里', () => {
+    expect(formatArea(433_600_000_000)).toBe('433600.00 km²')
+    expect(formatArea(999_999)).toBe('999999.0 m²')
+    expect(formatArea(1_000_000)).toBe('1.00 km²')
+    expect(formatArea(433_600_000_000)).not.toContain('NM')
+  })
+
+  it('非有限 / 负数退化为占位符', () => {
+    expect(formatDistance(Number.NaN)).toBe('—')
+    expect(formatDistance(-1)).toBe('—')
+    expect(formatArea(Number.POSITIVE_INFINITY)).toBe('—')
+    expect(formatBearing(null)).toBe('—')
+    expect(formatBearing(Number.NaN)).toBe('—')
+    expect(formatBearing(41.0025)).toBe('41.0°')
+  })
+})
+
+describe('shiftCoordinateIntoWorldCopy', () => {
+  const projectionExtent = getProjection('EPSG:3857')!.getExtent()!
+  const worldWidth = projectionExtent[2]! - projectionExtent[0]!
+
+  it('3857:把另一世界副本的坐标平移回参考 extent 所在副本', () => {
+    const reference: [number, number, number, number] = [worldWidth + 1000, 0, worldWidth + 2000, 1000]
+    const shifted = shiftCoordinateIntoWorldCopy([-1000, 500], reference, 'EPSG:3857')
+    expect(shifted[0]).toBeCloseTo(worldWidth - 1000, 6)
+    expect(shifted[1]).toBe(500)
+  })
+
+  it('3857:同副本坐标原样返回', () => {
+    const reference: [number, number, number, number] = [1000, 0, 2000, 1000]
+    const coordinate = [1500, 500]
+    expect(shiftCoordinateIntoWorldCopy(coordinate, reference, 'EPSG:3857')).toBe(coordinate)
+  })
+
+  it('3413 无世界副本,任何坐标都原样返回', () => {
+    const coordinate = [5_000_000, 5_000_000]
+    expect(shiftCoordinateIntoWorldCopy(coordinate, [-1000, -1000, 1000, 1000], 'EPSG:3413')).toBe(coordinate)
+  })
+})
+
+describe('routePointIndexById / unwrapLongitudeSequence', () => {
+  it('按 id 取 seq 升序下标,未知 id 返回 -1', () => {
+    const points = makePoints([[10, 70], [20, 71], [30, 72]])
+    expect(routePointIndexById(points, 'p-1')).toBe(1)
+    expect(routePointIndexById([...points].reverse(), 'p-1')).toBe(1)
+    expect(routePointIndexById(points, 'missing')).toBe(-1)
+  })
+
+  it('unwrapLongitudeSequence 与 unwrapLongitudes 同源同结果', () => {
+    const points = makePoints([[179, 70], [-179, 71], [-170, 72]])
+    const sorted = [...points].sort((a, b) => a.seq - b.seq).map((point) => point.lon)
+    expect(unwrapLongitudes(points)).toEqual(unwrapLongitudeSequence(sorted))
+    expect(unwrapLongitudeSequence([179, -179, -170])).toEqual([179, 181, 190])
+    expect(unwrapLongitudeSequence([])).toEqual([])
   })
 })

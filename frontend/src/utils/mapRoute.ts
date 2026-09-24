@@ -13,7 +13,7 @@ import { getWidth } from 'ol/extent'
 import LineString from 'ol/geom/LineString'
 import Point from 'ol/geom/Point'
 import { fromLonLat, get as getProjection, toLonLat } from 'ol/proj'
-import { getLength } from 'ol/sphere'
+import { getDistance } from 'ol/sphere'
 import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style'
 import type { StyleFunction } from 'ol/style/Style'
 import type { FeatureLike } from 'ol/Feature'
@@ -34,6 +34,55 @@ export const ROUTE_COLOR_POOL = [
   '#7bd389',
   '#8ab4f8',
 ] as const
+
+// ── 单位与格式化 ──────────────────────────────────────────────────────
+// 距离/面积文本的唯一出口:面板、地图浮窗、测量状态栏共用,避免同一数值出现
+// 两套写法。面积恒用 m² / km² —— 面积绝不换算为海里(距离才用 NM)。
+
+/** 1 海里 = 1852 米(国际海里的定义值,非近似) */
+export const METERS_PER_NAUTICAL_MILE = 1852
+
+/** 赤道处 1° 纬度 ≈ 111320 m。用于把地面分辨率换算成经纬度小数位 */
+export const METERS_PER_DEGREE_LAT = 111320
+
+const EMPTY_VALUE = '—'
+
+/**
+ * 距离文本:短距离(< 1 km)兼显米,其余用千米,两者都附海里。
+ * 例:`812.3 m（0.44 NM）`、`2642.27 km（1426.71 NM）`。非有限 / 负数 → `—`。
+ */
+export function formatDistance(meters: number): string {
+  if (!Number.isFinite(meters) || meters < 0) return EMPTY_VALUE
+  const nauticalMiles = (meters / METERS_PER_NAUTICAL_MILE).toFixed(2)
+  const metric = meters < 1000 ? `${meters.toFixed(1)} m` : `${(meters / 1000).toFixed(2)} km`
+  return `${metric}（${nauticalMiles} NM）`
+}
+
+/** 面积文本:m² / km²(永不换算为海里)。非有限 / 负数 → `—` */
+export function formatArea(squareMeters: number): string {
+  if (!Number.isFinite(squareMeters) || squareMeters < 0) return EMPTY_VALUE
+  return squareMeters >= 1_000_000
+    ? `${(squareMeters / 1_000_000).toFixed(2)} km²`
+    : `${squareMeters.toFixed(1)} m²`
+}
+
+/** 方位角文本(度,保留 1 位小数);null / 非有限 → `—` */
+export function formatBearing(degrees: number | null): string {
+  if (degrees === null || !Number.isFinite(degrees)) return EMPTY_VALUE
+  return `${degrees.toFixed(1)}°`
+}
+
+/**
+ * 经纬度文本:`经度 123.4567° E · 纬度 74.1234° N`。
+ * 显式写出「经度在前、纬度在后」并带方位字母 E/W、N/S —— 屏幕上永远不允许
+ * 出现无法判断经纬度顺序的裸坐标。小数位由调用方按显示分辨率决定。
+ */
+export function formatLonLat(lon: number, lat: number, decimals = 4): string {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return EMPTY_VALUE
+  const lonHemisphere = lon >= 0 ? 'E' : 'W'
+  const latHemisphere = lat >= 0 ? 'N' : 'S'
+  return `经度 ${Math.abs(lon).toFixed(decimals)}° ${lonHemisphere} · 纬度 ${Math.abs(lat).toFixed(decimals)}° ${latHemisphere}`
+}
 
 // ── 校验 ──────────────────────────────────────────────────────────────
 
@@ -158,19 +207,26 @@ export function parseRouteCoordinateText(text: string): ParsedRouteText {
 // ── 经纬度 ⇄ 投影坐标 ─────────────────────────────────────────────────
 
 /**
- * 连续化经度(仅渲染用):内部按 seq 排序后,保证相邻点 |Δlon| ≤ 180。
+ * 连续化经度序列(仅渲染用):保证相邻元素 |Δlon| ≤ 180。
  * 跨 180° 经线时 179 → -179 展开为 179 → 181,业务数据永不被改写。
+ */
+export function unwrapLongitudeSequence(lons: readonly number[]): number[] {
+  const unwrapped = [...lons]
+  for (let i = 1; i < unwrapped.length; i++) {
+    const delta = unwrapped[i]! - unwrapped[i - 1]!
+    if (delta > 180) unwrapped[i] = unwrapped[i]! - 360
+    else if (delta < -180) unwrapped[i] = unwrapped[i]! + 360
+  }
+  return unwrapped
+}
+
+/**
+ * 连续化经度(仅渲染用):按 seq 排序后委托 unwrapLongitudeSequence。
  * EPSG:3413 下 proj4 的 adjust_lon 会自行回绕,展开同样无害。
  */
 export function unwrapLongitudes(points: RoutePoint[]): number[] {
   const sorted = [...points].sort((a, b) => a.seq - b.seq)
-  const lons = sorted.map((point) => point.lon)
-  for (let i = 1; i < lons.length; i++) {
-    const delta = lons[i]! - lons[i - 1]!
-    if (delta > 180) lons[i] = lons[i]! - 360
-    else if (delta < -180) lons[i] = lons[i]! + 360
-  }
-  return lons
+  return unwrapLongitudeSequence(sorted.map((point) => point.lon))
 }
 
 /** WGS84 航路点 → 当前投影坐标(按 seq 排序,经度连续化) */
@@ -209,14 +265,85 @@ export function buildRouteLineString(points: RoutePoint[], crs: string): LineStr
   return new LineString(coordinates)
 }
 
-// ── 长度计算 ──────────────────────────────────────────────────────────
+// ── 航段与长度计算 ────────────────────────────────────────────────────
 
-/** 球面长度(米)。基于原始 WGS84 点,跨 180° 经线天然正确,不需要 unwrap */
+/**
+ * 初始真方位角(度,范围 [0, 360))。从起点沿大圆出发的初始航向。
+ *
+ * - 这是**真方位**(相对真北),不是磁方位;也不代表整段航程的恒定航向 ——
+ *   沿大圆航行时航向会持续变化,只有出发瞬间等于该值;
+ * - 不手工归一化 Δλ:sin / cos 本身以 2π 为周期,跨 180° 经线自动取短弧;
+ * - 重合点(零长航段)与非有限输入返回 null。
+ */
+export function initialBearing(fromLon: number, fromLat: number, toLon: number, toLat: number): number | null {
+  if (![fromLon, fromLat, toLon, toLat].every((value) => Number.isFinite(value))) return null
+  if (fromLon === toLon && fromLat === toLat) return null
+  const phi1 = (fromLat * Math.PI) / 180
+  const phi2 = (toLat * Math.PI) / 180
+  const deltaLambda = ((toLon - fromLon) * Math.PI) / 180
+  const y = Math.sin(deltaLambda) * Math.cos(phi2)
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda)
+  const degrees = (Math.atan2(y, x) * 180) / Math.PI
+  if (!Number.isFinite(degrees)) return null
+  return ((degrees % 360) + 360) % 360
+}
+
+export interface RouteSegment {
+  /** 1-based:第 i 段 = 第 i 个航路点 → 第 i+1 个航路点 */
+  index: number
+  from: RoutePoint
+  to: RoutePoint
+  /** 球面最短路径(大圆)距离,米。与 ol/sphere getDistance 同源同值 */
+  distanceMeters: number
+  /** 截至该段终点的累计距离,米 */
+  cumulativeMeters: number
+  /** 该段初始真方位角(度);零长航段为 null */
+  initialBearingDeg: number | null
+}
+
+/**
+ * 按 seq 升序切分航段(n 点 → n−1 段)。航段是长度的唯一计算口径:
+ * 面板「入站航段 / 累计」列与地图浮窗都读它,总长等于各段之和。
+ * 起点没有入站航段,因此不产生 index 0 的段。
+ */
+export function routeSegments(points: RoutePoint[]): RouteSegment[] {
+  const sorted = [...points].sort((a, b) => a.seq - b.seq)
+  const segments: RouteSegment[] = []
+  let cumulative = 0
+  for (let i = 1; i < sorted.length; i++) {
+    const from = sorted[i - 1]!
+    const to = sorted[i]!
+    const distanceMeters = getDistance([from.lon, from.lat], [to.lon, to.lat])
+    cumulative += distanceMeters
+    segments.push({
+      index: i,
+      from,
+      to,
+      distanceMeters,
+      cumulativeMeters: cumulative,
+      initialBearingDeg: initialBearing(from.lon, from.lat, to.lon, to.lat),
+    })
+  }
+  return segments
+}
+
+/**
+ * 球面长度(米)= 各航段距离之和。基于原始 WGS84 点,跨 180° 经线天然正确
+ * (haversine 对 Δλ 取 sin²,自动取短弧),不需要 unwrap。
+ *
+ * 用 getDistance 逐段求和而非 getLength(LineString):ol/sphere 的 getLength
+ * 内部就是同一函数逐段求和,故两者逐位相同,而这里能保证「分段之和 ≡ 总长」
+ * 由构造成立,不会出现面板分段与浮窗总长对不上的情况。
+ */
 export function calculateRouteLength(points: RoutePoint[]): number {
   if (points.length < ROUTE_MIN_POINTS) return 0
+  return routeSegments(points).reduce((total, segment) => total + segment.distanceMeters, 0)
+}
+
+/** 某航路点在 seq 升序中的下标;找不到返回 -1(点表定位用) */
+export function routePointIndexById(points: RoutePoint[], pointId: string): number {
   const sorted = [...points].sort((a, b) => a.seq - b.seq)
-  const line = new LineString(sorted.map((point) => [point.lon, point.lat]))
-  return getLength(line, { projection: 'EPSG:4326' })
+  return sorted.findIndex((point) => point.id === pointId)
 }
 
 // ── 航路方向(起点 / 途经 / 终点) ─────────────────────────────────────
@@ -276,10 +403,19 @@ export const ROUTE_VIA_COLOR = '#8a94a6'
 export const ROUTE_START_END_MARKER_RADIUS = 7
 export const ROUTE_VIA_MARKER_RADIUS = 4.5
 
+/** 选中航段的高亮色(叠加在线本身之上) */
+export const ROUTE_SEGMENT_HIGHLIGHT_COLOR = '#ffd166'
+/** 定位航路点时短暂高亮的颜色 */
+export const ROUTE_POINT_HIGHLIGHT_COLOR = '#ffd166'
+
 export interface RouteStyleContext {
   isRouteVisible: (routeId: string) => boolean
   isRouteActive: (routeId: string) => boolean
   isRouteEditing: (routeId: string) => boolean
+  /** 高亮航段:1-based 航段序号(第 i 段 = 第 i 个点 → 第 i+1 个点);无 → null */
+  getHighlightedSegment?: (routeId: string) => number | null
+  /** 高亮航路点:seq 升序下标;无 → null */
+  getHighlightedPointIndex?: (routeId: string) => number | null
 }
 
 // styleFunction 每帧每个要素都会执行,线样式必须按 (color, variant) 缓存,禁止每次 new
@@ -344,12 +480,59 @@ export function createRoutePointStyles(_routeId: string, coordinates: number[][]
   })
 }
 
+// 高亮笔触 / 标记 image 与航路无关,可跨帧复用;仅 Style 包装器每帧新建
+let segmentHighlightStroke: Stroke | null = null
+let pointHighlightImage: CircleStyle | null = null
+
+function getSegmentHighlightStroke(): Stroke {
+  if (!segmentHighlightStroke) {
+    // 外描边压在航路线之上,保证在任何航路配色与海图底色下都能看清被选中的段
+    segmentHighlightStroke = new Stroke({ color: ROUTE_SEGMENT_HIGHLIGHT_COLOR, width: 6 })
+  }
+  return segmentHighlightStroke
+}
+
+function getPointHighlightImage(): CircleStyle {
+  if (!pointHighlightImage) {
+    pointHighlightImage = new CircleStyle({
+      radius: ROUTE_START_END_MARKER_RADIUS + 3,
+      fill: new Fill({ color: 'rgba(255,209,102,0.35)' }),
+      stroke: new Stroke({ color: ROUTE_POINT_HIGHLIGHT_COLOR, width: 2.5 }),
+    })
+  }
+  return pointHighlightImage
+}
+
+/**
+ * 高亮叠加(选中航段 / 定位航路点)。
+ * 不新增 source、layer 或 interaction:只是在同一条航路要素上多返回一条
+ * 「自带几何」的 Style —— 与起点/终点标记完全相同的做法。Style 数组按顺序绘制,
+ * 因此把高亮放在最后即画在最上层。几何每次新建(坐标随视图变化不可复用)。
+ */
+function createHighlightStyles(ctx: RouteStyleContext, routeId: string, coordinates: number[][]): Style[] {
+  const styles: Style[] = []
+  const segmentIndex = ctx.getHighlightedSegment?.(routeId) ?? null
+  if (segmentIndex !== null && segmentIndex >= 1 && segmentIndex < coordinates.length) {
+    const style = new Style({ stroke: getSegmentHighlightStroke() })
+    style.setGeometry(new LineString([coordinates[segmentIndex - 1]!, coordinates[segmentIndex]!]))
+    styles.push(style)
+  }
+  const pointIndex = ctx.getHighlightedPointIndex?.(routeId) ?? null
+  if (pointIndex !== null && pointIndex >= 0 && pointIndex < coordinates.length) {
+    const style = new Style({ image: getPointHighlightImage() })
+    style.setGeometry(new Point(coordinates[pointIndex]!))
+    styles.push(style)
+  }
+  return styles
+}
+
 /**
  * 航路样式工厂:
  * - 隐藏航路返回 undefined(单条显隐,绝不使用 routeLayer.setVisible(false));
  * - 普通 2.5px、选中 4.5px、编辑中虚线(Modify 自带顶点手柄,不额外渲染节点);
  * - 起点(绿)/ 终点(红)标记始终随航路显示,标明航路方向;
- * - 选中(非编辑)时额外叠加途经点小圆点。
+ * - 选中(非编辑)时额外叠加途经点小圆点;
+ * - 选中航段 / 定位航路点的高亮叠加在最后(画在最上层)。
  */
 export function createRouteStyle(ctx: RouteStyleContext): StyleFunction {
   return (feature: FeatureLike): Style | Style[] | undefined => {
@@ -363,8 +546,11 @@ export function createRouteStyle(ctx: RouteStyleContext): StyleFunction {
     if (coordinates.length < ROUTE_MIN_POINTS) return lineStyles
     const directionStyles = createRoutePointStyles(routeId, coordinates)
     // 选中且非编辑时,途经点也一并显示;其余情况只保留起点 / 终点方向标记
-    if (!active || editing) return [...lineStyles, ...directionStyles.filter((_, index) => index === 0 || index === coordinates.length - 1)]
-    return [...lineStyles, ...directionStyles]
+    const base =
+      !active || editing
+        ? [...lineStyles, ...directionStyles.filter((_, index) => index === 0 || index === coordinates.length - 1)]
+        : [...lineStyles, ...directionStyles]
+    return [...base, ...createHighlightStyles(ctx, routeId, coordinates)]
   }
 }
 
@@ -409,6 +595,27 @@ export function shiftExtentIntoProjection(extent: Extent, crs: string): Extent {
   if (minX >= projectionExtent[0]! && maxX <= projectionExtent[2]!) return extent
   const shift = Math.floor((minX - projectionExtent[0]!) / width) * width
   return [minX - shift, minY, maxX - shift, maxY]
+}
+
+/**
+ * 把坐标平移到与参考 extent 相同的世界副本(仅对 canWrapX 的投影有意义)。
+ *
+ * 为什么需要:fromLonLat 不会把经度回绕到主世界,而 toLonLat 会 —— 于是
+ * `fromLonLat([181, 70])` 落在世界副本 +1(x ≈ +2.0e7),而同一地点经 toLonLat
+ * 往返后只剩主世界的 x ≈ −1.99e7。渲染几何与重算坐标因此可能不同副本。
+ * EPSG:3857 的 canWrapX() 为 true、EPSG:3413 为 false(proj4 注册的投影默认
+ * 非 global),所以 3413 下原样返回。
+ */
+export function shiftCoordinateIntoWorldCopy(coordinate: number[], referenceExtent: Extent, crs: string): number[] {
+  const projection = getProjection(crs)
+  if (!projection?.canWrapX()) return coordinate
+  const projectionExtent = projection.getExtent()
+  if (!projectionExtent) return coordinate
+  const worldWidth = getWidth(projectionExtent)
+  if (!worldWidth) return coordinate
+  const referenceX = (referenceExtent[0]! + referenceExtent[2]!) / 2
+  const shift = Math.round((referenceX - coordinate[0]!) / worldWidth) * worldWidth
+  return shift ? [coordinate[0]! + shift, coordinate[1]!] : coordinate
 }
 
 /** 环形经度差(范围 [-180, 180]),用于跨 ±180 经线的测试断言 */

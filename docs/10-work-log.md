@@ -1,10 +1,111 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-09-21
+> 最后更新: 2026-09-25
 
 ---
 
+## 会话 #24 — 测量投影审计与修复 + 航段计算 + 航线浮窗 + 坐标悬停提示
+
+**日期**: 2026-09-25
+**基线**: 分支 `master`,HEAD `594b47a`,工作区干净(仅 `docs/plans/航路绘制功能优化.md` 未跟踪)
+**目标**: 按任务书完成五项任务(任务 E 测量投影审计与修复 → 航段公共计算 → 任务 B 航线信息浮窗 → 任务 A 坐标悬停提示 → 任务 C 航点定位/说明 + 任务 D 后端规划结果契约草案)。全部为纯前端改动,Store 与 localStorage payload 版本零改动。
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 任务 E:实测复核测距/测面积现状(不得未经验证宣称正确或错误) | ✅ 完成 |
+| 2 | 任务 E:`utils/mapMeasure.ts` 测地面积算法 + 真值/文本口径 + 单位格式化 | ✅ 完成 |
+| 3 | 任务 E:`MapWorkspaceView` 测量投影生命周期 + 互斥缺口修复 + 按钮激活态 | ✅ 完成 |
+| 4 | 航段公共计算:`routeSegments` / `initialBearing` / `calculateRouteLength` 重写 | ✅ 完成 |
+| 5 | 任务 B:`RouteInfoFlyout.vue` + `pickRouteAtPixel` 命中细节 + 段/点高亮 | ✅ 完成 |
+| 6 | 任务 A:rAF 合帧的坐标悬停提示(地面分辨率门槛 + 小数位推导) | ✅ 完成 |
+| 7 | 任务 C1/C2/C3:点表两列 + 航点定位 + 单位与免责说明 | ✅ 完成 |
+| 8 | 任务 D:`types/routePlanning.ts` 只读展示契约草案 | ✅ 完成 |
+| 9 | 单元/源码断言测试 + typecheck + build | ✅ 完成(284 测试) |
+| 10 | 文档 09/10/11/12 更新 + git 提交 | ✅ 完成 |
+
+### 一、测距现状审计:实测结论(现状—可复现问题—修复方式—验证结果)
+
+全部结论均由 node 直连**仓库内实际依赖** ol@10.6.1 实测得出,非推测。
+
+#### 现状:不是缺陷的部分(如实记录,不写「已修复」)
+
+| 检查项 | 实测结果 |
+|---|---|
+| `getLength(geom, {projection: currentCrs})` 的投影参数 | **正确**。`ol/sphere.getLength` 内部先 `clone().transform(P,'EPSG:4326')` 再 haversine;固定 WGS84 点组在 4326 / 3857 / 3413 下均为 `2642270.001110` m(误差 0.0000) |
+| 跨 180° 经线的长度 | **正确**。haversine 对 Δλ 取 `sin²`,取短弧天然正确(170E→170W 与参考值一致) |
+| `getArea` 对普通多边形 | **正确**。两种投影下与 EPSG:4326 参考完全一致(0.00%) |
+| EPSG:3413 是否已注册可转换 | **正确**。`proj4.defs` + `register(proj4)` + `setExtent`,往返误差 0.0000 m |
+
+#### 现状:5 个真实缺陷
+
+| # | 问题 | 证据 / 复现步骤 |
+|---|---|---|
+| 1 | 测量几何在投影切换后**不重建**、`measureText` **不重算** | 3857 几何被声明为 3413 → **+77.8%**;3413 几何被声明为 3857 → **−1.14%**。复现:测一条线 → 切换投影 → 文本不变、图形错位 |
+| 2 | 进行中的测量 Draw **不在投影切换的清理路径上** | 切换后 Draw 仍存活并会 `drawend`,其坐标随后按新 CRS 解释 |
+| 3 | 面积**跨 180° 经线偏大约 17 倍** | 20°×6° 盒 @70–76°N 跨 170E..170W:`getArea` 返回 7,371,200 km²,真值 433,600 km² |
+| 4 | 面积对**环绕极点**的环返回 **0** | 80°N 环解析真值 3,874,523 km²,`getArea` 返回 0(4/8/36/360 顶点全部为 0)。EPSG:3413 下极点就在屏幕中心,用户**可以**画出这种环 |
+| 5 | **互斥缺口**:残余测量 Draw 静默阻塞识别/气象 | `activateMeasure` 不清 `queryMode`/`weatherMode`;`toggleQueryMode`/`toggleWeatherMode` 不调 `stopMeasureInteraction()` → `singleclick` 守卫永久提前 return,点击无任何反馈 |
+
+#### 修复方式
+
+1. **结果与投影解耦(治本)**:新增 `MeasureDraft { kind, lonLat }` WGS84 真值,测量结果文本一律由真值生成,不由「当前投影几何」生成 → 显示值**按构造与投影无关**,整类陈旧 CRS 缺陷消失而非被补丁掩盖。
+2. **投影切换生命周期**:`syncMeasureForProjection()`(与 `reloadAisGeometry` / `reloadRouteGeometry` 同范式)——绘制中则结束 Draw + 提示「投影已切换,请重新测量」;已完成则按新投影重建显示几何并从真值重新生成结果。
+3. **面积算法替换**:`sphericalRingArea()` 用 Van Oosterom–Strackee 球面三角形立体角 + 0 号顶点扇形三角化(边按大圆,与 `getDistance` 同一球体 `DEFAULT_RADIUS`),取环两侧较小侧。**与经度回绕无关、对环绕极点的环同样成立**,故不再需要「极点检测/拒绝」分支。
+4. **drawend 顺序陷阱**:实测 `ol/interaction/Draw.js:1392-1401` 是**先派发 `drawend`、再 `addFeature`** → `drawend` 回调里只落真值与文本,绝不清 source(否则与 OL 随后的 addFeature 撞成重复图形);显示几何重建只发生在投影切换路径。
+5. **互斥补齐 + 状态可见**:`measureMode` 成为测量态唯一真值(驱动按钮 `active`、`singleclick` 守卫、Draw 生命周期),两个 toggle 补 `stopMeasureInteraction()`。
+6. **无效坐标判定**:实测 `toLonLat` 对 EPSG:3413 越界坐标返回**有限但无意义**的值(不返回 NaN),故用显式范围判定;`EPSG:3857.canWrapX()` 为 true,只校验纬度带。
+
+#### 验证结果(两种投影对照,样例与容差)
+
+| 项目 | EPSG:3857 | EPSG:3413 | 容差 |
+|---|---|---|---|
+| 测距(固定点组 `10,70 → 30,75 → 50,72 → 20,78`) | `2642.27 km（1426.71 NM）` | `2642.27 km（1426.71 NM）` | 逐字符相同 |
+| 测面积(20°×6° 盒 @70–76°N) | `425977.29 km²` | `425977.29 km²` | 逐字符相同 |
+| 测地面积 vs 解析闭式(80°N 平行圈 720 顶点) | 3,874,475 vs 3,874,523 km² | 同 | **0.001%** |
+| 测地面积 vs 旧 `ol/sphere.getArea`(同高纬盒) | 425,977 vs 433,600 km²(**−1.76%**) | 同 | 小多边形 0.000% |
+| 球面 vs WGS84 椭球测地线 | 偏短 **0.28%–0.42%**(高纬更大) | 同 | 按「近似地表距离」表述 |
+
+**复现步骤(修复前 → 修复后)**:① 测距 → 切换投影:修复前文本不变但图形错位、若重算则 +77.8%;修复后图形按新投影重建、文本不变(正确)。② 绘制中切换投影:修复前 Draw 残留且坐标被按新 CRS 解释;修复后 Draw 结束并提示重新测量。③ 在 EPSG:3413 下画一个环绕极点的多边形:修复前面积 0;修复后给出正确非零面积。④ 测量后点「要素识别」:修复前无任何反应(Draw 残留吃掉点击);修复后有反应。⑤ 跨 180° 画多边形:修复前偏大 17 倍;修复后与同形状在常规经度下一致。
+
+### 二、修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/utils/mapMeasure.ts` | 新建 | 测量纯逻辑:测地扇形面积、投影↔WGS84 安全换算、真值↔显示几何、结果文本、地面分辨率→小数位门槛 |
+| `frontend/src/utils/mapMeasure.test.ts` | 新建 | 23 用例:解析闭式对照、极点环非零(OL 返回 0 的回归守卫)、跨 180° 不变量、投影范围判定、往返、投影无关性 |
+| `frontend/src/utils/mapRoute.ts` | 修改 | 新增单位与格式化(km/NM/m²、经纬度文本)、`initialBearing`、`routeSegments`、`shiftCoordinateIntoWorldCopy`、`routePointIndexById`、`unwrapLongitudeSequence`;`calculateRouteLength` 重写为分段和;`RouteStyleContext` 增加可选高亮 getter + 高亮样式 |
+| `frontend/src/utils/mapRoute.test.ts` | 修改 | 70 → 100 用例:航段金值/累计/逐位一致、方位角 12 组含 JFK→LHR 外部参考、单位文本、世界副本平移 |
+| `frontend/src/components/RouteInfoFlyout.vue` | 新建 | 航线信息浮窗(只读):名称/总长(km+NM)/点数/起终点/可滚动航点表/航段块(段号·距离·累计·初始真方位)/定位操作/免责说明 |
+| `frontend/src/components/RouteInfoFlyout.test.ts` | 新建 | 10 用例:内容与只读约束(禁写接口、禁进绘制编辑态)、指针事件与配色一致性、不进入打印 |
+| `frontend/src/components/RoutePlannerPanel.vue` | 修改 | 点表新增「入站航段 / 累计」两列(起点显示「—」)、行点击/`#` 按钮定位航点、单位与免责说明、抽屉 440→520px |
+| `frontend/src/components/RoutePlannerPanel.test.ts` | 修改 | 6 → 12 用例:两列存在、起点占位符、初始真方位口径、WGS84/1 NM=1852 m 说明、定位路径只读断言、抽屉宽度 |
+| `frontend/src/composables/useRouteDrawing.ts` | 修改 | `selectRouteAtPixel` → `pickRouteAtPixel`(顶点/航段命中细节)、`highlightSegment`、`locateRoutePoint`、`getRouteExtent`;fit padding 提为 `ROUTE_FIT_PADDING` 并随抽屉加宽同步为 550 |
+| `frontend/src/views/MapWorkspaceView.vue` | 修改 | 测量真值/投影生命周期/互斥修复/按钮激活态;浮层容器 + 浮窗状态与 `postrender` 重锚定;rAF 合帧的坐标悬停提示;可发现性提示 |
+| `frontend/src/views/MapWorkspaceView.test.ts` | 新建 | 18 用例源码断言:互斥双向、投影切换同步测量、drawend 不清 source、悬停 rAF/门槛/清理、选线仍走 pickRouteAtPixel |
+| `frontend/src/types/index.ts` | 修改 | `RoutePointRoleRow`(派生基类)+ `RoutePointRow` 增加 `inboundLegText` / `cumulativeDistanceText` |
+| `frontend/src/types/routePlanning.ts` | 新建 | 任务 D:只读规划结果展示契约草案(纯类型,零运行时/零 API/零演示数据) |
+| `frontend/src/styles.css` | 修改 | `.map-overlay-root` / `.map-hover-coord` / `.route-info-flyout` 及航段列、单位说明样式;指针事件与打印规则 |
+| `docs/09/10/11/12` | 修改 | 架构 §5.12/§5.13 与文件清单校正、工作日志、工作总结、用户手册 |
+
+### 三、测试结果
+
+- `npm run typecheck`(vue-tsc -b):零错误
+- `npm test`(vitest run):14 个文件 **284** 个测试全部通过(197 → 284,新增 87)
+- `npm run build`:成功(`MapWorkspaceView` chunk 体积警告为既有问题)
+
+### 四、关键决策
+
+1. **面积语义变更是有据的更正,不是回归**:新算法实现的是 `ol/sphere` 自己文档所称的「大圆边」语义,并与 `getLength` 的大圆语义一致;代价是大范围高纬多边形相对旧值变化 ≤1.76%(小多边形 0.000%),已在文档与界面文案中如实说明。
+2. **不引入 `ol/Overlay`**:实测 `ol.css` 无 overlay 容器规则且 OL 以行内样式置 `pointer-events:none`,Overlay 只省下重锚定;浮层改挂 `.map-canvas` 的**兄弟节点**,与既有 `.map-tools`/`.map-status` 同一模式,不往 OL 的 target 里塞 Vue 子节点。
+3. **不新增 Select interaction / 第二条航路真值**:选中仍走 `pickRouteAtPixel`;高亮走样式层(可选 getter + 一条带自定义几何的 Style),不新增 source/layer;航路真值仍在 Store,地图 Feature 只负责显示。
+4. **保守的面板宽度调整**:点表新增两列后抽屉 440 → 520px,并把 `fitRoute` 的右侧让位提为 `ROUTE_FIT_PADDING` 常量同步到 550,避免定位后航路被抽屉压住。
+5. **保持「仅面板打开可选线」**:按任务书,优先采用改动小且体验明确的方案——补工具栏 tooltip 与状态栏提示让该条件可被发现,不自动打开面板、不新增无面板入口。
+6. **点表行点击会先排除输入框/按钮**:否则编辑坐标或删除航路点时地图会跟着乱飞。
+
+---
 ## 会话 #23 — 航路方向标记（起点 / 中途点 / 终点）
 
 **日期**: 2026-09-21

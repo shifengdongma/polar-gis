@@ -685,7 +685,9 @@ loadSelectedDatasets (批量确认后)
 - 自由绘制：`Draw({ type: 'LineString', minPoints: 2 })`，草图走**独立 `Collection<Feature>`**（绝不落入 routeSource，避免重复线与海图遮挡），草图 overlay zIndex 抬到 96；`drawend` → `toLonLat` 全部坐标 → 写回 Store → 自动回到 idle；`removeLastPoint()` 撤销点、`abortDrawing()` 取消绘制（空草稿一并删除）。
 - 拖拽编辑：`Modify({ features: Collection([activeFeature]) })` 只允许拖动当前选中航路；`modifyend` → `toLonLat` → `replaceRoutePoints`（按索引复用 point id，表格状态稳定）。
 - **拖拽安全**：`modifystart/modifyend` 维护 `isDragging`，拖拽期间 reconcile 直接短路；坐标不变（1e-6 米容差 `coordinatesEqual`）绝不 `setGeometry`，保证 Feature 身份稳定、不打断 Modify 内部 rBush。
-- 点击选中：不用 Select interaction，复用 `singleclick` 里的 `forEachFeatureAtPixel` 命中测试（layerFilter 限定 routeLayer + hitTolerance 6），守卫 `interactionMode === 'idle' && !measureInteraction && 面板打开`，避免与测量/要素识别交互竞争。
+- 点击选中：不用 Select interaction，复用 `singleclick` 里的 `forEachFeatureAtPixel` 命中测试（layerFilter 限定 routeLayer + hitTolerance 6），守卫 `interactionMode === 'idle' && measureMode === 'none' && 面板打开`，避免与测量/要素识别交互竞争。
+- 命中细节（会话 #24）：`pickRouteAtPixel(pixel, coordinate)` 在命中要素后继续判定——先在**视空间**（`px × resolution`）找最近顶点（容差 9px，大于起终点标记半径 7px），再找最近航段（容差 6px，与 `forEachFeatureAtPixel` 的 hitTolerance 同源）。渲染几何的顶点按 `seq` 升序且已 unwrap，因此「渲染下标 i ↔ 第 i 个航路点」。EPSG:3857 下点击坐标先经 `shiftCoordinateIntoWorldCopy()` 平移到与渲染几何同一世界副本（`fromLonLat` 不回绕、`toLonLat` 会回绕，不这么做会命中到另一个副本）。
+- 高亮走样式层：`RouteStyleContext.getHighlightedSegment / getHighlightedPointIndex`（**可选成员**，不影响既有调用点）在 `createRouteStyle` 末尾追加一条带自定义几何的 `Style`（高亮段用 `LineString`、定位点用 `Point`），**不新增 source / layer / interaction**；笔触与 image 走模块级缓存，只有 Style 包装器每帧新建（与既有的起终点标记同一成本模型）。隐藏航路返回 `undefined`，不进入渲染重放组，因此**天然不可命中**。
 
 ### 投影处理
 
@@ -702,6 +704,56 @@ loadSelectedDatasets (批量确认后)
 
 ---
 
+## 5.12 测量与地图内浮层 (会话 #24)
+
+### 测量真值与投影生命周期
+
+- **真值口径**：测量结果一律由 WGS84 真值 `MeasureDraft { kind, lonLat }` 生成（`utils/mapMeasure.ts`），不由「当前投影下的几何」生成。因此**结果文本与投影无关**——切换投影只重建显示几何，同一组地理点必然得到同一数值，整类「旧投影几何配上新投影解释」的错值从构造上消失。
+- **drawend 顺序陷阱**：`ol/interaction/Draw` 的 `finishDrawing()` 是**先派发 `drawend`、再把要素加入 source**（`Draw.js:1392-1401`）。因此 `drawend` 回调里**只落真值与文本**，绝不清空 `measureSource`，否则会与 OL 随后的 `addFeature` 撞成重复图形。显示几何的重建只发生在投影切换路径（`rebuildMeasureGeometry()`）。
+- **`measureMode` 是测量态唯一真值**（`'none' | 'LineString' | 'Polygon'`）：驱动工具栏 `active`、`singleclick` 守卫与 Draw 生命周期；`measureInteraction` 退化为纯 OL 句柄（非响应式）。
+- **投影切换**（`switchProjection()` 内紧跟 `reloadRouteGeometry()` 调用 `syncMeasureForProjection()`，与 `reloadAisGeometry()` 同范式）：绘制进行中 → 结束 Draw、清图形与真值、提示「投影已切换，请重新测量」；已完成 → 保留真值，按新投影重建显示几何并从真值重新生成结果。
+- **互斥缺口修复**：原实现只有航路一侧完整——`activateMeasure` 不清 `queryMode`/`weatherMode`，`toggleQueryMode`/`toggleWeatherMode` 也不调 `stopMeasureInteraction()`，于是残留的测量 Draw 会让 `singleclick` 守卫**永久提前 return**，要素识别/气象静默失效。现为双向互斥，且测量按钮有激活态（可见而非静默）。
+
+### 球面面积算法
+
+`sphericalRingArea()` 采用 **Van Oosterom–Strackee 球面三角形立体角 + 以 0 号顶点扇形三角化**，半径取 `ol/sphere` 的 `DEFAULT_RADIUS`（与 `getDistance` 同一球体），并取环两侧中较小的一侧。
+
+| 相对 `ol/sphere.getArea` | 结果 |
+|---|---|
+| 环绕极点的环 | OL 恒返回 **0**（80°N 环解析真值 3,874,523 km²）；新算法给出非零正确值 |
+| 跨 180° 经线的环 | OL **偏大约 17 倍**（7,371,200 vs 433,600 km²）；新算法与同形状在常规经度下逐位相同 |
+| 小多边形 | 与 OL 一致（0.000%） |
+| 20°×6° 高纬盒 @70–76°N | 425,977 km²，比 OL 的 433,600 km² **小 1.76%** |
+| 解析闭式对照 | 80°N 平行圈 720 顶点 → 3,874,475 vs 真值 3,874,523（**0.001%**） |
+
+- 边按**大圆**处理，与 `getDistance`/`getLength` 的大圆语义一致；OL 的实现实际是 (λ, sinφ) 线性边（与其文档所称「大圆」不符）。
+- **与椭球测地线的差异**：球面模型比 WGS84 椭球测地线**偏短约 0.28%–0.42%**（高纬更大，中纬 45°N 约 −0.28%）。界面按「近似地表距离」表述，不宣称航海认证精度。
+- 单位：距离 **km + NM（1 NM = 1852 m）**，短距离兼显 m；面积恒用 **m² / km²**（面积不换算海里）。
+
+### 航段计算（唯一口径）
+
+- `routeSegments(points)` 按 `seq` 升序切分（n 点 → n−1 段），给出每段距离、累计距离与**初始真方位角**（`[0,360)`；重合点返回 null）。
+- `calculateRouteLength()` 重写为 `routeSegments(...).reduce(Σ distanceMeters)`——`ol/sphere` 的 `getLength` 内部本就是 `Σ getDistance`，故两者**逐位相同**，「分段之和 ≡ 总长」由构造成立。面板「入站航段 / 累计」两列与地图浮窗读同一份结果，不可能漂移。
+- 方位角是**初始真方位**（相对真北、出发瞬间的值），不是磁方位，也不代表整段恒定航向（沿大圆航行航向持续变化）。
+
+### 地图内浮层（坐标提示 + 航线信息浮窗）
+
+- **DOM 归属**：浮层挂在 `.map-canvas` 的**兄弟节点** `.map-overlay-root`（`position:absolute; inset:0; z-index:30; pointer-events:none`），与既有 `.map-tools` / `.map-status` 同一模式——不往 OpenLayers 的 target 里塞 Vue 子节点，避免与 OL 争抢 `.map-canvas` 子元素。`.map-canvas` 最终为 `inset:0`（`styles.css:350` 覆盖 `:161` 的 `72px 0 0`），故两者与地图视口同框，`map.getPixelFromCoordinate()` 可直接使用。
+- **不使用 `ol/Overlay`**：`ol.css` 无 overlay 容器规则且 OL 以行内样式置 `pointer-events:none`，Overlay 只省下重锚定，而重锚定本就是几行 `postrender` 监听。浮窗锚点点击时**原样保存 `event.coordinate`**（与渲染要素同一世界副本，平移缩放重锚定精确）；仅投影切换时由 WGS84 真值重算并用 `shiftCoordinateIntoWorldCopy()` 对齐副本。像素夹取在地图视口内（右侧让开 520px 抽屉），`flipX/flipY` 只由 `map.getSize()` 推导，**不读 DOM 布局**；`postrender` 仅在浮窗打开期间挂载，且仅当锚点真的移动时才写 ref（避免每帧重渲染）。
+- **浮窗是只读的**：只调用 `fitRoute()` / `locateRoutePoint()` / `highlightSegment()`，没有改名、加点、删点入口，也不进入绘制/编辑模式（由 `RouteInfoFlyout.test.ts` 源码断言禁用写接口守护）。
+- **指针事件**：容器 `pointer-events:none`，只有 `.route-info-flyout` 为 `auto`；坐标提示恒为 `none`（既不遮挡指针也不拦事件）。浮层不在 `.ol-viewport` 内，点击不可能冒泡到地图；`@media print` 中整体隐藏，故也不进入截图/打印输出。
+- **生命周期**：一个 `watch([revision, activeRouteId, interactionMode, routePanelVisible, currentCrs])` 对账——航路被删除/隐藏、面板关闭、进入绘制编辑态 → 关闭；航段序号失效 → 清除高亮；其余实时刷新。`toggleQueryMode` / `toggleWeatherMode` / `activateMeasure` / `deactivateOtherMapInteractions` 均先关闭浮窗，保证识别/气象的点击行为不被抢占。
+- **选线入口**：保持既有「仅面板打开时可选线」语义（`isSelectionEnabled: () => routePanelVisible.value`），只补可发现性——工具栏 tooltip 与状态栏提示（会话 #24 决策）。
+- **坐标提示门槛**：用 `ol/proj.getPointResolution()` 计算**指针处的地面分辨率**（米/像素）而非 zoom——同一 zoom 在 3857/3413 下地面精度相差数倍（实测 3857 zoom4 ≈ 2532 m/px、3413 zoom4 ≈ 39500 m/px），且同投影内随纬度变化。门槛 `HOVER_MIN_GROUND_RESOLUTION_METERS = 1000`；小数位 `clamp(floor(log10(111320 / 地面分辨率)), 2, 5)`，保证**末位数字不细于 1 像素**。复用既有 `pointermove` 监听 + `requestAnimationFrame` 合帧（每帧最多一次）。隐藏条件：低于门槛、指针离开地图、拖动期间、触控/触笔、浮窗打开、地图销毁、坐标非法。**`toLonLat` 对 EPSG:3413 的越界坐标会返回「有限但无意义」的值（不返回 NaN）**，故范围判定用显式检查（`containsCoordinate`，3857 因 `canWrapX()` 为 true 只校验纬度带）。
+
+## 5.13 后端规划结果展示契约草案 (任务 D,会话 #24)
+
+- `types/routePlanning.ts`：**纯类型文件,零运行时代码、零 API 调用、零演示数值**——`RoutePlanningStatus`（missing/loading/computing/failed/stale/complete）、`RoutePlanningRiskLevel`、`RoutePlanningSegmentResult`、`RoutePlanningResult`（routeId / resultVersion / computedAt / dataSource / 总距离 / 预计航时 / 风险等级与指标 / 分段结果）、`RoutePlanningResultAdapter`（接入层负责字段校验 + 单位与时间格式转换 + 身份区分）、`RoutePlanningViewState`（把「没有数值」编码进类型,避免 `?? 0` 把缺失当零）。
+- **展示原则**：只有 `status === 'complete'` 且字段非 null 才渲染数值;其余状态只显示状态文案与占位符,不显示 0、不沿用上一次的旧值;`stale` 必须显式告知「结果已过期」;`failed` 给出原因且不留半截数据。
+- **当前无任何页面消费该文件**（后端尚无航路规划接口,也没有可靠的航速/船舶参数/风险计算服务,不伪造这些数据）。接入方式与挂载位置见文件头注释。
+
+---
+
 ## 6. 文件清单
 
 ### 后端 (52 files)
@@ -710,11 +762,11 @@ loadSelectedDatasets (批量确认后)
 - 测试文件: `tests/` (9)
 - 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
 
-### 前端 (40 source files)
-- Vue 组件: `src/views/` (11), `src/components/` (2), `src/layouts/` (1) = 14
-- TypeScript 模块: `src/api/` (1), `src/stores/` (5), `src/types/` (1), `src/utils/` (11), `src/composables/` (1), `src/router/` (1) = 20
-- 入口: `src/main.ts`, `src/App.vue`, `src/env.d.ts` = 3
-- 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (7)
+### 前端 (38 source files + 14 test files，会话 #24 按磁盘实际清点修正)
+- Vue 组件: `src/views/` (11，含 `admin/` 8), `src/components/` (3), `src/layouts/` (1), `src/App.vue` (1) = 16
+- TypeScript 模块: `src/api/` (2), `src/stores/` (3), `src/types/` (2), `src/utils/` (11), `src/composables/` (1), `src/router/` (1), `src/main.ts` + `src/env.d.ts` (2) = 22
+- 测试: `*.test.ts` (14，与源码同目录，vitest + jsdom)
+- 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (8)
 
 ---
 
