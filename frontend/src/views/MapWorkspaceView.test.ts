@@ -123,10 +123,33 @@ describe('航路选中与浮窗', () => {
     expect(source).not.toContain('setActiveRoute(null)')
   })
 
-  it('航路面板关闭时仍不可选线,但界面必须说明该条件(可发现性)', () => {
-    expect(source).toContain('isSelectionEnabled: () => routePanelVisible.value')
-    expect(source).toContain('点击地图上的航路可查看详情')
-    expect(source).toContain('可在地图上点选航路查看详情')
+  it('航路点选不再依赖面板可见:singleclick 始终尝试命中(随时可点选)', () => {
+    expect(source).not.toContain('isSelectionEnabled')
+    const handler = source.match(/map\.on\('singleclick'[\s\S]*?\n  \}\)/)?.[0] ?? ''
+    expect(handler).not.toBe('')
+    expect(handler).toContain('pickRouteAtPixel')
+    expect(handler).not.toContain('routePanelVisible')
+  })
+
+  it('折叠/关闭航路面板不再强制关闭浮窗(仅重算锚点让位)', () => {
+    const body = functionBody('syncRouteFlyout')
+    expect(body).not.toBe('')
+    expect(body).not.toContain('routePanelVisible')
+    expect(body).toContain('updateRouteFlyoutPixel()')
+  })
+
+  it('可发现性提示:有可见航路即提示,不再以面板打开为条件', () => {
+    const line = source.split('\n').find((item) => item.includes('route-select-hint')) ?? ''
+    expect(line).not.toBe('')
+    expect(line).toContain('点击地图上的航路可查看详情')
+    expect(line).not.toContain('routePanelVisible')
+    expect(line).toContain('routesStore.routes.some')
+    // 工具栏 tooltip 同步说明「随时可点选」
+    expect(source).toContain('地图上随时可点选航路查看详情')
+  })
+
+  it('定位让位 padding 随面板折叠状态动态注入(折叠后利用全屏)', () => {
+    expect(source).toContain('getFitPadding')
   })
 
   it('浮层容器不吞地图指针事件', () => {

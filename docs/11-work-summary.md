@@ -1,7 +1,46 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-09-25
+> 最后更新: 2026-10-01
+
+---
+
+## 会话 #25 — 航路随时点选 + 两侧窗口折叠保障完整地图大屏（2026-10-01）
+
+### 修改了什么
+
+- **修改** `frontend/src/composables/useRouteDrawing.ts`：
+  - 删除 `RouteDrawingOptions.isSelectionEnabled`（接口成员 + `pickRouteAtPixel` 内的二次检查）——航路点选不再有任何选择门控
+  - 新增可选选项 `getFitPadding?: () => [上, 右, 下, 左]`；`fitRoute` 改用 `options.getFitPadding?.() ?? ROUTE_FIT_PADDING`
+  - `ROUTE_FIT_PADDING` 注释改为「两面板均打开时的默认回退」（不再是与抽屉宽度的硬编码耦合）
+- **修改** `frontend/src/views/MapWorkspaceView.vue`：
+  - `singleclick` 的 `else if (routePanelVisible.value)` → `else`（命中守卫仅剩既有互斥：`interactionMode/measureMode` 与识别/气象优先级）
+  - `syncRouteFlyout()` 关闭条件去掉 `!routePanelVisible.value`；`routePanelVisible` 保留在浮窗对账 watcher 中，语义变为「折叠/展开时重算锚点让位（540↔16）」
+  - 注入 `getFitPadding: () => [90, routePanelVisible ? 550 : 40, 90, layerPanelCollapsed ? 40 : 420]`
+  - 状态栏提示 `v-if` 改为「有可见航路即显示」；工具栏 🧭 tooltip 改为「打开面板绘制/管理航路，地图上随时可点选航路查看详情」
+- **修改** 测试：`MapWorkspaceView.test.ts`（重写「面板关闭不可选线」旧语义用例 → 4 条新语义断言）、`RoutePlannerPanel.test.ts`（+1 抽屉关闭按钮守卫）；**新建** `composables/useRouteDrawing.test.ts`（3 用例源码断言）
+- **修改** docs 09 / 10 / 11 / 12
+
+### 达到的效果
+
+- **航路随时可点选**：右侧航路面板关闭/折叠后，点击地图上的航路同样能选中并弹出航线信息浮窗；折叠抽屉不再打断查看——已打开的浮窗**保持显示**，仅重新夹取位置（展开抽屉时让位 540px，折叠后 16px）
+- **折叠即完整大屏**：左侧图层面板（标题栏按钮）与右侧航路抽屉（× / 工具栏 🧭）折叠后地图完整无遮挡；「定位整条航路」的让位随折叠状态自适应——两侧折叠后占满全屏（原硬编码 550/420 会让航路挤成窄带）
+- **可发现性修复**：状态栏「点击地图上的航路可查看详情」提示改为有可见航路即显示——原实现只在面板打开时显示，而面板打开时该提示恰好被 520px 抽屉覆盖，实际几乎不可见
+- **零侵入**：Store 与 localStorage payload 版本未改；后端、S-57/海图加载与渲染、AIS、测量、要素识别、气象、截图与投影切换全部未触碰；折叠抽屉仍会结束绘制/编辑（既有行为保留）
+
+### 验证结果
+
+- `npm run typecheck`（vue-tsc -b）：零错误
+- `npm test`（vitest run）：15 个文件 **291** 个测试全部通过（284 → 291，净增 7）
+- `npm run build`：成功（`MapWorkspaceView` chunk 体积警告为既有问题）
+- TDD：6 条新断言先实测 RED（恰为预期失败、均因功能缺失），实现后 GREEN
+- **浏览器手工验收项（需可运行的前后端环境，本次未执行）**：抽屉关闭时点选航路、浮窗折叠后保持与重夹取、全屏定位、互斥回归、投影切换重锚定、截图不含浮层
+
+### 已知限制
+
+- 面板打开时状态栏位于 520px 抽屉之下（既有布局），该提示在抽屉打开期间不可见——此时用户本就处于航路面板中，影响可忽略
+- 点选优先级不变：测量/要素识别/气象进行中时点击属于当前交互，不触发航路点选（既有互斥语义，界面文案已说明）
+- 浮窗/坐标系精度等既有精度声明（近似地表距离、非实际可航里程）不受本次改动影响
 
 ---
 

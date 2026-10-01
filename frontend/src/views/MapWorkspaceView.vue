@@ -308,7 +308,8 @@ const routeDrawing = useRouteDrawing({
   getMap: () => map,
   getCrs: () => currentCrs.value,
   deactivateOthers: deactivateOtherMapInteractions,
-  isSelectionEnabled: () => routePanelVisible.value,
+  // 定位让位随面板折叠状态自适应:两侧折叠后「定位整条航路」占满完整地图大屏
+  getFitPadding: () => [90, routePanelVisible.value ? 550 : 40, 90, layerPanelCollapsed.value ? 40 : 420],
 })
 // 关闭航路面板时结束绘制/编辑交互,不影响原地图浏览
 watch(routePanelVisible, (open) => {
@@ -408,14 +409,15 @@ function closeRouteFlyout() {
 }
 
 /**
- * 浮窗与 Store 对账:航路被删除 / 隐藏 / 面板关闭 / 进入绘制编辑态 → 关闭;
+ * 浮窗与 Store 对账:航路被删除 / 隐藏 / 进入绘制编辑态 → 关闭;
  * 航段序号失效(航点被删) → 清掉高亮;其余情况内容直接读 Store 实时刷新。
+ * 面板折叠/展开**不**关闭浮窗,只经 updateRouteFlyoutPixel() 重算锚点让位(540↔16)。
  */
 function syncRouteFlyout() {
   const state = routeFlyout.value
   if (!state) return
   const route = routesStore.routes.find((item) => item.id === state.routeId)
-  if (!route || !route.visible || !routePanelVisible.value || routesStore.interactionMode !== 'idle') {
+  if (!route || !route.visible || routesStore.interactionMode !== 'idle') {
     closeRouteFlyout()
     return
   }
@@ -781,8 +783,9 @@ async function buildMap() {
     const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
-    else if (routePanelVisible.value) {
+    else {
       // 命中航路 → 选中并弹浮窗;命中空白 → 只关浮窗,不动选中航路
+      // 点选不依赖航路面板是否打开(面板折叠后仍可点击航路查看详情)
       const pick = routeDrawing.pickRouteAtPixel(event.pixel, event.coordinate)
       if (pick) openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
       else closeRouteFlyout()
@@ -2660,14 +2663,14 @@ onBeforeUnmount(() => {
       <el-tooltip content="点位气象演示" placement="left"><button :class="{ active: weatherMode }" @click="toggleWeatherMode"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
       <el-tooltip content="测量距离" placement="left"><button :class="{ active: measureMode === 'LineString' }" @click="activateMeasure('LineString')"><el-icon><MapLocation /></el-icon></button></el-tooltip>
       <el-tooltip content="测量面积" placement="left"><button :class="{ active: measureMode === 'Polygon' }" @click="activateMeasure('Polygon')"><el-icon><FullScreen /></el-icon></button></el-tooltip>
-      <el-tooltip content="航路规划模拟 · 打开后可在地图上点选航路查看详情" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
+      <el-tooltip content="航路规划模拟 · 打开面板绘制/管理航路，地图上随时可点选航路查看详情" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
       <el-tooltip content="地图截图" placement="left"><button @click="captureMap"><el-icon><Camera /></el-icon></button></el-tooltip>
       <el-tooltip content="打印地图" placement="left"><button @click="printMap"><el-icon><Printer /></el-icon></button></el-tooltip>
     </div>
     <div class="map-status">
       <span>{{ coordinateText }}</span><span>{{ currentCrs }}</span>
-      <!-- 可发现性:航路选中仅在面板打开时可用,这里把该条件说清楚 -->
-      <span v-if="routePanelVisible" class="route-select-hint">点击地图上的航路可查看详情</span>
+      <!-- 可发现性:有可见航路即提示点选入口(点选与面板是否打开无关) -->
+      <span v-if="routesStore.routes.some((route) => route.visible)" class="route-select-hint">点击地图上的航路可查看详情</span>
       <span v-if="measureText" class="measure-result">{{ measureText }} <button @click="clearMeasure">清除</button></span>
       <template v-if="perfDisplay">
         <span class="perf-stat" title="活动图层">活动 {{ perfDisplay.activeLayerCount }}</span>

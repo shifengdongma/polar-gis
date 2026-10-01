@@ -48,9 +48,10 @@ const ROUTE_LAYER_Z_INDEX = 95
 const SKETCH_OVERLAY_Z_INDEX = 96
 
 /**
- * fitRoute 的让位 padding [上, 右, 下, 左]。
+ * fitRoute 的让位 padding 默认值 [上, 右, 下, 左] —— 两面板均打开时的取值:
  * 右侧 550 = 航路面板抽屉 520px + 30px 边距;左侧 420 让开图层面板。
- * 抽屉宽度改动时必须同步这里,否则定位后航路会被抽屉压住。
+ * 实际调用由视图经 getFitPadding 按折叠状态动态注入(折叠后让位收窄至 40,
+ * 定位占满完整地图大屏);本常量仅作未注入时的回退,抽屉宽度改动时须同步。
  */
 const ROUTE_FIT_PADDING: [number, number, number, number] = [90, 550, 90, 420]
 
@@ -75,8 +76,12 @@ export interface RouteDrawingOptions {
   getCrs: () => string
   /** 进入绘制/编辑前由视图关闭要素识别 / 气象 / 测量等互斥交互 */
   deactivateOthers: () => void
-  /** 仅当返回 true 时允许点击地图选中航路(航路面板打开时) */
-  isSelectionEnabled?: () => boolean
+  /**
+   * fitRoute 的让位 padding [上, 右, 下, 左],由视图按面板折叠状态动态给出
+   * (右侧抽屉展开时右让位 550,折叠后 40)——折叠两侧窗口后定位占满完整大屏。
+   * 不注入时回退 ROUTE_FIT_PADDING(两面板均打开时的默认值)。
+   */
+  getFitPadding?: () => [number, number, number, number]
 }
 
 export interface RouteDrawingApi {
@@ -327,7 +332,9 @@ export function useRouteDrawing(options: RouteDrawingOptions): RouteDrawingApi {
     const geometry = feature.getGeometry()
     if (!geometry) return
     const extent = shiftExtentIntoProjection(geometry.getExtent(), options.getCrs())
-    map.getView().fit(extent, { padding: ROUTE_FIT_PADDING, maxZoom: 12, duration: 500 })
+    // 让位 padding 随面板折叠状态动态注入:折叠后定位占满完整地图大屏
+    const padding = options.getFitPadding?.() ?? ROUTE_FIT_PADDING
+    map.getView().fit(extent, { padding, maxZoom: 12, duration: 500 })
   }
 
   /** 点到线段的距离(视空间/投影平面内,与屏幕上看到的直线段一致) */
@@ -353,7 +360,6 @@ export function useRouteDrawing(options: RouteDrawingOptions): RouteDrawingApi {
   function pickRouteAtPixel(pixel: Pixel, coordinate: number[]): RoutePickResult | null {
     const map = options.getMap()
     if (!map) return null
-    if (options.isSelectionEnabled && !options.isSelectionEnabled()) return null
     let result: RoutePickResult | null = null
     map.forEachFeatureAtPixel(
       pixel,

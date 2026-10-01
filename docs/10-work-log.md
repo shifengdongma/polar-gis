@@ -1,7 +1,70 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-09-25
+> 最后更新: 2026-10-01
+
+---
+
+## 会话 #25 — 航路随时点选 + 两侧窗口折叠保障完整地图大屏
+
+**日期**: 2026-10-01
+**基线**: 分支 `master`,HEAD `c43c413`,工作区起始干净(`.gitignore` 有一处与本次任务无关的既存改动,随本次提交一并入库,已在提交说明中注明)
+**目标**: 完成用户提出的两项修复——① 航路点选不再依赖右侧航路面板打开(随时可点击地图航路查看详情,面板折叠后浮窗保持显示);② 两侧窗口均可折叠以保障完整地图大屏,折叠后航路点选/浮窗仍可用。
+**已确认的产品决策(用户选定)**: 折叠 = 完全隐藏 + 常驻按钮恢复(左侧=标题栏按钮,右侧=抽屉 × / 工具栏 🧭,**不新增贴边把手 UI**);折叠右侧窗口时已打开的浮窗**保持显示**。
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 移除航路点选的双重门控(`isSelectionEnabled` 选项 + `singleclick` 面板分支) | ✅ 完成 |
+| 2 | `syncRouteFlyout` 不再因面板关闭而关闭浮窗(仅重算锚点让位 540↔16) | ✅ 完成 |
+| 3 | 定位让位 padding 随面板折叠状态动态注入(`getFitPadding`) | ✅ 完成 |
+| 4 | 可发现性:状态栏提示改为「有可见航路即显示」+ 工具栏 tooltip 更新 | ✅ 完成 |
+| 5 | TDD:先写新断言实测 RED,再实现转 GREEN;全套测试 + typecheck + build | ✅ 完成(291 测试) |
+| 6 | 文档 09/10/11/12 更新 + git 提交推送 | ✅ 完成 |
+
+### 一、现状核对(已定位的缺陷)
+
+| # | 问题 | 证据 |
+|---|------|------|
+| 1 | 航路点选被**双重门控**在面板可见性上,面板关闭时点击航线无任何反应 | `MapWorkspaceView.vue` `singleclick` 的 `else if (routePanelVisible.value)` 分支 + `useRouteDrawing` 的 `isSelectionEnabled: () => routePanelVisible.value`(命中函数内二次检查) |
+| 2 | 关闭/折叠航路面板**强制关闭**已打开的浮窗 | `syncRouteFlyout()` 关闭条件含 `!routePanelVisible.value` |
+| 3 | 折叠两侧窗口后「定位整条航路」仍按 550/420 让位,全屏地图上被挤成窄带 | `fitRoute` 硬编码 `ROUTE_FIT_PADDING = [90, 550, 90, 420]` |
+| 4 | 可发现性提示只在面板打开时显示(且此时该提示恰被 520px 抽屉覆盖,实际不可见) | 状态栏 `v-if="routePanelVisible"` |
+
+### 二、修复方式
+
+1. **去门控(点选随时可用)**:删除 `RouteDrawingOptions.isSelectionEnabled`(接口成员 + `pickRouteAtPixel` 内检查)与视图侧注入;`singleclick` 的 `else if (routePanelVisible.value)` → `else`。命中守卫仅剩既有互斥:`interactionMode !== 'idle' || measureMode !== 'none'` 提前返回 + 识别/气象分支优先,语义不变。
+2. **浮窗与面板解耦**:`syncRouteFlyout()` 关闭条件去掉 `!routePanelVisible.value`(保留:航路被删除/隐藏、进入绘制编辑态);`routePanelVisible` 保留在浮窗对账 watcher 列表,语义变为「面板折叠/展开时重算锚点让位(540↔16)」。折叠抽屉仍结束绘制/编辑(`watch(routePanelVisible)` 保留不动)。
+3. **让位自适应**:`RouteDrawingOptions` 新增可选 `getFitPadding?: () => [上,右,下,左]`;`fitRoute` 改用 `options.getFitPadding?.() ?? ROUTE_FIT_PADDING`;视图注入 `[90, routePanelVisible ? 550 : 40, 90, layerPanelCollapsed ? 40 : 420]`;`ROUTE_FIT_PADDING` 降级为未注入时的默认回退(注释同步)。
+4. **可发现性**:状态栏提示改为 `v-if="routesStore.routes.some((route) => route.visible)"`(与面板无关);工具栏 🧭 tooltip 改为「航路规划模拟 · 打开面板绘制/管理航路,地图上随时可点选航路查看详情」。
+
+### 三、修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `frontend/src/composables/useRouteDrawing.ts` | 修改 | 删除 `isSelectionEnabled` 门控;新增 `getFitPadding` 选项;`fitRoute` 动态让位;常量与选项注释更新 |
+| `frontend/src/views/MapWorkspaceView.vue` | 修改 | `singleclick` 去面板分支;`syncRouteFlyout` 移除面板条件并更新文档注释;`getFitPadding` 注入;状态栏提示与 toolbar tooltip 更新 |
+| `frontend/src/views/MapWorkspaceView.test.ts` | 修改 | 重写锁定旧语义的用例(「面板关闭不可选线」)为 4 条新语义断言:无 `isSelectionEnabled`、singleclick 处理函数不含 `routePanelVisible` 且含 `pickRouteAtPixel`、`syncRouteFlyout` 不含 `routePanelVisible` 且仍含 `updateRouteFlyoutPixel()`、提示行不受面板门控且含新 tooltip 文案、`getFitPadding` 已注入 |
+| `frontend/src/composables/useRouteDrawing.test.ts` | 新建 | 3 用例源码断言:无任何选择门控;`fitRoute` 使用 `getFitPadding` 且保留 `ROUTE_FIT_PADDING` 回退;默认常量保持 `[90, 550, 90, 420]` |
+| `frontend/src/components/RoutePlannerPanel.test.ts` | 修改 | +1 守卫断言:抽屉未禁用自带关闭按钮(`:show-close="false"` 不存在)——折叠路径之一保持可用 |
+| `docs/09/10/11/12` | 修改 | 架构 §5.11/§5.12 陈旧表述更新(守卫、生命周期、选线入口、让位)、工作日志、工作总结、用户手册 |
+
+### 四、测试结果
+
+- `npm run typecheck`(vue-tsc -b):零错误
+- `npm test`(vitest run):15 个文件 **291** 个测试全部通过(284 → 291,净增 7:重写 1 条 + 新增 6 条)
+- `npm run build`:成功(`MapWorkspaceView` chunk 体积警告为既有问题)
+- **TDD 过程**:先写 6 条新断言并实测 RED——恰为预期的 6 个失败,全部因功能缺失(而非笔误/正则错误);实现后聚焦文件 GREEN(37 通过),再全套 GREEN
+- **浏览器手工验收项(需可运行的前后端环境,本次未执行)**:① 抽屉关闭时点击航路 → 选中 + 浮窗;② 浮窗打开时折叠抽屉 → 浮窗保持显示并重新夹取位置,再展开 → 让位 540;③ 左面板折叠 + 抽屉关闭 → 全屏地图,点选仍可用、「定位整条航路」占满全屏;④ 测量/要素识别/气象/绘制编辑互斥不回归,编辑中折叠抽屉 → 退出编辑;⑤ 点空白只关浮窗不改选中,点另一条航路即时切换;⑥ 投影切换后浮窗重锚定;截图/打印不含浮层
+
+### 五、关键决策
+
+1. **折叠形态 = 完全隐藏 + 常驻按钮恢复**(用户确认):左侧沿用既有标题栏按钮,右侧沿用抽屉 × / 工具栏 🧭;不新增贴边把手 UI,不新增任何折叠状态 ref。
+2. **浮窗保持显示**(用户确认):折叠右侧窗口不再关闭浮窗,只在面板开合时重算锚点让位(540↔16);关闭途径为点击地图空白处、浮窗 ×,或进入绘制/编辑态。
+3. **门控整体删除而非保留开关**:`isSelectionEnabled` 是唯一门控收口且唯一消费方即本视图,直接删除比留 `() => true` 更难回退,并由源码断言守护防重构回归。
+4. **让位自适应而非保留硬编码**:折叠后若仍按 550/420 让位,「定位整条航路」会在全屏地图上挤成窄带,与「完整地图大屏」直接冲突;顺带解除了「抽屉宽度改动须同步常量」的耦合脆弱性(常量注释已改为「默认回退」)。
+5. **不新增测量/识别互斥守卫**:点选仍只在「无其他地图交互」时发生——`singleclick` 顶部守卫与识别/气象优先级分支保持原样,本次仅移除面板可见性这一与交互无关的条件。
 
 ---
 

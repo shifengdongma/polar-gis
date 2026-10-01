@@ -685,9 +685,10 @@ loadSelectedDatasets (批量确认后)
 - 自由绘制：`Draw({ type: 'LineString', minPoints: 2 })`，草图走**独立 `Collection<Feature>`**（绝不落入 routeSource，避免重复线与海图遮挡），草图 overlay zIndex 抬到 96；`drawend` → `toLonLat` 全部坐标 → 写回 Store → 自动回到 idle；`removeLastPoint()` 撤销点、`abortDrawing()` 取消绘制（空草稿一并删除）。
 - 拖拽编辑：`Modify({ features: Collection([activeFeature]) })` 只允许拖动当前选中航路；`modifyend` → `toLonLat` → `replaceRoutePoints`（按索引复用 point id，表格状态稳定）。
 - **拖拽安全**：`modifystart/modifyend` 维护 `isDragging`，拖拽期间 reconcile 直接短路；坐标不变（1e-6 米容差 `coordinatesEqual`）绝不 `setGeometry`，保证 Feature 身份稳定、不打断 Modify 内部 rBush。
-- 点击选中：不用 Select interaction，复用 `singleclick` 里的 `forEachFeatureAtPixel` 命中测试（layerFilter 限定 routeLayer + hitTolerance 6），守卫 `interactionMode === 'idle' && measureMode === 'none' && 面板打开`，避免与测量/要素识别交互竞争。
+- 点击选中：不用 Select interaction，复用 `singleclick` 里的 `forEachFeatureAtPixel` 命中测试（layerFilter 限定 routeLayer + hitTolerance 6），守卫 `interactionMode === 'idle' && measureMode === 'none'`（**会话 #25 起不含面板可见性**——点选随时可用，折叠/关闭航路面板不影响点选；面板折叠后浮窗也不再被强制关闭，仅重算锚点让位），避免与测量/要素识别交互竞争。
 - 命中细节（会话 #24）：`pickRouteAtPixel(pixel, coordinate)` 在命中要素后继续判定——先在**视空间**（`px × resolution`）找最近顶点（容差 9px，大于起终点标记半径 7px），再找最近航段（容差 6px，与 `forEachFeatureAtPixel` 的 hitTolerance 同源）。渲染几何的顶点按 `seq` 升序且已 unwrap，因此「渲染下标 i ↔ 第 i 个航路点」。EPSG:3857 下点击坐标先经 `shiftCoordinateIntoWorldCopy()` 平移到与渲染几何同一世界副本（`fromLonLat` 不回绕、`toLonLat` 会回绕，不这么做会命中到另一个副本）。
 - 高亮走样式层：`RouteStyleContext.getHighlightedSegment / getHighlightedPointIndex`（**可选成员**，不影响既有调用点）在 `createRouteStyle` 末尾追加一条带自定义几何的 `Style`（高亮段用 `LineString`、定位点用 `Point`），**不新增 source / layer / interaction**；笔触与 image 走模块级缓存，只有 Style 包装器每帧新建（与既有的起终点标记同一成本模型）。隐藏航路返回 `undefined`，不进入渲染重放组，因此**天然不可命中**。
+- 定位让位自适应（会话 #25）：`fitRoute` 的让位 padding 不再硬编码，由视图经 `getFitPadding` 按面板折叠状态注入（右侧抽屉开 550 / 折叠 40；左侧图层面板开 420 / 折叠 40），`ROUTE_FIT_PADDING = [90, 550, 90, 420]` 降级为未注入时的默认回退——两侧窗口折叠后「定位整条航路」占满完整地图大屏。
 
 ### 投影处理
 
@@ -742,8 +743,8 @@ loadSelectedDatasets (批量确认后)
 - **不使用 `ol/Overlay`**：`ol.css` 无 overlay 容器规则且 OL 以行内样式置 `pointer-events:none`，Overlay 只省下重锚定，而重锚定本就是几行 `postrender` 监听。浮窗锚点点击时**原样保存 `event.coordinate`**（与渲染要素同一世界副本，平移缩放重锚定精确）；仅投影切换时由 WGS84 真值重算并用 `shiftCoordinateIntoWorldCopy()` 对齐副本。像素夹取在地图视口内（右侧让开 520px 抽屉），`flipX/flipY` 只由 `map.getSize()` 推导，**不读 DOM 布局**；`postrender` 仅在浮窗打开期间挂载，且仅当锚点真的移动时才写 ref（避免每帧重渲染）。
 - **浮窗是只读的**：只调用 `fitRoute()` / `locateRoutePoint()` / `highlightSegment()`，没有改名、加点、删点入口，也不进入绘制/编辑模式（由 `RouteInfoFlyout.test.ts` 源码断言禁用写接口守护）。
 - **指针事件**：容器 `pointer-events:none`，只有 `.route-info-flyout` 为 `auto`；坐标提示恒为 `none`（既不遮挡指针也不拦事件）。浮层不在 `.ol-viewport` 内，点击不可能冒泡到地图；`@media print` 中整体隐藏，故也不进入截图/打印输出。
-- **生命周期**：一个 `watch([revision, activeRouteId, interactionMode, routePanelVisible, currentCrs])` 对账——航路被删除/隐藏、面板关闭、进入绘制编辑态 → 关闭；航段序号失效 → 清除高亮；其余实时刷新。`toggleQueryMode` / `toggleWeatherMode` / `activateMeasure` / `deactivateOtherMapInteractions` 均先关闭浮窗，保证识别/气象的点击行为不被抢占。
-- **选线入口**：保持既有「仅面板打开时可选线」语义（`isSelectionEnabled: () => routePanelVisible.value`），只补可发现性——工具栏 tooltip 与状态栏提示（会话 #24 决策）。
+- **生命周期**：一个 `watch([revision, activeRouteId, interactionMode, routePanelVisible, currentCrs])` 对账——航路被删除/隐藏、进入绘制编辑态 → 关闭；航段序号失效 → 清除高亮；其余实时刷新。`routePanelVisible` 仍保留在监听列表，但语义（会话 #25 起）是「面板折叠/展开时重算锚点让位（540↔16）」，**不再关闭浮窗**。`toggleQueryMode` / `toggleWeatherMode` / `activateMeasure` / `deactivateOtherMapInteractions` 均先关闭浮窗，保证识别/气象的点击行为不被抢占。
+- **选线入口**：**始终可用**（会话 #25）——`pickRouteAtPixel` 无任何选择门控（原 `isSelectionEnabled: () => routePanelVisible.value` 与视图 `singleclick` 的 `else if (routePanelVisible.value)` 分支均已移除），仅剩 `interactionMode === 'idle' && measureMode === 'none'` 与识别/气象优先级守卫。状态栏提示改为「有可见航路即显示」（与面板无关）。浮窗打开时折叠/关闭航路面板，浮窗**保持显示**并重新夹取位置。
 - **坐标提示门槛**：用 `ol/proj.getPointResolution()` 计算**指针处的地面分辨率**（米/像素）而非 zoom——同一 zoom 在 3857/3413 下地面精度相差数倍（实测 3857 zoom4 ≈ 2532 m/px、3413 zoom4 ≈ 39500 m/px），且同投影内随纬度变化。门槛 `HOVER_MIN_GROUND_RESOLUTION_METERS = 1000`；小数位 `clamp(floor(log10(111320 / 地面分辨率)), 2, 5)`，保证**末位数字不细于 1 像素**。复用既有 `pointermove` 监听 + `requestAnimationFrame` 合帧（每帧最多一次）。隐藏条件：低于门槛、指针离开地图、拖动期间、触控/触笔、浮窗打开、地图销毁、坐标非法。**`toLonLat` 对 EPSG:3413 的越界坐标会返回「有限但无意义」的值（不返回 NaN）**，故范围判定用显式检查（`containsCoordinate`，3857 因 `canWrapX()` 为 true 只校验纬度带）。
 
 ## 5.13 后端规划结果展示契约草案 (任务 D,会话 #24)

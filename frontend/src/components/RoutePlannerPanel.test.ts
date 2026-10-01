@@ -29,6 +29,12 @@ describe('RoutePlannerPanel 交互关键属性', () => {
     expect(source).toContain('经度(-180~180)')
     expect(source).toContain('纬度(-90~90)')
   })
+
+  it('抽屉自带关闭按钮保持可用(折叠右侧窗口的路径之一)', () => {
+    const drawerTag = source.match(/<el-drawer[\s\S]*?>/)?.[0] ?? ''
+    expect(drawerTag).not.toBe('')
+    expect(drawerTag).not.toContain(':show-close="false"')
+  })
 })
 
 /**
