@@ -57,10 +57,15 @@ services:
       GEOSERVER_WORKSPACE: polar_gis
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
+      # 冰情叠加(只读环境数据;worker 经锚点同样获得,但不读取数据)
+      ICE_ENABLED: ${ICE_ENABLED:-true}
+      ICE_DATA_ROOT: /data/ice
     restart: unless-stopped
     volumes:
       - shared-storage:/data/storage
       - ../data/s57-basemaps:/data/s57-basemaps:ro
+      # 冰情 NetCDF 数据目录只读挂载;本地验证可用 ICE_DATA_HOST_PATH 覆盖
+      - ${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro
     depends_on:
       postgres:
         condition: service_healthy

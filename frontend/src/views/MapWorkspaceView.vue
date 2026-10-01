@@ -47,9 +47,13 @@ import { unByKey } from 'ol/Observable'
 import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
+import IceLayerPanel from '../components/IceLayerPanel.vue'
+import IceTimeline from '../components/IceTimeline.vue'
+import IceValueTooltip from '../components/IceValueTooltip.vue'
 import RouteInfoFlyout from '../components/RouteInfoFlyout.vue'
 import RoutePlannerPanel from '../components/RoutePlannerPanel.vue'
 import WeatherChart from '../components/WeatherChart.vue'
+import { useIceOverlay } from '../composables/useIceOverlay'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useProjectsStore } from '../stores/projects'
 import { useRoutesStore } from '../stores/routes'
@@ -232,7 +236,8 @@ function flushHover() {
   hoverRaf = 0
   const coordinate = hoverCoordinate
   const pixel = hoverPixel
-  if (!hoverEnabled || !coordinate || !pixel || routeFlyout.value) {
+  // 冰情值浮窗显示期间隐藏经纬度提示(优先级:地图工具/航路浮窗 > 冰情 > 经纬度)
+  if (!hoverEnabled || !coordinate || !pixel || routeFlyout.value || iceOverlay.hover.value) {
     hover.value = null
     return
   }
@@ -579,6 +584,40 @@ const aisLayer = new VectorLayer({
   }),
 })
 
+// ── 冰情叠加(独立环境叠加层) ──────────────────────────────────────
+// 与 S-57 图层状态体系彻底解耦:两个独立 XYZ TileLayer 直接挂到既有地图,
+// 不进入 runtimeLayers / Render Bundle / 渲染调度;hover 复用唯一的
+// pointermove 分发,不注册第二个地图监听。瓦片请求管线(限流队列 + LRU
+// 缓存 + 丢弃即中止)复用海图同一套通用实例 —— 实测自管 <img> 请求会
+// 堆积拖垮地图(会话 #26.1)。
+const icePanelOpen = ref(false)
+const iceOverlay = useIceOverlay({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  // 与海图瓦片共享的请求管线:全局并发上限 + 缓存复用 + 中止释放
+  tileCache,
+  tileRequestQueue,
+  // 测量/识别/气象/航路绘制编辑/航路浮窗进行中 → 暂停冰情值查询
+  // (优先级:航路浮窗/当前地图工具 > 冰情 hover > 普通经纬度 hover)
+  canQueryValue: () =>
+    routesStore.interactionMode === 'idle' &&
+    measureMode.value === 'none' &&
+    !queryMode.value &&
+    !weatherMode.value &&
+    !routeFlyout.value,
+})
+/** 时间轴让位:随图层面板折叠 / 航路面板展开自适应(不写死像素) */
+const iceTimelineLeft = computed(() => (layerPanelCollapsed.value ? 16 : 300))
+const iceTimelineRight = computed(() => (routePanelVisible.value ? 540 : 16))
+/** 环境叠加菜单中的冰情状态文案 */
+const iceOverlayState = computed(() => {
+  if (iceOverlay.error.value) return '不可用'
+  if ((iceOverlay.info.value?.dates.length ?? 0) === 0) return '无数据'
+  return iceOverlay.concentrationVisible.value || iceOverlay.thicknessVisible.value
+    ? '已开启'
+    : '未开启'
+})
+
 watch(layerSearch, () => {
   window.clearTimeout(layerSearchTimer)
   layerSearchTimer = window.setTimeout(() => {
@@ -759,17 +798,27 @@ async function buildMap() {
   map.addLayer(measureLayer)
   map.addLayer(aisLayer)
   map.addLayer(routeDrawing.layer)
+  iceOverlay.attach()
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
   hoverViewport = map.getViewport()
   hoverViewport.addEventListener('pointerleave', hideHover)
+  hoverViewport.addEventListener('pointerleave', iceOverlay.clearHover)
   map.on('pointermove', (event) => {
     const [longitude, latitude] = toLonLat(event.coordinate, currentCrs.value)
     coordinateText.value = `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`
     // 拖动期间不显示(平移时提示会跟着乱跑);非鼠标指针(触控)没有悬停语义
     const original = event.originalEvent as PointerEvent | undefined
-    if (!hoverEnabled || event.dragging || original?.pointerType === 'touch' || original?.pointerType === 'pen') {
+    const pointerSuppressed =
+      !hoverEnabled || original?.pointerType === 'touch' || original?.pointerType === 'pen'
+    // 冰情 hover 与坐标提示共用唯一 pointermove;触控/拖动以 dragging=true 抑制查询
+    iceOverlay.handlePointerMove({
+      pixel: event.pixel,
+      coordinate: event.coordinate,
+      dragging: event.dragging || pointerSuppressed,
+    })
+    if (pointerSuppressed || event.dragging) {
       hideHover()
       return
     }
@@ -1324,6 +1373,8 @@ function switchProjection(crs: string) {
   reloadAisGeometry()
   routeDrawing.reloadRouteGeometry()
   syncMeasureForProjection()
+  // 冰情:保留日期/可见性/透明度,只替换 XYZ Source 与 TileGrid
+  iceOverlay.reloadForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -2411,6 +2462,7 @@ async function toggleAis() {
 
 function handleOverlayCommand(command: string) {
   if (command === 'ais') void toggleAis()
+  else if (command === 'ice') icePanelOpen.value = !icePanelOpen.value
 }
 
 function reloadAisGeometry() {
@@ -2449,6 +2501,8 @@ onMounted(async () => {
     await nextTick()
     await buildMap()
     routeDrawing.syncRoutesToMap()
+    // 冰情:数据加载失败只降级为"无可用冰情数据",绝不影响地图
+    void iceOverlay.loadInfo()
     startPerfPoll()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '项目地图加载失败'))
@@ -2461,8 +2515,10 @@ onBeforeUnmount(() => {
   closeRouteFlyout()
   hideHover()
   hoverViewport?.removeEventListener('pointerleave', hideHover)
+  hoverViewport?.removeEventListener('pointerleave', iceOverlay.clearHover)
   hoverViewport = null
   routeDrawing.dispose()
+  iceOverlay.dispose()
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
@@ -2624,15 +2680,20 @@ onBeforeUnmount(() => {
         </template>
         <el-empty v-else class="layer-empty" description="未找到匹配图层" :image-size="36" />
       </div>
+      <!-- 冰情信息(独立环境叠加层,不进入海图图层体系) -->
+      <IceLayerPanel v-if="icePanelOpen" :ice="iceOverlay" />
       <div class="layer-panel-footer">
         <el-dropdown trigger="click" placement="top-start" @command="handleOverlayCommand">
           <button class="overlay-menu-trigger" type="button" aria-label="环境叠加">
-            <el-icon><Operation /></el-icon><span>环境叠加</span><span class="overlay-menu-count">1</span>
+            <el-icon><Operation /></el-icon><span>环境叠加</span><span class="overlay-menu-count">2</span>
           </button>
           <template #dropdown>
             <el-dropdown-menu class="overlay-menu">
               <el-dropdown-item command="ais">
                 <span class="demo-badge">演示</span><span>AIS 船位</span><span class="overlay-state">{{ aisVisible ? '已开启' : '未开启' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="ice">
+                <span>冰情信息</span><span class="overlay-state">{{ iceOverlayState }}</span>
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -2656,6 +2717,18 @@ onBeforeUnmount(() => {
         :segment-index="routeFlyoutSegmentIndex"
         :drawing="routeDrawing"
         @close="closeRouteFlyout"
+      />
+      <!-- 冰情值浮窗(只读,数据来自后端原始网格查询) -->
+      <IceValueTooltip v-if="iceOverlay.hover.value" :hover="iceOverlay.hover.value" />
+      <!-- 冰情时间轴:底部居中,左右让位随面板折叠状态自适应 -->
+      <IceTimeline
+        v-if="iceOverlay.timelineVisible.value"
+        :dates="iceOverlay.dates.value"
+        :current-index="iceOverlay.currentIndex.value"
+        :left-offset="iceTimelineLeft"
+        :right-offset="iceTimelineRight"
+        @step="iceOverlay.stepDate($event)"
+        @select="iceOverlay.setDate($event)"
       />
     </div>
     <div class="map-tools glass-panel">

@@ -532,6 +532,40 @@ class WeatherPointRequest(ApiModel):
     crs: str = "EPSG:4326"
 
 
+class IceFieldRead(ApiModel):
+    id: str
+    name: str
+    label: str
+    units: str
+    available: bool = True
+    # 字段在哪些日期真实存在(时间轴/开关禁用态的唯一依据;不自动补日期)
+    available_dates: list[str] = Field(default_factory=list)
+
+
+class IceInfoRead(ApiModel):
+    dates: list[str] = Field(default_factory=list)
+    fields: list[IceFieldRead] = Field(default_factory=list)
+    default_date: str | None = None
+    source: str = "netcdf"
+    source_crs: str = "EPSG:3411"
+    # 源网格(EPSG:3411 米)范围,前端经 WGS84 重投影到当前显示投影
+    extent: tuple[float, float, float, float] | None = None
+    missing_dates_are_excluded: bool = True
+
+
+class IceValueRead(ApiModel):
+    # value 保持首字段:miss 的响应体精确为 {"value": null}
+    # (路由以 response_model_exclude_unset=True 仅输出已设置的字段)
+    value: float | None = None
+    date: str | None = None
+    field: str | None = None
+    units: str | None = None
+    longitude: float | None = None
+    latitude: float | None = None
+    source_x: float | None = None
+    source_y: float | None = None
+
+
 T = TypeVar("T")
 
 

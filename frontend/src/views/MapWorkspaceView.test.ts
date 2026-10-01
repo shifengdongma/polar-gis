@@ -156,3 +156,56 @@ describe('航路选中与浮窗', () => {
     expect(source).toContain('class="map-overlay-root"')
   })
 })
+
+/**
+ * 冰情叠加集成(会话 #26):
+ * 冰情是独立环境叠加层 —— 复用地图、复用唯一 pointermove、随投影切换同步,
+ * 但绝不进入 S-57 的批量加载/卸载与渲染调度路径。
+ */
+describe('冰情叠加集成', () => {
+  it('switchProjection 同步冰情(与 AIS / 航路 / 测量同范式)', () => {
+    const body = functionBody('switchProjection')
+    expect(body).toContain('iceOverlay.reloadForProjection()')
+  })
+
+  it('冰情 hover 复用唯一 pointermove 分发,冰情浮窗显示期间抑制坐标提示', () => {
+    const handler = source.match(/map\.on\('pointermove'[\s\S]*?\n  \}\)/)?.[0] ?? ''
+    expect(handler).not.toBe('')
+    expect(handler).toContain('iceOverlay.handlePointerMove(')
+    expect(functionBody('flushHover')).toContain('iceOverlay.hover.value')
+    // 仍然只有一处 pointermove 注册
+    expect((source.match(/map\.on\('pointermove'/g) ?? []).length).toBe(1)
+  })
+
+  it('指针离开地图与卸载时彻底清理冰情 hover / 图层', () => {
+    expect(source).toContain("addEventListener('pointerleave', iceOverlay.clearHover)")
+    expect(source).toContain("removeEventListener('pointerleave', iceOverlay.clearHover)")
+    const unmount = source.match(/onBeforeUnmount\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+    expect(unmount).toContain('iceOverlay.dispose()')
+  })
+
+  it('环境叠加菜单含冰情入口;时间轴挂载且让位随面板状态', () => {
+    expect(source).toContain('command="ice"')
+    expect(source).toContain('<IceTimeline')
+    expect(source).toContain('iceTimelineLeft')
+    expect(source).toContain('iceTimelineRight')
+  })
+
+  it('冰情不进入 S-57 批量加载/卸载路径(独立环境叠加层)', () => {
+    for (const name of [
+      'unloadAllChartLayers',
+      'unloadSelectedDatasets',
+      'unloadCurrentFilteredLayers',
+      'unloadLastBulkBatch',
+    ]) {
+      expect(functionBody(name)).not.toContain('iceOverlay')
+    }
+  })
+
+  it('冰情瓦片接入共享请求队列与 LRU 瓦片缓存(选项注入)', () => {
+    const block = source.match(/useIceOverlay\(\{[\s\S]*?\n\}\)/)?.[0] ?? ''
+    expect(block).not.toBe('')
+    expect(block).toContain('tileCache')
+    expect(block).toContain('tileRequestQueue')
+  })
+})

@@ -17,6 +17,10 @@ os.environ["TEMP_ROOT"] = str(Path(".pytest-storage/temp").resolve())
 os.environ["INITIAL_ADMIN_USERNAME"] = ""
 os.environ["INITIAL_ADMIN_PASSWORD"] = ""
 os.environ["GWC_3413_BACKFILL"] = "0"
+# 冰情:测试环境不得误读开发机数据集 —— 指向一个(默认不存在的)测试目录;
+# 各用例通过 monkeypatch 替换 ice_api.get_ice_service 注入 tmp_path 服务。
+os.environ["ICE_DATA_ROOT"] = str(Path(".pytest-ice-data").resolve())
+os.environ["ICE_TILE_MAX_ZOOM"] = "10"
 
 from app.core.database import Base, get_db
 from app.core.security import hash_password

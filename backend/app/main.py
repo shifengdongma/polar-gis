@@ -13,6 +13,7 @@ from app.api import (
     base_maps,
     datasets,
     demo,
+    ice,
     layers,
     projects,
     s57_basemaps,
@@ -106,6 +107,7 @@ app.include_router(base_maps.public_router, prefix=api)
 app.include_router(base_maps.admin_router, prefix=api)
 app.include_router(styles.router, prefix=api)
 app.include_router(demo.router, prefix=api)
+app.include_router(ice.router, prefix=api)
 app.include_router(s57_basemaps.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)

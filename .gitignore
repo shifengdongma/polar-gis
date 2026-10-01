@@ -9,6 +9,8 @@ htmlcov/
 backend/.env
 backend/storage/
 backend/.pytest-storage/
+backend/.pytest-ice-data/
+.pytest-ice-data/
 
 # Node
 node_modules/
@@ -24,6 +26,14 @@ output/
 storage/
 data/*
 !data/README.md
+# 冰情数据目录:只保留说明文件,NetCDF 数据绝不入库
+!data/ice/
+!data/ice/README.md
+!data/ice/.gitkeep
+data/ice/*.nc
+# 冰情样例数据(本地验证用,含压缩包)
+sample-data/
+sample-data.7z
 *.log
 *.dump
 *.bak

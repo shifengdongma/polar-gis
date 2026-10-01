@@ -5,6 +5,156 @@
 
 ---
 
+## 会话 #26.1 — 冰情瓦片加载性能修复(请求堆积 / 地图空白 / 时间轴切换不重载)
+
+**日期**: 2026-10-01
+**背景**: 用户实测反馈——点开"海冰浓度"后瓦片请求堆积、地图空白卡顿;拖动时间轴切换日期时冰情瓦片"无法重新加载"。要求参照海图瓦片的请求合并/队列等方法优化。
+
+### 一、根因调查(先证据后修复,全部实测)
+
+| 步骤 | 实测结果 |
+|---|---|
+| E1 冷日期 8 张并发瓦片(修复前) | **每张 6.2–6.8s**,总 7.1s |
+| E2 网格已缓存、而片冷 | 8 张共 0.41s(50–120ms/张)→ 慢不在渲染 |
+| E3 瓦片+网格全缓存 | 6ms/张 |
+| 单张串行冷载基线 | **1.46s**(= 一次完整网格装载成本) |
+
+**根因 ①(后端惊群)**: `_grid` 的缓存检查与落盘之间隔着"归一化在锁外"的窗口,并发首请求各自完整装载 26M 单元网格(N 份冗余 CPU/内存),互相争抢 → 每请求 6.6s。
+**根因 ②(前端无管线)**: 冰情走 OL 默认 `<img>` 加载器——无并发上限(整视口瓦片同时发射)、瓦片丢弃不中止(时间轴快拖/切日期后旧请求仍占连接与后端线程)、无共享缓存 → 请求堆积;新日期瓦片排在被卡住的请求后 → "无法重新加载";海图/底图瓦片被挤占 → 地图空白。
+
+另经 ol 10.6 源码核实: `TileState` 枚举没有 `ABORT`,被释放的瓦片经 `release()/dispose()` 置 **`TileState.EMPTY`**(=4);既有海图加载器注释里写的"4=ABORT"称谓有误(值等价,行为正确),冰情加载器统一使用具名 `TileState.EMPTY`。
+
+### 二、修复内容
+
+| 文件 | 修改 |
+|------|------|
+| `backend/app/services/ice.py` | `_grid` 改为**按日期单飞**:全局锁快路径 + `_grid_locks` per-date 装载锁 + 双检等待者复用;新增 `warm_default_grid()` 由 `info()` 后台守护线程调用(预热默认日期,首次点击即快) |
+| `backend/tests/test_ice_service.py` | +4 用例:8 线程并发 `_grid` 只装载一次、8 张并发瓦片(公开路径)只装载一次、warm 幂等、info 触发后台预热 |
+| `frontend/src/composables/useIceOverlay.ts` | 新增**自定义 `tileLoadFunction`**(参照海图 `createRetryTileLoadFunction`):共享 `LRUTileCache` + `TileRequestQueue`;缓存优先→限流 fetch→blob;**代次中止** `abortStaleTileLoads()`(refreshLayers 即日期/投影/开关切换时中止上一代全部在飞请求)+ 瓦片 `TileState.EMPTY` 即中止 + 重试;Options 增加 `tileCache`/`tileRequestQueue` 注入;`dispose()` 同步中止 |
+| `frontend/src/views/MapWorkspaceView.vue` | 冰情块移至 `tileCache`/`tileRequestQueue` 声明之后(TDZ),注入共享实例 |
+| `frontend/src/composables/useIceOverlay.test.ts`、`views/MapWorkspaceView.test.ts` | 隔离断言更新(生命周期状态集合仍禁止;新增"复用管线/代次中止/tileLoadFunction/选项注入"正向断言) |
+
+**决策变更记录**: 任务书 §37 原要求"冰情不接入 TileRequestQueue";本次用户明确要求参照海图请求合并/队列方法解决堆积 → 改为**复用同一套通用请求管线实例**(限流+缓存+中止),但**仍不进入** S-57 图层状态机/Bundle/调度器(该隔离断言保留),docs/09 已同步说明。
+
+### 三、修复后复测(同一真实数据、经 nginx)
+
+- 冷日期 8 张并发瓦片 **7.1s → 3.06s**(每张延迟一致,无饥饿)
+- `/info` 后(后台预热生效)全新冷瓦片 **0.13–0.39s**(修复前需 ~2.3s)
+- 前端: `npm run typecheck` 零错误;`npm test` **353 passed**(20 文件,349→353);`npm run build` 成功;部署 bundle 已验证含新加载器(`.EMPTY`/`tileLoadFunction`)
+- 后端: `pytest` **214 passed**(210→214);ruff 触碰文件干净
+- Docker: backend/web 重建成功、全栈健康、经 nginx 实测通过
+
+### 四、已知特性与限制
+
+- 容器重启后**首次** `/info` 在 Windows bind-mount 上约 12s(149 个 HDF5 首次打开;逐日元数据缓存后 **0.1s**);不阻塞地图,预热线程保证首次点击瓦片仍快
+- 浏览器 UI 层(points 点击/拖动时间轴的实际观感)仍属人工验收项,本次未执行浏览器自动化
+- 按任务书要求,仍未 commit/push
+
+---
+
+## 会话 #26 — 海冰冰情图层完整嵌入(NetCDF → PNG XYZ → 独立 TileLayer)
+
+**日期**: 2026-10-01
+**基线**: 分支 `master`,HEAD `593b8da`;工作区起始仅有任务书 md 未跟踪
+**任务书**: `docs/plans/Polar-GIS 海冰冰情图层完整嵌入开发任务.md`(48 节,用户提供)
+**真实数据**: 用户提供 `F:\polar-gis\sample-data\*.nc` ×149(2022-01-01…2022-05-31,**注意 20220131/20220201 缺文件**),`sic_merged`(int8,units 缺失),4750×5560 网格(1km)、Hughes 极射赤面 **EPSG:3411**、**无厚度变量**(厚度缺失是任务书要求的正常状态)
+
+### 任务计划 (TODO)
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 1 | 三仓审计(主前端/主后端部署/参考实现)+ 13 问逐项回答 | ✅ 完成 |
+| 2 | Phase 0 依赖:`pyproject` + `F:\polar-gis\.venv` 安装 4 个包 | ✅ 完成 |
+| 3 | Phase 1 后端:`services/ice.py` + `api/ice.py` + schemas + config + main + 测试(TDD) | ✅ 完成 |
+| 4 | Phase 2 部署:data/ice、compose 挂载变量、nginx `^~ /api/`、.env 模板、.gitignore | ✅ 完成 |
+| 5 | Phase 3 前端底层:types / api/ice.ts / mapIce.ts / useIceOverlay.ts | ✅ 完成 |
+| 6 | Phase 4-6:IceLayerPanel / IceTimeline / IceValueTooltip + hover 优先级 | ✅ 完成 |
+| 7 | Phase 7:视图集成(attach/pointermove/投影切换/卸载/菜单/时间轴让位) | ✅ 完成 |
+| 8 | Phase 8:全量测试 + Docker 端到端 + 文档 09/10/11/12 | ✅ 完成 |
+
+### 一、审计结论(任务书 13 问)
+
+1. Map 在 `MapWorkspaceView.vue` `buildMap()`(L742+)以 `new OlMap` 创建,`map` 为模块级 `let`(非响应式,组合式函数一律经 getter 访问);
+2. EPSG:3413 在视图模块作用域 proj4 注册(L536-538,±4194304 setExtent);**3411 此前全仓库无定义**,前端在 `mapIce.ts` 按需注册 Hughes 定义(与 pyproj EPSG:3411 一致);
+3. `switchProjection()`:renderGeneration++ → detach WMS → dispose bundles → 清 tile 缓存/队列 → 切 CRS → setView → fit → reloadAisGeometry → reloadRouteGeometry → syncMeasureForProjection(**本次在其后新增 `iceOverlay.reloadForProjection()`**)→ 重挂 S-57 → reconcile;
+4. S-57 RuntimeLayer/Bundle/GWC 生命周期在 attachRuntimeGroups/detachWmsLayer/disposeAllBundles/mapRenderScheduler——冰情全部不触碰(源码断言守护);
+5. zIndex:底图 0、S-57 10-40、**航路 95、测量 100、AIS 110**;冰情取 **60/62**(厚度/浓度),调试对齐 120,不改任何现有值;
+6. pointermove 消费者仅 1 处(坐标提示 + rAF 合帧)——冰情复用同一分发,不注册第二监听;
+7. 截图 `captureMap()` 遍历 `.ol-layer canvas` —— 冰情 TileLayer 天然进入截图;打印隐藏 UI(class `ice-` 与既有 `@media print` 规则);
+8. 环境叠加入口在 `.layer-panel-footer` 的 el-dropdown(`handleOverlayCommand('ais')`)——冰情新增 `command="ice"` 项,计数 1→2;
+9. 参考读 NetCDF:`netCDF4.Dataset` + 1-D x/y + 别名表 + 整读变量;
+10. 参考瓦片:`half=4194304/π·6378137`、像素中心批量变换 → 3411 → 最近邻 → 调色板逐通道插值(含 alpha)→ Pillow RGBA PNG;0 与 NoData alpha 均 0;
+11. 参考投影:3411↔4326↔显示投影,**经 WGS84 中转**;3857 纬度钳制 85.05112878;
+12. 时间轴:`info.dates` = 实际文件名日期集合,数组索引步进(本数据 20220131/20220201 缺失即真实体现);
+13. hover 回源查原始 NetCDF:颜色映射不可逆(NoData/0 透明、alpha 叠加),必须查原始网格值。
+
+### 二、实现记录与参考实现缺陷修复
+
+| 参考实现问题 | 本实现 |
+|---|---|
+| `_render` 在全局锁内执行(吞吐瓶颈) | 单 RLock **只护 netCDF 访问与缓存变更**,numpy/PIL/pyproj 全部锁外;tile 缓存 FIFO → **LRU**(命中重插) |
+| `np.ma.filled(np.asarray(raw), np.nan)` 先丢掩码(thickness 哨兵 9.97e36 会以"有限大数"进入渲染) | `_load_variable`:显式 `getmaskarray` + `_FillValue`/`missing_value` 哨兵置 NaN(**有 float 哨兵与 int 哨兵测试**) |
+| `value_at` 返回原始 0-100 而 `_render` 却做 /100(单位不一致) | **唯一归一化入口 `_normalize`**,hover/瓦片共用;concentration 域固定 0-100(不猜单位),thickness cm/mm→m、未知单位不换算(一次性告警) |
+| 文件索引构造后不再更新 | `info()` 重扫目录;(mtime,size) 变化的日期逐日期失效 metadata/grid/tile 缓存(有"替换文件后取新值"测试) |
+| 硬编码 `F:\workspace\sample-data` | `ICE_DATA_ROOT` 配置(代码中零绝对路径) |
+| `int(raw)` 截断 | 保留 float(如实记录偏差);0 有效由 `isIceValueValid` 保障(禁真值判断) |
+| 遗留:`value_at` 硬编码 concentration | 增加可选 `field` 参数(默认 concentration,防未来破坏性变更) |
+
+### 三、修改记录
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `backend/pyproject.toml` | 修改 | +`netCDF4>=1.7,<2`、`numpy>=1.26,<3`、`Pillow>=10,<13`、`pyproj>=3.6,<4`(不加 shapely) |
+| `backend/app/core/config.py` | 修改 | +`ice_enabled/ice_data_root/ice_tile_cache_entries/ice_tile_max_zoom` |
+| `backend/app/services/ice.py` | 新建 | IceService:日期扫描/别名/归一化/3411→WGS84→显示投影/最近邻瓦片/缓存/降级(线程契约见模块 docstring) |
+| `backend/app/api/ice.py` | 新建 | /ice 路由:info/value/alignment/tile;唯一无鉴权数据 API(理由见 docstring);懒工厂 `get_ice_service()` |
+| `backend/app/schemas.py` | 修改 | +`IceFieldRead/IceInfoRead/IceValueRead`(value 首字段 + `response_model_exclude_unset` → miss 精确 `{"value": null}`) |
+| `backend/app/main.py` | 修改 | 注册 `ice.router, prefix=api` |
+| `backend/tests/conftest.py` | 修改 | 前置 `ICE_DATA_ROOT`(测试目录)/`ICE_TILE_MAX_ZOOM` |
+| `backend/tests/test_ice_service.py` | 新建 | 31 用例:空目录/损坏文件降级/日期识别排序/别名/跨日期并集/0 有效/127·101·255·负数·NaN NoData/cm·mm·未知单位/哨兵/3413·3857 瓦片/PNG 签名/极点钳制/非法输入/raw value/降序轴/alignment/缓存稳定/文件刷新与替换失效/调色板锁定 |
+| `backend/tests/test_ice_api.py` | 新建 | 11 用例:无鉴权 camelCase info/空目录精确响应/value hit+miss 精确契约/422/404 全码/tile PNG+CORS+缓存头/alignment/ICE_ENABLED=false |
+| `frontend/src/types/index.ts` | 修改 | +冰情段(IceFieldId/IceFieldInfo/IceInfo/IceValue) |
+| `frontend/src/api/ice.ts` | 新建 | fetchIceInfo/fetchIceValue/fetchIceAlignment |
+| `frontend/src/utils/mapIce.ts` | 新建 | 纯函数:3411 注册/TileGrid/URL/可用性/日期格式化/范围投影/有效性/索引步进/调色板+图例渐变/字段名 |
+| `frontend/src/utils/mapIce.test.ts` | 新建 | 22 用例(调色板与后端逐值锁定;3857 全北半球 y>0 等独立推导) |
+| `frontend/src/composables/useIceOverlay.ts` | 新建 | 状态+OL 生命周期(attach 幂等/dispose 彻底/只换源/投影保留状态/hover 契约) |
+| `frontend/src/composables/useIceOverlay.test.ts` | 新建 | 13 用例(隔离断言基于去注释代码) |
+| `frontend/src/components/IceLayerPanel.vue` + `.test.ts` | 新建 | 面板(6 用例):禁用态/图例同源/免责/定位/调试开关 |
+| `frontend/src/components/IceTimeline.vue` + `.test.ts` | 新建 | 时间轴(6 用例):索引驱动/边界/无日期算术/让位注入 |
+| `frontend/src/components/IceValueTooltip.vue` + `.test.ts` | 新建 | 浮窗(5 用例):0 有效/翻转/不吞事件 |
+| `frontend/src/views/MapWorkspaceView.vue` | 修改 | 集成:imports/iceOverlay/attach/pointermove 分发与提示抑制/pointerleave+卸载清理/switchProjection 同步/环境叠加菜单/模板挂载 |
+| `frontend/src/views/MapWorkspaceView.test.ts` | 修改 | +5 集成用例(投影同步/单 pointermove/清理/菜单与时间轴/不进批量卸载) |
+| `frontend/src/styles.css` | 修改 | 冰情面板/时间轴/浮窗样式(ice- 前缀)+时间轴打印隐藏 |
+| `deploy/compose.yml` | 修改 | `${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro` + `ICE_ENABLED`/`ICE_DATA_ROOT` |
+| `deploy/nginx/default.conf` | 修改 | **`location ^~ /api/`**(修 .png 正则拦截) |
+| `deploy/.env.example`、`backend/.env.example` | 修改 | ICE_* 模板 |
+| `data/ice/README.md`、`data/ice/.gitkeep` | 新建 | 数据目录说明(入库) |
+| `.gitignore` | 修改 | `!data/ice/` 白名单 + `data/ice/*.nc` + `sample-data/` + `sample-data.7z` |
+| `docs/09/10/11/12` | 修改 | 架构 §5.14 + 文件清单校正、本日志、总结、用户手册 |
+
+### 四、测试结果
+
+- 后端 `pytest`(F:\polar-gis\.venv,**168 → 210**,新增 42:service 31 + api 11);基线 168 全绿不含回归;ruff 本批触碰文件全部干净
+- 前端 `npm run typecheck` 零错误;`npm test` **291 → 349**(20 文件,新增 58);`npm run build` 成功
+- TDD:后端两模块与前端四模块均先写断言实测 RED(恰为预期失败)再实现转 GREEN
+- **Docker 端到端(已执行)**:`docker compose build backend web` 成功(验证 cp312 轮子,**无需新增 apt 包**)→ `up -d` 全部健康 → 经 nginx 真实请求:① `GET /api/v1/health/ready` 正常(回归);② `GET /api/v1/ice/info` 返回 149 个实际日期;③ 瓦片 `.png` 返回 **200 image/png(41,915 B)**;④ `/api/v1/ice/value` 极点返回 `100.0%` 与源坐标
+- **`.png` nginx 陷阱已按"先复现后验证"执行**:旧配置(`location /api/`)下同一瓦片 URL 返回 `200 text/html`(SPA index,复现故障);`^~ /api/` 后返回 image/png(非 API 静态 png 仍走正则 location,已验证)
+- **真实数据冒烟(已执行)**:info 149 日期 0.89s;hover 极点 100%、冰缘 99%、陆区 0%;瓦片渲染 0.03-0.07s/张;范围外瓦片全透明;**20220131/20220201 缺文件 → 时间轴自然缺两位(真实体现"只展示实际文件日期")**
+- **浏览器手工验收(未执行,如实标注)**:tiles 在页面渲染、开关/透明度/时间轴拖动/hover 浮窗/投影切换/截图等 UI 层操作需要人工浏览器操作,本次环境未执行
+
+### 五、关键决策
+
+1. **鉴权边界**:ice 路由整体无鉴权(首个无鉴权数据 API)——OL XYZ `<img>` 无法带 Bearer、地图瓦片同边界、后端仅内网;理由写入 docs/09 与 api/ice.py docstring,避免被误读为漏洞;
+2. **懒工厂而非 lru_cache/Depends**:可 monkeypatch、导入期零耦合(冰情失败≠应用失败);
+3. **pyproj 共享不加锁**:基于 3.8 源码(thread-local `_Transformer`)与实测(8 线程×200 变换一致),避免给最热 CPU 路径加锁;
+4. **NoData/单位单一收口**:hover 与瓦片共用 `_normalize`,并修复参考实现三处真实缺陷;
+5. **日期切换只换 Source**:`setSource(new XYZ(...date))` 不重建 layer,`transition:0`;时间轴索引驱动;
+6. **`.png` 后缀 + nginx `^~`**:保留任务书主推 URL 形态,顺带加固整个 /api 命名空间;
+7. **前端零新增 npm 依赖**:OL/proj4/Vue 均已具备;
+8. **提交纪律**:按任务书要求,**本次未执行 git commit / push**,提交信息建议见交付报告。
+
+---
+
 ## 会话 #25 — 航路随时点选 + 两侧窗口折叠保障完整地图大屏
 
 **日期**: 2026-10-01

@@ -5,6 +5,70 @@
 
 ---
 
+## 会话 #26.1 — 冰情瓦片加载性能修复（2026-10-01）
+
+### 修改了什么
+
+- **`backend/app/services/ice.py`**：`_grid` 改为**按日期单飞装载**（per-date 装载锁 + 双检；并发冷请求只装载一次网格）；新增 `warm_default_grid()`，`info()` 后台守护线程预热默认日期网格
+- **`frontend/src/composables/useIceOverlay.ts`**：冰情瓦片改用**自定义 `tileLoadFunction`**，复用与海图相同的 `TileRequestQueue`/`LRUTileCache` 实例（缓存优先 → 限流 fetch → blob）；新增**代次中止**（日期/投影/开关切换即 `abortStaleTileLoads()`）+ 瓦片被 OL 释放（ol10 的 `TileState.EMPTY`）即中止 + 指数退避重试；`dispose()` 同步中止
+- **`frontend/src/views/MapWorkspaceView.vue`**：冰情块移位置以注入共享 `tileCache`/`tileRequestQueue`（TDZ 修正）
+- 测试：后端 +4（并发单飞×2 / 预热幂等 / info 触发预热）、前端断言更新（+4）；docs 09/10/11 同步
+
+### 达到的效果（修复前后实测对比，经 nginx 真实数据）
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 冷日期 8 张并发瓦片（点开"海冰浓度"的量级） | 每张 6.2–6.8s，**总 7.1s**（8 份重复网格装载互相挤占） | **总 3.06s**，每张延迟一致、无饥饿 |
+| `/info` 预热后全新冷瓦片 | ~2.3s | **0.13–0.39s** |
+| 时间轴切日期 | 旧请求滞留占用连接/后端线程 → "无法重新加载" | 切日期即**中止上一代全部在飞请求**，新瓦片立即进入限流队列 |
+| 请求堆积 | 整视口瓦片无限并发发射，海图/底图被挤占（空白卡顿） | 全局并发上限（与海图共享队列）+ 共享 LRU 缓存，回 pan/开关切换零请求 |
+
+### 验证结果
+
+- 后端 `pytest` **214 passed**（210→214）；ruff 干净
+- 前端 `typecheck` 零错误；`npm test` **353 passed**（349→353）；`build` 成功；部署 bundle 已验证包含新加载器
+- Docker 重建成功、全栈健康；修复前后对照数据见上表
+- 已知特性：容器重启后首次 `/info` 在 Windows bind-mount 上约 12s（此后 0.1s；不影响地图，预热保证首次点击瓦片仍快）
+- 浏览器 UI 层观感仍属人工验收项（未执行浏览器自动化）；按任务书仍未 commit/push
+
+---
+
+## 会话 #26 — 海冰冰情图层完整嵌入（2026-10-01）
+
+### 修改了什么
+
+- **后端新增** `app/services/ice.py`（IceService：NetCDF 冰场读取 + PNG XYZ 渲染）、`app/api/ice.py`（`/api/v1/ice`：info/value/alignment/tile）、`tests/test_ice_service.py`（31 用例）、`tests/test_ice_api.py`（11 用例）；**修改** `main.py`（注册路由）、`core/config.py`（`ice_enabled/ice_data_root/ice_tile_cache_entries/ice_tile_max_zoom`）、`schemas.py`（Ice* 响应模型）、`pyproject.toml`（+netCDF4/numpy/Pillow/pyproj）、`tests/conftest.py`（ICE_* 前置）
+- **前端新增** `api/ice.ts`、`utils/mapIce.ts`（+22 用例）、`composables/useIceOverlay.ts`（+13 用例）、`components/IceLayerPanel.vue`（+6）、`IceTimeline.vue`（+6）、`IceValueTooltip.vue`（+5）；**修改** `MapWorkspaceView.vue`（视图集成）、`types/index.ts`、`styles.css`（ice- 前缀样式与打印规则）、`MapWorkspaceView.test.ts`（+5 集成用例）
+- **部署**：`data/ice/`（README+.gitkeep）；`compose.yml` 只读挂载 `${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro` + `ICE_ENABLED/ICE_DATA_ROOT`；**nginx `location ^~ /api/`**（修 .png 正则拦截）；两个 `.env.example`；`.gitignore`（`sample-data/`、`sample-data.7z`、`data/ice/*.nc` 不入库）
+- **文档**：docs 09（新增 §5.14 Ice Overlay 架构 + 文件清单校正）/ 10（会话 #26）/ 11（本节）/ 12（用户手册冰情章节）
+
+### 达到的效果
+
+- **冰情独立叠加层**：海冰浓度 / 海冰厚度两个独立 XYZ TileLayer（zIndex 60/62，海图之上、航路/测量/AIS 之下）直接叠加到**现有**地图工作台——S-57 的 runtimeLayers/Bundle/调度器/TileRequestQueue/GWC 全部未触碰；卸载全部海图、smart↔standard 切换不影响冰情
+- **真实数据全链路可用**：149 个真实 NetCDF 文件（2022-01-01…05-31，EPSG:3411 1km 网格）经 nginx 实测 `/info` 149 日期、瓦片 `200 image/png`；时间轴只展示实际存在的日期（数据中 20220131/20220201 缺文件 → 时间轴自然缺两位，绝不补齐）
+- **hover 原始值**：100ms debounce + AbortController + 代次号（旧响应绝不覆盖新位置）；值来自后端原始网格（0 显示为 0%，127/NaN 不显示浮窗）；与坐标提示/航路浮窗互斥不叠加
+- **双投影正确**：3411 → WGS84 → 3413/3857 显式中转（绝不把 3411 米坐标当 3413）；3857 极点区域透明/拒绝；投影切换保留日期/可见性/透明度，只换 XYZ 源——切 20 次日期后地图上仍只有 1 浓度 + 1 厚度 TileLayer（只换源不重建层）
+- **厚度缺失即正确状态**：本数据集无厚度变量 → 面板显示「当前日期无厚度变量」并禁用开关，零假数据
+- **修掉参考实现 3 处真实缺陷 + 2 处工程缺陷**：锁内渲染（→ 锁外）、`np.ma.filled(np.asarray())` 丢掩码（→ 显式 getmaskarray+哨兵）、value/render 单位口径分裂（→ 单一归一化）；FIFO 缓存（→ LRU）、静态文件索引（→ info 重扫 + (mtime,size) 失效）
+- **印证任务书预判的 nginx 陷阱**：`location /api/` 会输给 `.png` 正则 location（实测旧配置返回 SPA index 的 text/html）；`^~ /api/` 修复后瓦片正确进入 backend，非 API 静态图仍走原 location
+
+### 验证结果
+
+- 后端 `pytest`：**210 passed**（168 基线 + 42 新增）；ruff 触碰文件全净（全库历史 lint 基线未触碰）
+- 前端：`npm run typecheck` 零错误；`npm test` **349 passed**（20 文件，291 → 349）；`npm run build` 成功
+- Docker：`build backend web` 成功（cp312 轮子无需新 apt）；`up -d` 5 服务健康；经 nginx curl 实测 info/瓦片/value/健康检查全通过
+- **未执行（如实标注）**：浏览器 UI 层手工验收（瓦片在页面渲染、开关/透明度/时间轴拖动/hover 浮窗/截图/打印的人工操作确认）
+
+### 已知限制
+
+- 最近邻平色渲染（不做插值，与 hover 逐点口径一致）；首扫 149 文件 info ≈ 0.9s（per-date 缓存，之后增量刷新）
+- 价值网格按日期缓存 2 份（float32，量级约 100MB/日期），tile 缓存 256 项 LRU
+- 厚度当前数据不可用（禁用态即正确行为）；3411(Hughes) 与 3413(WGS84) 椭球差异经 WGS84 中转链处理，无直接混用
+- 冰情路由无鉴权（与地图瓦片同边界，理由见 docs/09 §5.14）；如需收紧需改用 tileLoadFunction 携带凭据（任务书 §38 备选方案）
+- **按任务书要求本次未 commit / push**
+
+---
+
 ## 会话 #25 — 航路随时点选 + 两侧窗口折叠保障完整地图大屏（2026-10-01）
 
 ### 修改了什么

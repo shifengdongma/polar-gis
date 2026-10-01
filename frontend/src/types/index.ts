@@ -520,3 +520,46 @@ export interface RoutePointRow extends RoutePointRoleRow {
   /** 「累计」列:从起点累加至该点的距离 */
   cumulativeDistanceText: string
 }
+
+// ── 冰情信息 (Ice Overlay) ───────────────────────────────────────────
+// 独立环境叠加层:NetCDF → 后端 PNG XYZ → 独立 TileLayer。
+// 绝不进入 S-57 的任何状态集合(runtimeLayers / selectedLayerIds / Bundle 等)。
+// 时间轴只使用 availableDates 的实际日期(数组索引),绝不按日期算术推算。
+
+export type IceFieldId = 'concentration' | 'thickness'
+
+export interface IceFieldInfo {
+  id: IceFieldId
+  /** NetCDF 中实际命中的变量名(如 sic_merged) */
+  name: string
+  /** 中文展示名(海冰浓度 / 海冰厚度) */
+  label: string
+  units: string
+  available: boolean
+  /** 该字段真实存在数据的日期列表(仅实际文件日期) */
+  availableDates: string[]
+}
+
+export interface IceInfo {
+  dates: string[]
+  fields: IceFieldInfo[]
+  defaultDate: string | null
+  source: string
+  /** 源网格坐标系(恒为 EPSG:3411) */
+  sourceCrs: string
+  /** 源网格范围(EPSG:3411 米),前端经 WGS84 重投影到当前显示投影 */
+  extent: [number, number, number, number] | null
+  missingDatesAreExcluded: boolean
+}
+
+export interface IceValue {
+  /** 原始网格值(0 是有效值);miss 时后端返回 {"value": null} 单键对象 */
+  value: number | null
+  date?: string
+  field?: string
+  units?: string
+  longitude?: number
+  latitude?: number
+  sourceX?: number
+  sourceY?: number
+}
