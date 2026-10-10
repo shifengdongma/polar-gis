@@ -532,7 +532,7 @@ export interface IceFieldInfo {
   id: IceFieldId
   /** NetCDF 中实际命中的变量名(如 sic_merged) */
   name: string
-  /** 中文展示名(海冰浓度 / 海冰厚度) */
+  /** 中文展示名(海冰密集度 / 海冰厚度) */
   label: string
   units: string
   available: boolean

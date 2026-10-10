@@ -170,7 +170,7 @@ def test_info_field_union_across_dates(tmp_path: Path) -> None:
     assert by_id["concentration"]["available_dates"] == ["20220101", "20220105"]
     assert by_id["thickness"]["available_dates"] == ["20220105"]
     assert by_id["thickness"]["units"] == "m"
-    assert by_id["concentration"]["label"] == "海冰浓度"
+    assert by_id["concentration"]["label"] == "海冰密集度"
     assert info["source_crs"] == "EPSG:3411"
     assert info["extent"] == [
         float(GRID_X[0]),

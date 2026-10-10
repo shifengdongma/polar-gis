@@ -47,7 +47,7 @@ def test_info_no_auth_and_camel_case(
     assert body["missingDatesAreExcluded"] is True
     field = body["fields"][0]
     assert field["id"] == "concentration"
-    assert field["label"] == "海冰浓度"
+    assert field["label"] == "海冰密集度"
     assert field["units"] == "%"
     assert field["availableDates"] == ["20220101"]
     assert isinstance(body["extent"], list) and len(body["extent"]) == 4

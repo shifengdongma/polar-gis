@@ -49,7 +49,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "concentration": ("sic_merged", "sea_ice_area_fraction", "ice_concentration", "sic"),
     "thickness": ("sea_ice_thickness", "ice_thickness", "sit", "thickness"),
 }
-FIELD_LABELS = {"concentration": "海冰浓度", "thickness": "海冰厚度"}
+FIELD_LABELS = {"concentration": "海冰密集度", "thickness": "海冰厚度"}
 FIELD_UNITS = {"concentration": "%", "thickness": "m"}
 
 # 错误码(house style:SCREAMING_SNAKE)
@@ -468,9 +468,9 @@ class IceService:
                 return grid
 
     def warm_default_grid(self) -> None:
-        """预载默认日期(最早日期)的浓度网格。
+        """预载默认日期(最早日期)的密集度网格。
 
-        由 info() 在后台线程调用:用户点开"海冰浓度"时网格已就绪,
+        由 info() 在后台线程调用:用户点开"海冰密集度"时网格已就绪,
         瓦片直接进入 ~50-120ms 的稳定渲染路径(单飞保证幂等,重复调用零成本)。
         """
         dates = self.dates

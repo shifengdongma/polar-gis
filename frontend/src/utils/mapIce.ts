@@ -52,7 +52,7 @@ export const ICE_EXTENT_3857: [number, number, number, number] = [
 /**
  * 冰情图层 zIndex:海图 S-57 为 10-40、航路 95、测量 100、AIS 110 ——
  * 冰情占 60/62(海图之上、航路之下),不修改任何现有 zIndex。
- * 厚度在下、浓度在上(与任务书的图层叠加次序一致)。
+ * 厚度在下、密集度在上(与任务书的图层叠加次序一致)。
  */
 export const ICE_LAYER_Z_INDEX: Record<IceFieldId, number> = { thickness: 60, concentration: 62 }
 /** 对齐调试控制点(黄色圆点)显示在最上层 */
@@ -60,7 +60,7 @@ export const ICE_ALIGNMENT_Z_INDEX = 120
 
 /** 字段中文名(与后端 FIELD_LABELS 一致,面板/浮窗共用) */
 export const ICE_FIELD_LABELS: Record<IceFieldId, string> = {
-  concentration: '海冰浓度',
+  concentration: '海冰密集度',
   thickness: '海冰厚度',
 }
 

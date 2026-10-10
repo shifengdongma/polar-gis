@@ -14,9 +14,9 @@
 - 时间轴只展示**实际存在的文件日期**,不会自动补齐缺失日期;
 - 网格要求:**1-D `x`/`y` 坐标轴**(升序/降序均可),投影为 EPSG:3411
   (NSIDC 极射赤面,Hughes 椭球);变量别名见 `FIELD_ALIASES`
-  (浓度 `sic_merged` / `sea_ice_area_fraction` / `ice_concentration` / `sic`;
+  (密集度 `sic_merged` / `sea_ice_area_fraction` / `ice_concentration` / `sic`;
   厚度 `sea_ice_thickness` / `ice_thickness` / `sit` / `thickness`);
-- 浓度有效域 0–100(`0` 是有效值;`127`、`>100`、`<0`、NaN 为 NoData);
+- 密集度有效域 0–100(`0` 是有效值;`127`、`>100`、`<0`、NaN 为 NoData);
   厚度统一换算为米(`cm`/`mm` 自动换算,未知单位不猜测)。
 
 ## 部署

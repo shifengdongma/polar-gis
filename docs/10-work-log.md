@@ -1,14 +1,55 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-10-01
+> 最后更新: 2026-10-10
+
+---
+
+## 会话 #27 — 术语修正(海冰浓度→海冰密集度)+ 参考工程目录清理 + 推送
+
+**日期**: 2026-10-10
+**背景**: ① 冰情功能中"海冰浓度"为 sea ice concentration 的错误译法,标准术语为"海冰密集度",要求全部修正;② 核实参考工程 `polar-gis-ice-viewer` 的可用代码是否已全部移植,确认后删除该目录以保持项目文件结构标准;③ 最新代码提交并推送 GitHub。
+
+### 一、术语修正(海冰浓度 → 海冰密集度,34 处)
+
+| 文件 | 修改 |
+|------|------|
+| `backend/app/services/ice.py` | `FIELD_LABELS` 标签 + `warm_default_grid` docstring/注释(3 处) |
+| `backend/tests/test_ice_service.py`、`test_ice_api.py` | `/info` label 断言(各 1 处) |
+| `frontend/src/utils/mapIce.ts` | `ICE_FIELD_LABELS` + 注释(2 处) |
+| `frontend/src/utils/mapIce.test.ts` | fixture label + 用例名(2 处) |
+| `frontend/src/composables/useIceOverlay.ts` | 注释(3 处) |
+| `frontend/src/components/IceLayerPanel.vue` | 开关名 / 图例标题 / 状态文案「当前日期无浓度数据」→「当前日期无密集度数据」(3 处) |
+| `frontend/src/components/IceLayerPanel.test.ts` | 源码断言 + 用例名(3 处) |
+| `frontend/src/types/index.ts` | 注释(1 处) |
+| `docs/09`、`docs/10`、`docs/11`、`docs/12`、`data/ice/README.md` | 存活文档同步(15 处) |
+
+**范围决策**: 修正对象 = 可加载显示的冰情功能 + 其存活文档;**`docs/plans/` 两份计划期文档(任务书/计划,共 24 处)为冻结历史产物,刻意保持原文**。英文标识层(`concentration` 字段 id / URL 路径 / NetCDF 变量别名)一律不动 —— 接口与数据契约零变化。
+
+### 二、参考工程 `polar-gis-ice-viewer` 清理(源码级核实后删除)
+
+**核实结论**:
+1. 核心能力 `backend/app/ice_service.py`(NetCDF 读取 + info/value/alignment/tile + 调色板)已在会话 #26 全量移植为 `backend/app/services/ice.py`,且为**修复版超集**(锁内渲染→锁外、`np.ma.filled(np.asarray())` 丢掩码→显式 getmaskarray+哨兵、value/render 单位口径分裂→单一 `_normalize`、FIFO→LRU、静态索引→重扫+(mtime,size) 失效、硬编码路径→Settings);调色板色值逐值一致;
+2. `backend/app/main.py`、`basemap.py`(独立应用壳 + 临时 GeoPackage 海岸线端点)= 原型脚手架,任务书明确不迁移(主系统已有 S-57 底图与完整 API 体系);
+3. `frontend/src/App.vue` 的查看器能力(面板/时间轴/浮窗/对齐调试/投影切换)已重实现为 IceLayerPanel/IceTimeline/IceValueTooltip/useIceOverlay;
+4. 主仓库对 `polar-gis-ice-viewer` **零代码引用**;该目录是被主仓库 `.gitignore` 排除的**独立 git 仓库**(`https://github.com/shifengdongma/polar-gis-ice-viewer.git`),远端已全量推送、**从未进入主仓库任何提交**(`git log --all -- polar-gis-ice-viewer` 为空)。
+
+**动作**: 删除本地目录(267 MB,含绑定他机的不可用 venv);`.gitignore` 同步移除 `polar-gis-ice-viewer/` 规则。参考代码仍可在其独立 GitHub 仓库查阅,内容可完全恢复。
+
+### 三、验证与推送
+
+- 后端 `pytest`: **214 passed**(与 #26.1 基线一致,零回归);ruff 触碰文件全净
+- 前端:`npm run typecheck` 零错误;`npm test` **353 passed**(20 文件,与基线一致);`npm run build` 成功(既有 chunk 体积警告)
+- 术语核查:全仓库 `浓度` 仅剩 `docs/plans/` 24 处(冻结文档,刻意保留)
+- 浏览器人工验收项(建议):面板开关 / 图例 / hover 浮窗直接目视新术语
+- 提交并推送 `master`(CLAUDE.md 工作流)
 
 ---
 
 ## 会话 #26.1 — 冰情瓦片加载性能修复(请求堆积 / 地图空白 / 时间轴切换不重载)
 
 **日期**: 2026-10-01
-**背景**: 用户实测反馈——点开"海冰浓度"后瓦片请求堆积、地图空白卡顿;拖动时间轴切换日期时冰情瓦片"无法重新加载"。要求参照海图瓦片的请求合并/队列等方法优化。
+**背景**: 用户实测反馈——点开"海冰密集度"后瓦片请求堆积、地图空白卡顿;拖动时间轴切换日期时冰情瓦片"无法重新加载"。要求参照海图瓦片的请求合并/队列等方法优化。
 
 ### 一、根因调查(先证据后修复,全部实测)
 
@@ -78,7 +119,7 @@
 2. EPSG:3413 在视图模块作用域 proj4 注册(L536-538,±4194304 setExtent);**3411 此前全仓库无定义**,前端在 `mapIce.ts` 按需注册 Hughes 定义(与 pyproj EPSG:3411 一致);
 3. `switchProjection()`:renderGeneration++ → detach WMS → dispose bundles → 清 tile 缓存/队列 → 切 CRS → setView → fit → reloadAisGeometry → reloadRouteGeometry → syncMeasureForProjection(**本次在其后新增 `iceOverlay.reloadForProjection()`**)→ 重挂 S-57 → reconcile;
 4. S-57 RuntimeLayer/Bundle/GWC 生命周期在 attachRuntimeGroups/detachWmsLayer/disposeAllBundles/mapRenderScheduler——冰情全部不触碰(源码断言守护);
-5. zIndex:底图 0、S-57 10-40、**航路 95、测量 100、AIS 110**;冰情取 **60/62**(厚度/浓度),调试对齐 120,不改任何现有值;
+5. zIndex:底图 0、S-57 10-40、**航路 95、测量 100、AIS 110**;冰情取 **60/62**(厚度/密集度),调试对齐 120,不改任何现有值;
 6. pointermove 消费者仅 1 处(坐标提示 + rAF 合帧)——冰情复用同一分发,不注册第二监听;
 7. 截图 `captureMap()` 遍历 `.ol-layer canvas` —— 冰情 TileLayer 天然进入截图;打印隐藏 UI(class `ice-` 与既有 `@media print` 规则);
 8. 环境叠加入口在 `.layer-panel-footer` 的 el-dropdown(`handleOverlayCommand('ais')`)——冰情新增 `command="ice"` 项,计数 1→2;

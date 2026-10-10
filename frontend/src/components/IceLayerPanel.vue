@@ -73,8 +73,8 @@ function onDebugAlignment(value: string | number | boolean) {
             size="small"
             @change="onToggleConcentration"
           />
-          <span class="ice-field-name">海冰浓度</span>
-          <span v-if="!concentrationAvailable" class="ice-field-state">当前日期无浓度数据</span>
+          <span class="ice-field-name">海冰密集度</span>
+          <span v-if="!concentrationAvailable" class="ice-field-state">当前日期无密集度数据</span>
         </div>
         <div class="ice-opacity-row">
           <span>透明度</span>
@@ -122,7 +122,7 @@ function onDebugAlignment(value: string | number | boolean) {
       <div class="ice-panel-date">当前日期:{{ selectedDate ? formatIceDate(selectedDate) : '—' }}</div>
 
       <div class="ice-legend">
-        <div class="ice-legend-title">海冰浓度（%）</div>
+        <div class="ice-legend-title">海冰密集度（%）</div>
         <div class="ice-legend-bar" :style="{ background: concentrationGradient }"></div>
         <div class="ice-legend-ticks">
           <span v-for="tick in concentrationTicks" :key="tick">{{ tick }}</span>

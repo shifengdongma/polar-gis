@@ -23,7 +23,7 @@ describe('IceLayerPanel 字段开关与禁用态', () => {
     expect(source).toMatch(/:disabled="!thicknessAvailable/)
   })
 
-  it('浓度/厚度开关与透明度滑杆接入 useIceOverlay 动作', () => {
+  it('密集度/厚度开关与透明度滑杆接入 useIceOverlay 动作', () => {
     expect(source).toContain('toggleConcentration')
     expect(source).toContain('toggleThickness')
     expect(source).toContain('setConcentrationOpacity')
@@ -44,8 +44,8 @@ describe('IceLayerPanel 图例与免责', () => {
     expect(source).not.toContain('rgba(218, 246, 249')
   })
 
-  it('浓度刻度 0-100% 每 10% 一个,厚度 0/0.5/1.5/3/5+', () => {
-    expect(source).toContain('海冰浓度')
+  it('密集度刻度 0-100% 每 10% 一个,厚度 0/0.5/1.5/3/5+', () => {
+    expect(source).toContain('海冰密集度')
     expect(source).toContain('海冰厚度')
     expect(source).toContain('0.5')
     expect(source).toContain('5+')

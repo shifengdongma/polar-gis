@@ -37,7 +37,7 @@ function makeInfo(overrides?: Partial<IceInfo>): IceInfo {
       {
         id: 'concentration',
         name: 'sic_merged',
-        label: '海冰浓度',
+        label: '海冰密集度',
         units: '%',
         available: true,
         availableDates: ['20220101', '20220105'],
@@ -166,7 +166,7 @@ describe('原始值有效性(0 是有效值)', () => {
 })
 
 describe('调色板与图例(与后端 PALETTE_STOPS 逐值一致)', () => {
-  it('浓度 11 个控制点,0% alpha 为 0', () => {
+  it('密集度 11 个控制点,0% alpha 为 0', () => {
     const stops = ICE_PALETTES.concentration
     expect(stops.map((s) => s.value)).toEqual([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1])
     expect(stops[0].rgba).toEqual([218, 246, 249, 0])

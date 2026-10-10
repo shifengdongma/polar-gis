@@ -1,7 +1,7 @@
 /**
  * 冰情叠加 —— 状态与 OpenLayers 生命周期。
  *
- * 与 S-57 渲染体系彻底解耦:两个独立 TileLayer(浓度/厚度)+ 一个调试
+ * 与 S-57 渲染体系彻底解耦:两个独立 TileLayer(密集度/厚度)+ 一个调试
  * VectorLayer,直接挂到既有地图;绝不进入 runtimeLayers / selectedLayerIds /
  * Render Bundle / mapRenderScheduler / TileRequestQueue —— 冰情 XYZ 由
  * OpenLayers 自行管理请求。
@@ -9,7 +9,7 @@
  * 硬性约束:
  * - attach() 幂等;dispose() 必须彻底(removeLayer + dispose + 中止在飞请求);
  * - 日期/可用性/投影变化一律只替换 XYZ Source(setSource),绝不重建 Layer
- *   (连续切换日期后地图上永远只有 1 个浓度 + 1 个厚度 TileLayer);
+ *   (连续切换日期后地图上永远只有 1 个密集度 + 1 个厚度 TileLayer);
  * - 瓦片 URL 携带日期;transition:0(时间轴切换无淡入残影);
  *   crossOrigin:'anonymous'(截图 canvas 合成需要);
  * - hover:100ms debounce + AbortController + 请求代次号,旧响应绝不覆盖新位置;
@@ -104,7 +104,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
 
   // ── 瓦片请求管线(限流队列 + 共享 LRU 缓存 + 代次中止) ──────────────
   // 会话 #26.1:此前用 OL 默认 <img> 加载器 —— 无并发上限、丢弃不中止,
-  // 打开"海冰浓度"时视口瓦片同时发射、时间轴切换后旧请求仍占用连接与
+  // 打开"海冰密集度"时视口瓦片同时发射、时间轴切换后旧请求仍占用连接与
   // 后端线程(实测后端惊群每张 6.6s),表现为请求堆积、地图空白与
   // "日期切换无法重新加载"。现复用海图同款做法并加代次中止。
   let tileGeneration = 0
