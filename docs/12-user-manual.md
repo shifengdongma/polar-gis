@@ -1384,7 +1384,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 - 无项目成员级 ACL；沿用已发布项目 + 认证，取消仅任务创建者/管理员。
 - worker 目前串行执行规划，可能延迟导入任务；后续可拆分独立规划 worker。
 
-### 9.7 联系与支持
+## 11. 联系与支持
 
 - **GitHub 仓库**：https://github.com/shifengdongma/polar-gis.git
 - **问题反馈**：请通过 GitHub Issues 提交
