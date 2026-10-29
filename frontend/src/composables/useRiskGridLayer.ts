@@ -1,5 +1,5 @@
 /** Planning risk grid as a WGS84 GeoJSON vector layer. */
-import { shallowRef } from 'vue'
+import { shallowRef, toRaw } from 'vue'
 import type OlMap from 'ol/Map'
 import Feature from 'ol/Feature'
 import GeoJSON from 'ol/format/GeoJSON'
@@ -64,7 +64,7 @@ export function useRiskGridLayer(options: RiskGridLayerOptions) {
 
   function rebuild() {
     source.clear()
-    const grid = collection.value
+    const grid = collection.value ? toRaw(collection.value) : null
     if (!grid) return
     const features = new GeoJSON().readFeatures(grid, {
       dataProjection: 'EPSG:4326',

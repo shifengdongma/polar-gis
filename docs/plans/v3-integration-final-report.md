@@ -267,7 +267,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 集成前 `728020b` 到最终批次（含本报告/文档/部署/脚本）：
 
 ```
-122 files changed, 17844 insertions(+), 71 deletions(-)
+122 files changed, 17846 insertions(+), 71 deletions(-)
 ```
 
 （该统计包含批次 A-E 与最终报告本身；提交后可用 `git diff --stat 728020b` 复核。）
