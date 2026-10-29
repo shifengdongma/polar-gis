@@ -57,7 +57,10 @@ import RoutePlannerPanel from '../components/RoutePlannerPanel.vue'
 import WeatherChart from '../components/WeatherChart.vue'
 import { useEnvironmentOverlays } from '../composables/useEnvironmentOverlays'
 import { useIceOverlay } from '../composables/useIceOverlay'
+import { usePlanningRouteLayer } from '../composables/usePlanningRouteLayer'
+import { useRiskGridLayer } from '../composables/useRiskGridLayer'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
+import { useNavigationStore } from '../stores/navigation'
 import { useProjectsStore } from '../stores/projects'
 import { useRoutesStore } from '../stores/routes'
 import {
@@ -164,6 +167,7 @@ const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
 const routesStore = useRoutesStore()
+const navigationStore = useNavigationStore()
 const mapTarget = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const config = ref<MapConfig | null>(null)
@@ -293,11 +297,15 @@ function stopMeasureInteraction() {
 function deactivateOtherMapInteractions() {
   queryMode.value = false
   weatherMode.value = false
+  navigationStore.setPickMode('idle')
+  navigationStore.setRiskInspect(false)
   stopMeasureInteraction()
 }
 
 function toggleQueryMode() {
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
+  navigationStore.setPickMode('idle')
+  navigationStore.setRiskInspect(false)
   stopMeasureInteraction() // 互斥:否则残留的测量 Draw 会静默吃掉所有点击
   closeRouteFlyout() // 识别模式下不让航路浮窗抢占点击
   queryMode.value = !queryMode.value
@@ -306,6 +314,8 @@ function toggleQueryMode() {
 
 function toggleWeatherMode() {
   routesStore.setInteractionMode('idle')
+  navigationStore.setPickMode('idle')
+  navigationStore.setRiskInspect(false)
   stopMeasureInteraction()
   closeRouteFlyout()
   weatherMode.value = !weatherMode.value
@@ -321,7 +331,11 @@ const routeDrawing = useRouteDrawing({
 })
 // 关闭航路面板时结束绘制/编辑交互,不影响原地图浏览
 watch(routePanelVisible, (open) => {
-  if (!open) routesStore.setInteractionMode('idle')
+  if (!open) {
+    routesStore.setInteractionMode('idle')
+    navigationStore.setPickMode('idle')
+    navigationStore.setRiskInspect(false)
+  }
 })
 
 // ── 航线信息浮窗(地图内) ──────────────────────────────────────────
@@ -629,6 +643,62 @@ const environmentOverlays = useEnvironmentOverlays({
     !routeFlyout.value &&
     !iceOverlay.hover.value,
 })
+
+const planningRouteLayer = usePlanningRouteLayer({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  getFitPadding: () => [90, routePanelVisible.value ? 550 : 40, 90, layerPanelCollapsed.value ? 40 : 420],
+})
+const riskGridLayer = useRiskGridLayer({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+})
+
+watch(
+  () => navigationStore.routes,
+  (routes) => planningRouteLayer.setRoutes(routes, navigationStore.selectedRouteId),
+  { deep: true },
+)
+watch(
+  () => navigationStore.selectedRouteId,
+  (routeId) => planningRouteLayer.setSelected(routeId),
+)
+watch(
+  () => navigationStore.riskGrid,
+  (grid) => riskGridLayer.setGrid(grid),
+)
+watch(
+  () => navigationStore.focusRouteRequest,
+  (request) => {
+    if (request) planningRouteLayer.fitRoute(request.routeId)
+  },
+)
+watch(
+  () => navigationStore.pickMode,
+  (mode) => {
+    if (mode === 'idle') return
+    routesStore.setInteractionMode('idle')
+    queryMode.value = false
+    weatherMode.value = false
+    stopMeasureInteraction()
+    closeRouteFlyout()
+  },
+)
+watch(
+  () => navigationStore.riskInspect,
+  (active) => {
+    if (!active) return
+    routesStore.setInteractionMode('idle')
+    queryMode.value = false
+    weatherMode.value = false
+    stopMeasureInteraction()
+    closeRouteFlyout()
+  },
+)
+watch(
+  () => navigationStore.riskCell,
+  (cell) => riskGridLayer.setSelected(cell?.cellId ?? null),
+)
 /** 环境叠加菜单中的冰情状态文案 */
 const iceOverlayState = computed(() => {
   if (iceOverlay.error.value) return '不可用'
@@ -820,6 +890,8 @@ async function buildMap() {
   map.addLayer(routeDrawing.layer)
   iceOverlay.attach()
   environmentOverlays.attach()
+  planningRouteLayer.attach()
+  riskGridLayer.attach()
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
@@ -853,18 +925,32 @@ async function buildMap() {
     scheduleHover()
   })
   map.on('singleclick', async (event) => {
+    const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
+    if (navigationStore.pickMode !== 'idle') {
+      navigationStore.setPickedPoint({ longitude: lonLat[0], latitude: lonLat[1] })
+      return
+    }
     // 航路绘制/编辑或测量进行中时,不触发要素识别 / 气象查询 / 航路选中
     if (routesStore.interactionMode !== 'idle' || measureMode.value !== 'none') return
+    if (navigationStore.riskInspect) {
+      const cellId = riskGridLayer.pickCellAtPixel(event.pixel)
+      if (cellId) void navigationStore.loadRiskCell(cellId)
+      else riskGridLayer.setSelected(null)
+      return
+    }
     environmentOverlays.clearHover()
-    const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
     else {
-      // 命中航路 → 选中并弹浮窗;命中空白 → 只关浮窗,不动选中航路
-      // 点选不依赖航路面板是否打开(面板折叠后仍可点击航路查看详情)
+      // 命中手绘航路优先于算法候选航线;命中空白 → 只关浮窗,不动选中航路
       const pick = routeDrawing.pickRouteAtPixel(event.pixel, event.coordinate)
-      if (pick) openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
-      else closeRouteFlyout()
+      if (pick) {
+        openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
+      } else {
+        const planningPick = planningRouteLayer.pickRouteAtPixel(event.pixel)
+        if (planningPick) navigationStore.selectRoute(planningPick)
+        closeRouteFlyout()
+      }
     }
   })
   map.on('moveend', () => {
@@ -1404,6 +1490,8 @@ function switchProjection(crs: string) {
   // 冰情:保留日期/可见性/透明度,只替换 XYZ Source 与 TileGrid
   iceOverlay.reloadForProjection()
   environmentOverlays.reloadForProjection()
+  planningRouteLayer.reloadForProjection()
+  riskGridLayer.reloadForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -2277,6 +2365,8 @@ function rebuildMeasureGeometry() {
 function activateMeasure(type: 'LineString' | 'Polygon') {
   if (!map) return
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
+  navigationStore.setPickMode('idle')
+  navigationStore.setRiskInspect(false)
   queryMode.value = false
   weatherMode.value = false
   closeRouteFlyout() // 测量期间不弹航路浮窗,也不误选航线
@@ -2519,6 +2609,9 @@ onMounted(async () => {
     baseMaps.value = baseMapResponse.data
     currentCrs.value = config.value.project.defaultCrs
     routesStore.ensureLoaded(config.value.project.id)
+    navigationStore.setProject(config.value.project.id)
+    void navigationStore.loadRuns()
+    void navigationStore.loadVessels()
     runtimeDatasets.value = config.value.datasets.map((dataset) => ({
       config: dataset,
       expanded: false,
@@ -2556,6 +2649,9 @@ onBeforeUnmount(() => {
   routeDrawing.dispose()
   iceOverlay.dispose()
   environmentOverlays.dispose()
+  planningRouteLayer.dispose()
+  riskGridLayer.dispose()
+  navigationStore.reset()
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
@@ -2826,7 +2922,11 @@ onBeforeUnmount(() => {
       <div><span>P95耗时</span><span>{{ perfDisplay.p95TileDurationMs }}ms</span></div>
       <div><span>当前代</span><span>{{ perfDisplay.currentGeneration }}</span></div>
     </div>
-    <RoutePlannerPanel v-model:visible="routePanelVisible" :drawing="routeDrawing" />
+    <RoutePlannerPanel
+      v-model:visible="routePanelVisible"
+      :drawing="routeDrawing"
+      :environment-time="environmentOverlays.requestedTime.value"
+    />
     <el-drawer v-model="attributeVisible" :title="`${attributeLayer?.name || ''} · 属性表`" size="55%">
       <div class="tab-toolbar">
         <el-select v-model="attributeFilterField" clearable placeholder="筛选字段" style="width: 180px"><el-option v-for="field in attributeAllowedFields" :key="field" :label="field" :value="field" /></el-select>

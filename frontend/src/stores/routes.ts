@@ -9,6 +9,7 @@ import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { defineStore } from 'pinia'
 import type { RouteDraft, RouteInteractionMode, RoutePoint } from '../types'
+import type { RoutePlanningSnapshot } from '../types/navigation'
 import {
   ROUTE_MIN_POINTS,
   createId,
@@ -16,11 +17,38 @@ import {
   validateRouteCoordinate,
 } from '../utils/mapRoute'
 
-export const ROUTE_STORAGE_VERSION = 1
+/**
+ * The localStorage key version is deliberately kept at v1 so existing drafts
+ * are not hidden; the payload schema version is independently bumped to v2.
+ */
+export const ROUTE_STORAGE_KEY_VERSION = 1
+export const ROUTE_SCHEMA_VERSION = 2
 export const ROUTE_STORAGE_PREFIX = 'polar-gis:route-drafts'
 
 export function routeStorageKey(projectId: string): string {
-  return `${ROUTE_STORAGE_PREFIX}:${projectId}:v${ROUTE_STORAGE_VERSION}`
+  return `${ROUTE_STORAGE_PREFIX}:${projectId}:v${ROUTE_STORAGE_KEY_VERSION}`
+}
+
+export interface RouteCreateOptions {
+  origin?: 'manual' | 'adopted'
+  sourcePlanId?: string
+  sourceRouteId?: string
+  planningSnapshot?: RoutePlanningSnapshot
+}
+
+function coercePlanningSnapshot(raw: unknown): RoutePlanningSnapshot | undefined {
+  if (!isRecord(raw)) return undefined
+  const planId = typeof raw.planId === 'string' ? raw.planId : ''
+  const routeId = typeof raw.routeId === 'string' ? raw.routeId : ''
+  const geometryHash = typeof raw.geometryHash === 'string' ? raw.geometryHash : ''
+  const snapshotTime = typeof raw.snapshotTime === 'string' ? raw.snapshotTime : ''
+  const risk = typeof raw.risk === 'number' ? raw.risk : NaN
+  const energyMWh = typeof raw.energyMWh === 'number' ? raw.energyMWh : NaN
+  const timeHours = typeof raw.timeHours === 'number' ? raw.timeHours : NaN
+  const distanceKm = typeof raw.distanceKm === 'number' ? raw.distanceKm : NaN
+  if (!planId || !routeId || !geometryHash || !snapshotTime) return undefined
+  if (![risk, energyMWh, timeHours, distanceKm].every(Number.isFinite)) return undefined
+  return { planId, routeId, geometryHash, risk, energyMWh, timeHours, distanceKm, snapshotTime }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -65,6 +93,10 @@ function coerceRoute(
     visible: typeof raw.visible === 'boolean' ? raw.visible : true,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now,
+    origin: raw.origin === 'adopted' ? 'adopted' : 'manual',
+    sourcePlanId: typeof raw.sourcePlanId === 'string' ? raw.sourcePlanId : undefined,
+    sourceRouteId: typeof raw.sourceRouteId === 'string' ? raw.sourceRouteId : undefined,
+    planningSnapshot: coercePlanningSnapshot(raw.planningSnapshot),
   }
 }
 
@@ -98,7 +130,7 @@ export function parseStoredRoutes(raw: string | null, projectId: string): RouteD
 }
 
 export function serializeRoutes(projectId: string, routes: RouteDraft[]): string {
-  return JSON.stringify({ version: ROUTE_STORAGE_VERSION, projectId, routes })
+  return JSON.stringify({ version: ROUTE_SCHEMA_VERSION, projectId, routes })
 }
 
 export const useRoutesStore = defineStore('routes', () => {
@@ -162,7 +194,11 @@ export const useRoutesStore = defineStore('routes', () => {
     }
   }
 
-  function createRoute(name?: string, points?: RoutePoint[]): RouteDraft | null {
+  function createRoute(
+    name?: string,
+    points?: RoutePoint[],
+    options: RouteCreateOptions = {},
+  ): RouteDraft | null {
     if (!loadedProjectId.value) return null
     const normalized = points ? normalizeRoutePoints(points) : []
     const now = new Date().toISOString()
@@ -174,6 +210,10 @@ export const useRoutesStore = defineStore('routes', () => {
       visible: true,
       createdAt: now,
       updatedAt: now,
+      origin: options.origin ?? 'manual',
+      sourcePlanId: options.sourcePlanId,
+      sourceRouteId: options.sourceRouteId,
+      planningSnapshot: options.planningSnapshot,
     }
     routes.value.push(route)
     activeRouteId.value = route.id
@@ -182,10 +222,22 @@ export const useRoutesStore = defineStore('routes', () => {
     return route
   }
 
-  function createRouteFromPoints(name: string | undefined, points: RoutePoint[]): RouteDraft | null {
+  function createRouteFromPoints(
+    name: string | undefined,
+    points: RoutePoint[],
+    options: RouteCreateOptions = {},
+  ): RouteDraft | null {
     const normalized = normalizeRoutePoints(points)
     if (normalized.length < ROUTE_MIN_POINTS) return null
-    return createRoute(name, normalized)
+    return createRoute(name, normalized, options)
+  }
+
+  function updatePlanningSnapshot(routeId: string, snapshot: RoutePlanningSnapshot | undefined) {
+    const route = routes.value.find((item) => item.id === routeId)
+    if (!route) return
+    route.planningSnapshot = snapshot
+    route.updatedAt = new Date().toISOString()
+    touch()
   }
 
   function deleteRoute(routeId: string) {
@@ -337,6 +389,7 @@ export const useRoutesStore = defineStore('routes', () => {
     saveLocalRoutes,
     createRoute,
     createRouteFromPoints,
+    updatePlanningSnapshot,
     deleteRoute,
     setActiveRoute,
     updateRouteName,

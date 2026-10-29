@@ -6,7 +6,14 @@ import type {
   EnvironmentField,
   EnvironmentSample,
   EnvironmentSource,
+  EvaluateRouteResult,
   FieldQueryResponse,
+  PlanningCreatePayload,
+  PlanningRoute,
+  PlanningRun,
+  RiskCell,
+  RiskField,
+  RiskGridCollection,
   VesselProfile,
 } from '../types/navigation'
 
@@ -71,6 +78,109 @@ export async function fetchDepthSafety(
   const response = await api.get<DepthSafety>(`/navigation/vessels/${vesselId}/depth-safety`, {
     params: { depthM },
     signal,
+  })
+  return response.data
+}
+
+// ── planning tasks ────────────────────────────────────────────────────
+
+interface PaginatedPlans {
+  items: PlanningRun[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+export async function createPlanningRun(payload: PlanningCreatePayload): Promise<PlanningRun> {
+  const response = await api.post<PlanningRun>('/navigation/plans', payload, {
+    timeout: 60_000,
+  })
+  return response.data
+}
+
+export async function fetchPlanningRuns(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<PlanningRun[]> {
+  const response = await api.get<PaginatedPlans>('/navigation/plans', {
+    params: { projectId, pageSize: 100 },
+    signal,
+  })
+  return response.data.items
+}
+
+export async function fetchPlanningRun(
+  planId: string,
+  signal?: AbortSignal,
+): Promise<PlanningRun> {
+  const response = await api.get<PlanningRun>(`/navigation/plans/${planId}`, { signal })
+  return response.data
+}
+
+export async function fetchPlanningRoutes(
+  planId: string,
+  signal?: AbortSignal,
+): Promise<PlanningRoute[]> {
+  const response = await api.get<PlanningRoute[]>(`/navigation/plans/${planId}/routes`, {
+    signal,
+  })
+  return response.data
+}
+
+export async function cancelPlanningRun(planId: string): Promise<PlanningRun> {
+  const response = await api.post<PlanningRun>(`/navigation/plans/${planId}/cancel`)
+  return response.data
+}
+
+export async function fetchRiskGrid(
+  planId: string,
+  field: RiskField,
+  bbox?: [number, number, number, number],
+  stride = 1,
+  signal?: AbortSignal,
+): Promise<RiskGridCollection> {
+  const response = await api.get<RiskGridCollection>(
+    `/navigation/plans/${planId}/risk-grid`,
+    {
+      params: {
+        field,
+        stride,
+        ...(bbox ? { bbox: bbox.map((value) => value.toFixed(5)).join(',') } : {}),
+      },
+      signal,
+    },
+  )
+  return response.data
+}
+
+export async function fetchRiskCell(planId: string, cellId: string): Promise<RiskCell> {
+  const response = await api.get<RiskCell>(
+    `/navigation/plans/${planId}/risk-grid/${encodeURIComponent(cellId)}`,
+  )
+  return response.data
+}
+
+export async function evaluatePlanningRoute(
+  planId: string,
+  coordinates: [number, number][],
+): Promise<EvaluateRouteResult> {
+  const response = await api.post<EvaluateRouteResult>(
+    `/navigation/plans/${planId}/evaluate-route`,
+    { coordinates },
+    { timeout: 30_000 },
+  )
+  return response.data
+}
+
+export async function evaluateRiskArea(payload: {
+  projectId: string
+  bbox: [number, number, number, number]
+  departureTime: string
+  vesselId: string
+  dataPolicy: DataPolicy
+}): Promise<PlanningRun> {
+  const response = await api.post<PlanningRun>('/navigation/risk/evaluate', payload, {
+    timeout: 60_000,
   })
   return response.data
 }

@@ -6,11 +6,13 @@
  * 不直接操作 OpenLayers 对象。面板为非模态抽屉(:modal=false),
  * 打开时可以同时在地图上绘制 / 拖拽。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { RouteDrawingApi } from '../composables/useRouteDrawing'
+import { useNavigationStore } from '../stores/navigation'
 import { useRoutesStore } from '../stores/routes'
-import type { RoutePoint, RoutePointRow } from '../types'
+import type { RouteDraft, RoutePoint, RoutePointRow } from '../types'
+import IntelligentPlanningPanel from './IntelligentPlanningPanel.vue'
 import {
   calculateRouteLength,
   formatBearing,
@@ -20,11 +22,18 @@ import {
   routePointRoleLabel,
   routeSegments,
 } from '../utils/mapRoute'
+import { formatHours, formatMwh, routeMetricsStale } from '../utils/routePlanning'
 
-const props = defineProps<{ visible: boolean; drawing: RouteDrawingApi }>()
+const props = defineProps<{
+  visible: boolean
+  drawing: RouteDrawingApi
+  environmentTime?: string | null
+}>()
 const emit = defineEmits<{ (e: 'update:visible', value: boolean): void }>()
 
 const store = useRoutesStore()
+const navigation = useNavigationStore()
+const planningMode = ref<'manual' | 'smart'>('manual')
 const batchText = ref('')
 const nameInput = ref('')
 /** 非法坐标输入回退时强制 el-input-number 重挂载,恢复显示 Store 合法值 */
@@ -32,6 +41,51 @@ const rowVersion = ref(0)
 
 const activeRoute = computed(() => store.activeRoute)
 const interactionMode = computed(() => store.interactionMode)
+const activePlanningSnapshot = computed(() => activeRoute.value?.planningSnapshot ?? null)
+const activePlanningStale = computed(() =>
+  activeRoute.value ? routeMetricsStale(activeRoute.value) : false,
+)
+const reevaluating = ref(false)
+
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible) {
+      navigation.setPickMode('idle')
+      navigation.setRiskInspect(false)
+    }
+  },
+)
+
+function setPlanningMode(mode: 'manual' | 'smart') {
+  planningMode.value = mode
+  if (mode === 'manual') {
+    navigation.setPickMode('idle')
+    navigation.setRiskInspect(false)
+  } else {
+    void navigation.loadRuns()
+  }
+}
+
+function handleAdopted(draft: RouteDraft) {
+  planningMode.value = 'manual'
+  store.setActiveRoute(draft.id)
+  void nextTick(() => props.drawing.fitRoute(draft.id))
+}
+
+async function reevaluateActiveRoute() {
+  if (!activeRoute.value) return
+  reevaluating.value = true
+  try {
+    const result = await navigation.refreshAdoptedMetrics(activeRoute.value)
+    if (result.traversable) ElMessage.success('已按当前规划快照重新评估')
+    else ElMessage.warning(result.reason ?? '当前航线不可通行')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '航线重评失败')
+  } finally {
+    reevaluating.value = false
+  }
+}
 
 /**
  * 点表数据:在原航路点上挂载方向角色与「入站航段」信息。
@@ -255,6 +309,12 @@ function handleApplyBatch() {
       </div>
     </template>
 
+    <div class="route-mode-tabs">
+      <button :class="{ active: planningMode === 'manual' }" type="button" @click="setPlanningMode('manual')">手动绘制</button>
+      <button :class="{ active: planningMode === 'smart' }" type="button" @click="setPlanningMode('smart')">智能规划</button>
+    </div>
+
+    <div v-show="planningMode === 'manual'">
     <el-alert
       title="当前航路仅用于功能模拟，不作为实际导航依据。"
       type="warning"
@@ -390,6 +450,30 @@ function handleApplyBatch() {
         </div>
         <div v-if="activeRoute.points.length >= 2" class="route-length">航路长度：{{ activeRouteLengthText }}</div>
         <div v-else class="route-length route-warning">航路至少需要两个航路点</div>
+
+        <div v-if="activePlanningSnapshot" class="route-planning-metrics">
+          <el-alert
+            v-if="activePlanningStale"
+            title="当前航线已修改，风险和能耗结果需要重新计算"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <template v-else>
+            <div class="route-planning-metrics-title">规划快照（只读）</div>
+            <div class="route-planning-metrics-grid">
+              <span>风险 {{ activePlanningSnapshot.risk.toFixed(3) }}</span>
+              <span>能耗 {{ formatMwh(activePlanningSnapshot.energyMWh) }}</span>
+              <span>航时 {{ formatHours(activePlanningSnapshot.timeHours) }}</span>
+              <span>距离 {{ activePlanningSnapshot.distanceKm.toFixed(0) }} km</span>
+            </div>
+            <div class="route-planning-snapshot-time">快照：{{ activePlanningSnapshot.snapshotTime }}</div>
+          </template>
+          <el-button size="small" type="primary" plain :loading="reevaluating" @click="reevaluateActiveRoute">
+            按当前航线重新评估
+          </el-button>
+        </div>
+
         <div class="route-direction-legend">
           <span class="route-direction-item">
             <i class="route-direction-dot route-start-dot" />起点（第 1 个航路点）
@@ -418,5 +502,12 @@ function handleApplyBatch() {
       />
       <el-button size="small" type="primary" class="route-batch-apply" @click="handleApplyBatch">应用坐标</el-button>
     </div>
+    </div>
+
+    <IntelligentPlanningPanel
+      v-if="planningMode === 'smart'"
+      :environment-time="environmentTime"
+      @adopted="handleAdopted"
+    />
   </el-drawer>
 </template>

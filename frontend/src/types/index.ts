@@ -1,3 +1,5 @@
+import type { RoutePlanningSnapshot } from './navigation'
+
 export type Role = 'system_admin' | 'user'
 
 export interface User {
@@ -497,6 +499,12 @@ export interface RouteDraft {
   visible: boolean
   createdAt: string
   updatedAt: string
+  /** manual = 用户手绘；adopted = 从规划候选复制而来（原始规划快照仍不可编辑） */
+  origin?: 'manual' | 'adopted'
+  sourcePlanId?: string
+  sourceRouteId?: string
+  /** 采纳时的规划指标快照；航路几何变化后由前端标记 stale */
+  planningSnapshot?: RoutePlanningSnapshot
 }
 
 export type RouteInteractionMode = 'idle' | 'draw' | 'edit'

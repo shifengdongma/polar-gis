@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type { RouteDraft, RoutePoint } from '../types'
-import { parseStoredRoutes, routeStorageKey, serializeRoutes, useRoutesStore } from './routes'
+import {
+  ROUTE_SCHEMA_VERSION,
+  parseStoredRoutes,
+  routeStorageKey,
+  serializeRoutes,
+  useRoutesStore,
+} from './routes'
 
 function makePoints(coords: [number, number][]): RoutePoint[] {
   return coords.map(([lon, lat], index) => ({ id: `p-${index}`, seq: index + 1, lon, lat }))
@@ -176,10 +182,47 @@ describe('routes store', () => {
     expect(store.routes).toHaveLength(1)
     expect(route.points).toHaveLength(0)
     const raw = localStorage.getItem(routeStorageKey('proj-1'))
-    expect(raw).toBe('{"version":1,"projectId":"proj-1","routes":[]}')
+    expect(raw).toBe(
+      `{"version":${ROUTE_SCHEMA_VERSION},"projectId":"proj-1","routes":[]}`,
+    )
     // 补足 2 点后落盘
     store.replaceRoutePoints(route.id, makePoints([[120, 72], [122, 73]]))
     expect(localStorage.getItem(routeStorageKey('proj-1'))).toContain(route.id)
+  })
+})
+
+describe('routes store v1 → v2 compatibility', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('loads an existing v1 payload from the unchanged v1 storage key', () => {
+    const key = routeStorageKey('proj-old')
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        projectId: 'proj-old',
+        routes: [
+          {
+            id: 'old-route',
+            projectId: 'proj-old',
+            name: '旧航路',
+            points: makePoints([[120, 72], [122, 73]]),
+            visible: true,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+      }),
+    )
+    const store = useRoutesStore()
+    store.ensureLoaded('proj-old')
+    expect(store.routes).toHaveLength(1)
+    expect(store.routes[0].id).toBe('old-route')
+    expect(store.routes[0].origin).toBe('manual')
+    expect(key).toBe('polar-gis:route-drafts:proj-old:v1')
   })
 })
 

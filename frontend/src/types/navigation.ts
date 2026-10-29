@@ -131,3 +131,131 @@ export interface EnvironmentLayerState {
   available: boolean | null
   reason: string | null
 }
+
+// ── Planning tasks / candidate routes / risk grid ─────────────────────
+
+export type PlanningRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type RiskField = 'combined' | 'ice' | 'depth' | 'fog' | 'wind' | 'wave'
+export type NavigatePickMode = 'idle' | 'start' | 'goal'
+
+export interface PlanningPoint {
+  longitude: number
+  latitude: number
+}
+
+export interface PlanningCreatePayload {
+  projectId: string
+  start: PlanningPoint
+  goal: PlanningPoint
+  departureTime: string
+  vesselId: string
+  dataPolicy: DataPolicy
+  algorithm?: 'dnsga3'
+  objectives?: ['risk', 'energy', 'time']
+  populationSize?: number
+  generations?: number
+  seed?: number
+}
+
+export interface PlanningRun {
+  planId: string
+  projectId: string
+  vesselId: string
+  mode: 'plan' | 'risk_only'
+  status: PlanningRunStatus
+  stage: string
+  progress: number
+  dataPolicy: DataPolicy
+  riskModelVersion: string
+  algorithmVersion: string
+  errorCode: string | null
+  errorMessage: string | null
+  resultSummary: Record<string, unknown>
+  environmentSnapshot: Record<string, unknown>
+  cancelRequested: boolean
+  queuedAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  createdAt: string
+}
+
+export interface PlanningRoute {
+  routeId: string
+  planId: string
+  routeIndex: number
+  label: string
+  recommended: boolean
+  coordinates: [number, number][]
+  riskScore: number
+  riskComponents: Record<string, number | null>
+  energyMWh: number
+  timeHours: number
+  distanceKm: number
+  sourceQuality: DataQuality | 'unknown'
+  algorithmVersion: string
+  createdAt: string
+}
+
+export interface RiskGridFeature {
+  type: 'Feature'
+  id?: string
+  geometry: { type: 'Polygon'; coordinates: number[][][] }
+  properties: {
+    cellId: string
+    value: number | null
+    traversable: boolean | null
+    quality: string | null
+    riskModelVersion: string | null
+  }
+}
+
+export interface RiskGridCollection {
+  type: 'FeatureCollection'
+  field: RiskField
+  totalCells: number
+  returnedCells: number
+  snapshotTime: string | null
+  features: RiskGridFeature[]
+}
+
+export interface RiskCell {
+  cellId: string
+  row: number
+  column: number
+  center: { latitude: number; longitude: number }
+  bounds: Record<string, number>
+  geometry: number[][]
+  environment: Record<string, number | boolean | null>
+  risk: Record<string, number | null>
+  quality: Record<string, string>
+  sources: Record<string, string>
+  traversable: boolean
+  blockedReason: string | null
+  riskModelVersion: string
+  isLand: boolean
+  landRatio: number
+}
+
+export interface EvaluateRouteResult {
+  traversable: boolean
+  riskScore: number | null
+  energyMWh: number | null
+  timeHours: number | null
+  distanceKm: number | null
+  sourceQuality: string | null
+  cellIds: string[]
+  reason: string | null
+  blockedCellId: string | null
+  snapshotId: string | null
+}
+
+export interface RoutePlanningSnapshot {
+  planId: string
+  routeId: string
+  geometryHash: string
+  risk: number
+  energyMWh: number
+  timeHours: number
+  distanceKm: number
+  snapshotTime: string
+}

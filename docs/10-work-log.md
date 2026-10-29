@@ -1708,3 +1708,39 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 
 - D 批次需要：planning API 客户端、候选航线/风险栅格图层、规划面板/对比/采纳/编辑/stale、
   唯一 pointermove/singleclick 扩展、localStorage v1→v2 兼容。C 已提供全部后端契约。
+
+---
+
+## 会话 #28 — 批次 D：前端规划工作台与航路融合（2026-10-29）
+
+### 完成内容
+
+- `stores/navigation.ts`：任务列表/当前 run/候选/选中/风险格/单格/选点模式/风险识别；
+  2s 轮询与 completed 自动拉候选；取消；`adoptRoute`；`refreshAdoptedMetrics`（按 snapshot.planId 重评）。
+- `api/navigation.ts` + `types/navigation.ts`：规划/风险/重评契约；`RouteDraft` 增 adopted 来源与
+  `planningSnapshot`。
+- 图层：`usePlanningRouteLayer`（zIndex 90，候选/推荐/选中样式，fit/pick/projection reload/dispose）；
+  `useRiskGridLayer`（zIndex 70，WGS84 GeoJSON，null/unknown 独立灰色样式，cell 点选）。
+- UI：`RoutePlannerPanel` 手动/智能切换；`IntelligentPlanningPanel` 任务/船舶/对比/风险/结果；
+  `NavigationTaskPanel`、`RouteComparisonPanel`（ECharts Pareto + 采纳）、`RiskAnalysisPanel`
+  （字段切换/地图点选/单格详情/区域评估）、`PlanningResultPanel`（状态/取消/历史/快照时间/合成横幅）。
+- 采纳/编辑：localStorage key 仍 v1，payload v2；coerce 保留 adopted/source/snapshot；采纳后切回
+  手动并 fit；修改后 stale 提示 + 重新评估按钮，旧指标不以当前值展示。
+- 交互：唯一 `singleclick` 优先级扩展（pickMode→测量/手绘 guard→riskInspect→weather→identify→
+  手绘航路→算法航路）；唯一 `pointermove` 不新增；pickMode/riskInspect 与既有工具互斥；投影切换/
+  卸载/关闭面板清理。
+
+### 测试
+
+- 前端全套 **28 files / 385 tests passed**；`vue-tsc` 零错误；`npm run build` 通过。
+- 新增：mapEnvironment 双投影、routePlanning hash/stale、navigation store 采纳/选点/互斥、
+  planning layers 生命周期、planning panels 契约、MapWorkspace 单 Map/单 handler/图层 attach/
+  projection reload、v1 payload 从旧 key 加载。
+- 既有 365 tests 全部保留通过。
+
+### 决策与限制
+
+- 未改动 `useRouteDrawing`/`routesStore` 的手动绘制/拖拽行为；规划航路独立图层/独立 store。
+- “采纳”只复制到草稿，不修改原始推荐结果；不是自动驾驶执行。
+- ECharts 只在有真实候选时绘制；合成数据仍显示算法输出并带横幅。
+- 尚未做 E 批次的 Docker/回归/合成 fixture/E2E；本批次无部署变更。

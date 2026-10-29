@@ -977,3 +977,25 @@ backend/app/navigation/
 - 鉴权沿用 JWT + published project；取消 requester/admin；错误码 `ENVIRONMENT_DATA_MISSING/NO_FEASIBLE_ROUTE/PLANNER_TIMEOUT/PLANNER_CANCELLED/PLANNER_FAILED/PLANNER_LIMIT_EXCEEDED/PLANNER_RESULT_NOT_READY/PLANNING_GRID_MISSING/...`。
 
 **测试**：新增 31 个（风险 9、网格/适配 4、D*/NSGA/能耗 6、规划服务 3、Worker 3、规划 API 6），全套 **277 passed**；迁移在全新 SQLite 与“0004 后无 planning 表”两种场景升级通过；同时修正 0004 幂等性以支持 fresh DB。`ruff` 新增代码通过。
+
+### 8.7 批次 D：前端规划工作台与航路融合
+
+**状态与 API**
+- `stores/navigation.ts`：项目/船舶/任务列表/当前 run/候选/选中/风险字段/风险格/单格/`pickMode`/`riskInspect`/focusRoute；2s 轮询（queued/running），completed 自动拉候选；failed/cancelled 停止；`adoptRoute` 复制候选到 `routesStore`，`refreshAdoptedMetrics` 调用 evaluate-route。
+- `api/navigation.ts`：创建/列表/详情/候选/取消/风险格/单格/区域风险/采纳重评；请求体 camelCase，查询参数由既有 axios 拦截器转 snake_case。
+- `types/navigation.ts`：planning run/route/risk/Evaluate/RoutePlanningSnapshot；`types/index.ts` 的 `RouteDraft` 增可选 `origin/sourcePlanId/sourceRouteId/planningSnapshot`。
+
+**地图图层**
+- `usePlanningRouteLayer`：独立 VectorLayer zIndex 90；推荐/候选不同颜色线型，未选低透明、选中加粗；`attach/setRoutes/setSelected/reloadForProjection/dispose/fitRoute/pickRouteAtPixel`；WGS84→投影用既有 `buildRouteLineString`（跨 180° unwrap/world copy）。
+- `useRiskGridLayer`：WGS84 GeoJSON VectorLayer zIndex 70；undefined/null 用灰色独立样式（绝不按 0 风险着色）；可点选 cellId；planId 快照绑定；`reloadForProjection/dispose`。
+- `MapWorkspaceView`：唯一 Map 上 attach/卸载/投影重载；`singleclick` 优先级 pickMode → 测量/手绘 guard → riskInspect → weather → identify → 手绘航路 → 算法航线；不新增第二 handler；风险/环境/规划失败不阻塞地图。
+
+**UI**
+- `RoutePlannerPanel` 顶部“手动绘制 / 智能规划”；手动原内容保留；智能侧 `IntelligentPlanningPanel`（任务/船舶/候选对比/风险/结果）。
+- `NavigationTaskPanel`：经纬度+地图选点+手绘航路端点、UTC 出发时间、船舶、固定三目标、real_only/合成研究、种群/代数/seed；合成提示。
+- `RouteComparisonPanel`：表格 + ECharts Pareto 散点（x 能耗、y 风险、tooltip 航时）；只绘制真实候选；采纳按钮。
+- `RiskAnalysisPanel`：综合/冰/深/雾/风/浪切换、风险格加载、地图点选、单格环境值/分项/质量/来源/通航/阻断原因；区域风险评估（bbox+time+vessel+policy）。
+- `PlanningResultPanel`：状态/进度/错误码/取消/历史；快照时间与当前环境时间不一致提示；合成横幅；缺测字段。
+- 采纳/编辑：`RouteDraft` localStorage 仍用 v1 key，payload 升 v2；`coerceRoute` 保留 adopted/source/snapshot；手动内容不受影响；采纳后切回手动并 fit；修改后 `routeMetricsStale` 显示“已修改，需重新计算”，不把旧指标当当前值，可一键重评。
+
+**测试**：前端新增 `mapEnvironment`（双投影箭头）、环境/船舶面板、`routePlanning`（hash/stale）、navigation store、planning layers、planning panels、MapWorkspace 规划不变量；全套 **28 files / 385 tests passed**；`vue-tsc` 零错误；生产构建通过。
