@@ -999,3 +999,33 @@ backend/app/navigation/
 - 采纳/编辑：`RouteDraft` localStorage 仍用 v1 key，payload 升 v2；`coerceRoute` 保留 adopted/source/snapshot；手动内容不受影响；采纳后切回手动并 fit；修改后 `routeMetricsStale` 显示“已修改，需重新计算”，不把旧指标当当前值，可一键重评。
 
 **测试**：前端新增 `mapEnvironment`（双投影箭头）、环境/船舶面板、`routePlanning`（hash/stale）、navigation store、planning layers、planning panels、MapWorkspace 规划不变量；全套 **28 files / 385 tests passed**；`vue-tsc` 零错误；生产构建通过。
+
+### 8.8 批次 E：部署、E2E、回归与交付
+
+**部署**
+- `deploy/compose.yml`：backend + worker 均挂载 `${NAVIGATION_DATA_HOST_PATH:-../data/navigation}:/data/navigation:ro`；
+  worker 增加 `${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro`；`PLANNER_RESULT_ROOT=/data/storage/navigation/plans`
+  位于共享存储；`NAVIGATION_*`/`PLANNER_*` 环境变量；不新增服务。
+- `deploy/.env.example`、`backend/.env.example` 同步；`data/navigation/{bathymetry,ice,wind,current,wave,planning}/README.md`
+  提交，`.gitignore` 忽略实际 NetCDF/JSON/NPZ 数据。合成 fixture 生成到 `sample-data/navigation/`（gitignored）。
+- `docker compose --env-file .env.example config` 通过；Nginx `^~ /api/` 已优先，无需改。
+
+**合成研究 E2E**
+- `scripts/navigation/generate_synthetic_fixtures.py` 生成五字段 NetCDF + `navigation_manifest.json`
+  （全部 `quality=synthetic`）。
+- `scripts/navigation/e2e_synthetic.py`：真实 FastAPI/DB/worker processor/planner/risk/evaluate 链；
+  环境 query → 船舶 → allow_synthetic_research 计划 → D*/NSGA → 3 条 Pareto → 风险格 15,731 单元
+  → evaluate-route；推荐与重评 risk/energy/time 完全一致；real_only 负例被拒绝并返回
+  `ENVIRONMENT_DATA_MISSING`；risk_only 区域任务完成。全链 17.0s，worker 10.7s。
+- `scripts/navigation/e2e_ui_smoke.cjs`（Playwright，临时安装不写入依赖）：登录/项目地图/智能规划/
+  完成/候选/采纳/编辑/stale/重评/风险格通过；截图 `output/navigation-e2e-{result,stale,risk}.png`。
+
+**测试与回归**
+- 后端 **277 passed**；前端 **28 files / 385 tests passed**；typecheck/build 通过；`ruff` 新增代码通过。
+- 未运行真实 GeoServer/GWC/S-57 批量导入与浏览器 44 项手工清单（本环境无真实服务/数据）；
+  报告中不得宣称真实服务回归通过。D*/NSGA/环境/风险/规划 API/worker 均有自动化测试。
+
+**性能 / 限制**
+- 合成全网格规划 10.7s；规划 worker 串行（`PLANNER_MAX_CONCURRENT_JOBS=1`），会延迟导入；
+  风险格按 gzip 存盘、API bbox/stride 裁剪；环境矢量 ≤600 点/视口、防抖/abort。
+- 无真实环境数据；真实 Provider/规划未验证。详细限制见 `docs/plans/v3-integration-final-report.md`。

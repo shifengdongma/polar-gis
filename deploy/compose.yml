@@ -60,12 +60,29 @@ services:
       # 冰情叠加(只读环境数据;worker 经锚点同样获得,但不读取数据)
       ICE_ENABLED: ${ICE_ENABLED:-true}
       ICE_DATA_ROOT: /data/ice
+      # 导航环境/规划。数据目录只读；结果目录位于共享存储，backend/worker 均可读写。
+      NAVIGATION_ENABLED: ${NAVIGATION_ENABLED:-true}
+      NAVIGATION_DATA_ROOT: /data/navigation
+      NAVIGATION_ICE_DATA_ROOT: ${NAVIGATION_ICE_DATA_ROOT:-/data/ice}
+      NAVIGATION_ICE_BACKEND: ${NAVIGATION_ICE_BACKEND:-auto}
+      NAVIGATION_DEFAULT_DATA_POLICY: ${NAVIGATION_DEFAULT_DATA_POLICY:-real_only}
+      PLANNER_RESULT_ROOT: ${PLANNER_RESULT_ROOT:-/data/storage/navigation/plans}
+      PLANNER_MAX_CELLS: ${PLANNER_MAX_CELLS:-20000}
+      PLANNER_MAX_CANDIDATES: ${PLANNER_MAX_CANDIDATES:-20}
+      PLANNER_MAX_GENERATIONS: ${PLANNER_MAX_GENERATIONS:-100}
+      PLANNER_POPULATION_SIZE: ${PLANNER_POPULATION_SIZE:-36}
+      PLANNER_TIMEOUT_SECONDS: ${PLANNER_TIMEOUT_SECONDS:-300}
+      PLANNER_MAX_CONCURRENT_JOBS: ${PLANNER_MAX_CONCURRENT_JOBS:-1}
+      PLANNER_MAX_QUEUED_RUNS: ${PLANNER_MAX_QUEUED_RUNS:-10}
+      PLANNER_MAX_RETAINED_RUNS: ${PLANNER_MAX_RETAINED_RUNS:-100}
     restart: unless-stopped
     volumes:
       - shared-storage:/data/storage
       - ../data/s57-basemaps:/data/s57-basemaps:ro
       # 冰情 NetCDF 数据目录只读挂载;本地验证可用 ICE_DATA_HOST_PATH 覆盖
       - ${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro
+      # 导航环境数据(水深/风/浪/流/海冰合成研究文件)
+      - ${NAVIGATION_DATA_HOST_PATH:-../data/navigation}:/data/navigation:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,6 +103,9 @@ services:
     volumes:
       - shared-storage:/data/storage
       - ../data/s57-basemaps:/data/s57-basemaps:ro
+      # 规划 worker 必须能读到与 backend 相同的海冰/导航数据
+      - ${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro
+      - ${NAVIGATION_DATA_HOST_PATH:-../data/navigation}:/data/navigation:ro
     depends_on:
       backend:
         condition: service_healthy

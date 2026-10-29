@@ -383,22 +383,58 @@ def _densified_cells(
     coordinates: list[tuple[float, float]],
     cells: dict[str, dict[str, object]],
 ) -> list[str] | str:
+    """Map a WGS84 route to planning cells.
+
+    For a candidate route produced by the planner, consecutive coordinates are
+    adjacent cell centres; using them directly preserves the exact edge energy
+    used by the optimizer.  Only long user-edited segments are densified.
+    """
     ids: list[str] = []
     for first, second in zip(coordinates, coordinates[1:], strict=False):
-        samples = _densify(first, second, 5.0)
-        for longitude, latitude in samples:
+        first_point = static.nearest_cell(first[1], first[0])
+        second_point = static.nearest_cell(second[1], second[0])
+        if first_point is None or second_point is None:
+            return "route_outside_planning_region"
+        first_id = f"r{first_point[1]}c{first_point[0]}"
+        second_id = f"r{second_point[1]}c{second_point[0]}"
+        if not _cell_in_grid(first_id, cells):
+            return _cell_error(first_id, cells)
+        if not _cell_in_grid(second_id, cells):
+            return _cell_error(second_id, cells)
+        if not ids:
+            ids.append(first_id)
+        if first_id == second_id:
+            continue
+        if _adjacent_cells(first_point, second_point):
+            if ids[-1] != second_id:
+                ids.append(second_id)
+            continue
+        for longitude, latitude in _densify(first, second, 5.0):
             point = static.nearest_cell(latitude, longitude)
             if point is None:
                 return "route_outside_planning_region"
             cell_id = f"r{point[1]}c{point[0]}"
-            cell = cells.get(cell_id)
-            if cell is None:
-                return "risk_grid_cell_unavailable"
-            if cell.get("traversable") is not True:
-                return str(cell.get("blockedReason") or "cell_not_traversable")
-            if not ids or ids[-1] != cell_id:
+            if not _cell_in_grid(cell_id, cells):
+                return _cell_error(cell_id, cells)
+            if ids[-1] != cell_id:
                 ids.append(cell_id)
     return ids
+
+
+def _cell_in_grid(cell_id: str, cells: dict[str, dict[str, object]]) -> bool:
+    cell = cells.get(cell_id)
+    return cell is not None and cell.get("traversable") is True
+
+
+def _cell_error(cell_id: str, cells: dict[str, dict[str, object]]) -> str:
+    cell = cells.get(cell_id)
+    if cell is None:
+        return "risk_grid_cell_unavailable"
+    return str(cell.get("blockedReason") or "cell_not_traversable")
+
+
+def _adjacent_cells(first: tuple[int, int], second: tuple[int, int]) -> bool:
+    return max(abs(first[0] - second[0]), abs(first[1] - second[1])) <= 1
 
 
 def _densify(first: tuple[float, float], second: tuple[float, float], step_km: float) -> list[tuple[float, float]]:

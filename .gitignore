@@ -12,6 +12,7 @@ backend/.pytest-storage/
 backend/.pytest-ice-data/
 backend/.pytest-navigation-data/
 backend/.pytest-planner-results/
+backend/.e2e-navigation/
 .pytest-ice-data/
 .pytest-navigation-data/
 .pytest-planner-results/
@@ -35,6 +36,14 @@ data/*
 !data/ice/README.md
 !data/ice/.gitkeep
 data/ice/*.nc
+# 导航环境数据目录:只提交说明文件,真实数据与合成 NetCDF 不入库
+!data/navigation/
+!data/navigation/README.md
+!data/navigation/*/
+!data/navigation/*/README.md
+data/navigation/**/*.nc
+data/navigation/**/*.json
+data/navigation/**/*.npz
 # 冰情样例数据(本地验证用,含压缩包)
 sample-data/
 sample-data.7z

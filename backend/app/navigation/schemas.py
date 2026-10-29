@@ -223,7 +223,7 @@ class PlanningRouteRead(ApiModel):
     coordinates: list[list[float]]
     risk_score: float
     risk_components: dict[str, float | None] = Field(default_factory=dict)
-    energy_mwh: float
+    energy_mwh: float = Field(alias="energyMWh")
     time_hours: float
     distance_km: float
     source_quality: str
@@ -238,7 +238,7 @@ class EvaluateRouteRequest(ApiModel):
 class EvaluateRouteRead(ApiModel):
     traversable: bool
     risk_score: float | None = None
-    energy_mwh: float | None = None
+    energy_mwh: float | None = Field(default=None, alias="energyMWh")
     time_hours: float | None = None
     distance_km: float | None = None
     source_quality: str | None = None

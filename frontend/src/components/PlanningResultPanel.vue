@@ -18,7 +18,8 @@ const errorText = computed(() => planningErrorMessage(run.value))
 const snapshotTime = computed(() => planningSnapshotTime(run.value))
 const snapshotMismatch = computed(() => {
   if (!snapshotTime.value || !props.environmentTime) return false
-  return new Date(snapshotTime.value).getTime() !== new Date(props.environmentTime).getTime()
+  const normalize = (value: string) => new Date(value).toISOString().slice(0, 16)
+  return normalize(snapshotTime.value) !== normalize(props.environmentTime)
 })
 const missingFields = computed(() => {
   const value = run.value?.resultSummary?.missingByField
@@ -73,7 +74,7 @@ function selectRun(planId: string) {
       <el-alert v-if="errorText" :title="errorText" type="error" :closable="false" show-icon />
 
       <div v-if="Object.keys(missingFields).length" class="planning-missing-fields">
-        <span>缺测字段：</span>
+        <span>{{ navigation.isSynthetic ? '原始 Provider 缺测（已用合成 gap-fill 补足）：' : '缺测字段：' }}</span>
         <el-tag
           v-for="(count, field) in missingFields"
           :key="field"

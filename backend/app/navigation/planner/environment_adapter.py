@@ -83,7 +83,7 @@ def build_planning_grid(
             field_name, points_lonlat, departure, policy
         )
         if progress is not None:
-            progress(10 + REQUIRED_FIELDS.index(field) * 10)
+            progress(10 + REQUIRED_FIELDS.index(field_name) * 10)
 
     missing_by_field = {
         field: sum(1 for observation in observations[field] if not observation.available)

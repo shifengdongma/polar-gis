@@ -1284,3 +1284,30 @@ docker compose up -d         # 启动服务
 - 规划面板在 520px 抽屉内较紧凑；未改现有面板宽度常量。
 - 后端 C 的规划计算仍为合成 fixture 验证；真实环境数据未验证。
 - 风险格加载按需触发，不会自动拉取全量栅格。
+
+---
+
+## 会话 #28 — 批次 E：部署、E2E、回归与交付（2026-10-30）
+
+### 交付
+
+- Docker：五服务不变；backend/worker 挂载导航数据（worker 同时挂载海冰）；规划结果写共享存储；
+  env 模板与 data/navigation 说明目录入库。
+- 合成研究 E2E：生成五字段 NetCDF + synthetic manifest；API/worker/规划/风险/重评链路通过；
+  推荐航线与重评 risk/energy/time 完全一致；real_only 负例被拒绝；risk_only 完成。
+- 浏览器 E2E：登录→项目地图→智能规划→完成→候选→采纳→编辑→stale→重评→风险格通过。
+- 测试：后端 277 passed、前端 385 passed、typecheck/build 通过、compose config 通过。
+- 文档：docs/09/10/11/12 与 `docs/plans/v3-integration-final-report.md`。
+
+### 效果
+
+- Polar-GIS 内已具备完整可调用链路：环境感知 → 船舶 → 风险 → D*/NSGA 多目标规划 → 候选对比 →
+  地图显示 → 采纳草稿 → 编辑 → 失效标注/重评 → 风险格查看。
+- 原有 S-57/海冰/手绘航路/认证/五服务架构未替换。
+
+### 已知限制
+
+- **无真实环境数据，真实环境规划未验证**；E2E 仅为明确标记的合成研究数据。
+- 未运行真实 GeoServer/GWC/S-57 批量导入与 44 项手工回归；仅自动化测试与合成链路。
+- Docker 镜像构建受网络/时间限制（compose 配置已验证）；需在有网络环境重跑镜像构建。
+- 无项目成员 ACL、实时船位、自动操舵/执行；worker 串行；雾无真实 Provider。

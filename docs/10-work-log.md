@@ -1744,3 +1744,26 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - “采纳”只复制到草稿，不修改原始推荐结果；不是自动驾驶执行。
 - ECharts 只在有真实候选时绘制；合成数据仍显示算法输出并带横幅。
 - 尚未做 E 批次的 Docker/回归/合成 fixture/E2E；本批次无部署变更。
+
+---
+
+## 会话 #28 — 批次 E：部署、E2E、回归与交付（2026-10-30）
+
+### 完成内容
+
+- Docker：backend+worker 挂载 `/data/navigation`；worker 补 `/data/ice`；`PLANNER_RESULT_ROOT` 共享存储；
+  `NAVIGATION_*`/`PLANNER_*` 环境变量；`.env.example` 同步；`data/navigation/*/README.md` 与
+  `.gitignore` 白名单。
+- 合成 fixture：`scripts/navigation/generate_synthetic_fixtures.py`（五字段 + synthetic manifest）；
+  `e2e_synthetic.py`（API+worker+planner+risk+evaluate）；`e2e_ui_smoke.cjs`（Playwright）。
+- E2E 结果：3 条候选；风险格 15,731 单元；推荐/重评 risk/energy/time 一致；real_only 负例
+  `ENVIRONMENT_DATA_MISSING`；risk_only 完成；全链 17.0s，worker 10.7s；UI 链路通过。
+- 最终测试：后端 277 passed；前端 385 passed；typecheck/build 通过；compose config 通过。
+- 文档：docs/09/10/11/12 + `docs/plans/v3-integration-final-report.md`（21 项）。
+
+### 未完成 / 明确限制
+
+- 本机无真实 GEBCO/neXtSIM/CARRA2/TOPAZ5/WAM 数据；**真实环境规划未验证**，E2E 为合成研究数据。
+- 未运行真实 GeoServer/GWC/S-57 批量导入与 44 项手工浏览器回归；不得宣称真实服务回归通过。
+- Docker 镜像构建尝试已启动（受网络/时间限制）；compose 配置已验证，最终构建结果以实际日志为准。
+- 无项目成员 ACL、无实时船位/自动操舵/路线执行；Worker 串行。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useNavigationStore } from '../stores/navigation'
 import type { PlanningRoute } from '../types/navigation'
@@ -16,6 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const navigation = useNavigationStore()
+const activeTab = ref('task')
 const environmentTime = computed(() => props.environmentTime ?? navigation.snapshotTime)
 
 onMounted(() => {
@@ -36,7 +37,7 @@ function adopt(route: PlanningRoute) {
 
 <template>
   <section class="intelligent-planning-panel">
-    <el-tabs class="planning-tabs">
+    <el-tabs v-model="activeTab" class="planning-tabs">
       <el-tab-pane label="规划任务" name="task">
         <NavigationTaskPanel />
       </el-tab-pane>
