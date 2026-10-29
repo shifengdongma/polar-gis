@@ -1029,3 +1029,21 @@ backend/app/navigation/
 - 合成全网格规划 10.7s；规划 worker 串行（`PLANNER_MAX_CONCURRENT_JOBS=1`），会延迟导入；
   风险格按 gzip 存盘、API bbox/stride 裁剪；环境矢量 ≤600 点/视口、防抖/abort。
 - 无真实环境数据；真实 Provider/规划未验证。详细限制见 `docs/plans/v3-integration-final-report.md`。
+
+### 8.9 后续修复：合成参数、进度、任务列表、抽屉对比度
+
+- **合成环境参数可见/可改**：`PlanningCreateRequest.syntheticOverrides` 支持
+  `depthM/iceConcentration/iceThicknessM/windSpeedMs/windDirectionFromDeg/currentSpeedMs/
+  currentDirectionToDeg/waveHeightM/wavePeriodS/waveDirectionFromDeg`；仅
+  `allow_synthetic_research` 有效，API 校验字段和范围。任务面板在合成策略下展示算法所需字段，
+  “从起点读取当前环境值”填充当前值，空值表示由 Provider/gap-fill 自动处理；覆盖应用到全规划区，
+  逐格标 `synthetic` + `research-override`。
+- **进度不再停在 10%**：Provider 采样按 1000 点分块，进度 2→10…55→65（环境采样）→95（结果保存）
+  →100；Worker 阶段显示“环境采样/多目标优化/结果保存”。取消检查在分块间执行。
+- **规划历史管理**：`planning_runs.title`（Alembic `0006_navigation_run_title`）；API
+  `PATCH /plans/{planId}` 重命名、`DELETE /plans/{planId}` 删除（仅终态；删除风险栅格文件与级联
+  航线）；结果面板历史项提供重命名/删除按钮，选中项为深色文字+浅青底+左边框。
+- **抽屉配色**：智能规划工作台使用亮色抽屉主题；新增面板/历史/风险详情/表单输入改为深色文字+
+  浅色背景，修复选中行浅青底上浅色文字不可读；环境图层（左侧深色面板）保持原暗色样式。
+- 测试：后端 **280 passed**（新增重命名/删除、覆盖校验、覆盖落地 3 个）；前端 385 passed；
+  typecheck/build 通过；API E2E + Playwright UI smoke 通过。

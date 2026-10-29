@@ -52,6 +52,11 @@ async function main() {
     await numbers.nth(2).fill('122')
     await numbers.nth(3).fill('77')
     await page.getByText('合成研究数据', { exact: true }).click()
+    await page.getByRole('button', { name: '从起点读取当前环境值' }).click()
+    await page.waitForTimeout(1200)
+    // Explicitly override wind speed; the result must label the override.
+    const overrideInputs = page.locator('.navigation-override-grid input')
+    await overrideInputs.nth(3).fill('13')
     await page.getByRole('button', { name: '开始智能规划' }).click()
 
     await page.locator('.el-tabs__item').filter({ hasText: '结果' }).click()
@@ -59,6 +64,8 @@ async function main() {
       .locator('.planning-result-heading .el-tag')
       .filter({ hasText: '已完成' })
       .waitFor({ timeout: 180000 })
+    await page.getByText('算法环境字段', { exact: false }).waitFor({ timeout: 15000 })
+    await page.getByText('windSpeedMs=13', { exact: false }).waitFor({ timeout: 15000 })
     await page.screenshot({ path: path.join(OUTPUT, 'navigation-e2e-result.png') })
 
     await page.locator('.el-tabs__item').filter({ hasText: '候选对比' }).click()

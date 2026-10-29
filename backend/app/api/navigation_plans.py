@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -26,10 +26,11 @@ from app.navigation.schemas import (
     EvaluateRouteRead,
     EvaluateRouteRequest,
     PlanningCreateRequest,
+    PlanningRenameRequest,
     PlanningRouteRead,
     PlanningRunRead,
 )
-from app.navigation.tasks.errors import PlanningTaskError
+from app.navigation.tasks.errors import PlanningNotFound, PlanningTaskError
 from app.navigation.tasks.service import PlanningTaskService
 from app.navigation.vessel.service import VesselNotFound, VesselService
 from app.schemas import Paginated
@@ -59,6 +60,7 @@ def _run_read(run: PlanningRun) -> PlanningRunRead:
     return PlanningRunRead(
         plan_id=run.id,
         project_id=run.project_id,
+        title=run.title,
         vessel_id=run.vessel_id,
         mode=run.mode,
         status=run.status,
@@ -105,7 +107,10 @@ def _route_read(run_id: UUID, route) -> PlanningRouteRead:
 
 
 def _run_for_user(db: Session, plan_id: UUID, user: User) -> PlanningRun:
-    run = get_task_service().get_run(db, plan_id)
+    try:
+        run = get_task_service().get_run(db, plan_id)
+    except PlanningNotFound as error:
+        raise AppError(error.code, str(error), error.status_code) from error
     project_or_404(
         db,
         run.project_id,
@@ -152,6 +157,7 @@ def create_plan(
         raise AppError("INPUT_INVALID", "目标必须且只能是 risk/energy/time", 422)
     if payload.generations > settings.planner_max_generations:
         raise AppError("PLANNER_LIMIT_EXCEEDED", "迭代代数超过配置上限", 422)
+    _validate_synthetic_overrides(payload.synthetic_overrides, payload.data_policy)
     try:
         static = load_static_grid()
     except PlanningGridUnavailable as error:
@@ -173,6 +179,7 @@ def create_plan(
             data_policy=payload.data_policy,
             request_payload=request_payload,
             departure=departure,
+            title=payload.title,
         )
     except PlanningTaskError as error:
         raise AppError(error.code, str(error), error.status_code, error.details) from error
@@ -215,6 +222,39 @@ def get_plan(
     return _run_read(_run_for_user(db, plan_id, user))
 
 
+@router.patch("/{plan_id}", response_model=PlanningRunRead)
+def rename_plan(
+    plan_id: UUID,
+    payload: PlanningRenameRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> PlanningRunRead:
+    _ensure_enabled()
+    run = _run_for_user(db, plan_id, user)
+    _require_owner(run, user)
+    try:
+        run = get_task_service().rename(db, run, payload.title)
+    except PlanningTaskError as error:
+        raise AppError(error.code, str(error), error.status_code) from error
+    return _run_read(run)
+
+
+@router.delete("/{plan_id}", status_code=204)
+def delete_plan(
+    plan_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    _ensure_enabled()
+    run = _run_for_user(db, plan_id, user)
+    _require_owner(run, user)
+    try:
+        get_task_service().delete(db, run)
+    except PlanningTaskError as error:
+        raise AppError(error.code, str(error), error.status_code) from error
+    return Response(status_code=204)
+
+
 @router.get("/{plan_id}/routes", response_model=list[PlanningRouteRead])
 def get_routes(
     plan_id: UUID,
@@ -235,7 +275,11 @@ def get_route(
 ) -> PlanningRouteRead:
     _ensure_enabled()
     run = _run_for_user(db, plan_id, user)
-    return _route_read(run.id, get_task_service().get_route(db, run.id, route_id))
+    try:
+        route = get_task_service().get_route(db, run.id, route_id)
+    except PlanningNotFound as error:
+        raise AppError(error.code, str(error), error.status_code) from error
+    return _route_read(run.id, route)
 
 
 @router.get("/{plan_id}/risk-grid")
@@ -363,6 +407,47 @@ def evaluate_route(
         blocked_cell_id=result.get("blockedCellId"),
         snapshot_id=result.get("snapshotId"),
     )
+
+
+def _require_owner(run: PlanningRun, user: User) -> None:
+    if user.role != Role.SYSTEM_ADMIN.value and run.requested_by != user.id:
+        raise AppError("FORBIDDEN", "只有任务创建者或管理员可以修改", 403)
+
+
+_OVERRIDE_RANGES: dict[str, tuple[float, float]] = {
+    "depthM": (0.0, 12_000.0),
+    "iceConcentration": (0.0, 1.0),
+    "iceThicknessM": (0.0, 20.0),
+    "windSpeedMs": (0.0, 80.0),
+    "windDirectionFromDeg": (0.0, 360.0),
+    "currentSpeedMs": (0.0, 5.0),
+    "currentDirectionToDeg": (0.0, 360.0),
+    "waveHeightM": (0.0, 30.0),
+    "wavePeriodS": (0.0, 40.0),
+    "waveDirectionFromDeg": (0.0, 360.0),
+}
+
+
+def _validate_synthetic_overrides(
+    overrides: dict[str, float] | None,
+    data_policy: str,
+) -> None:
+    if not overrides:
+        return
+    if data_policy != "allow_synthetic_research":
+        raise AppError(
+            "INPUT_INVALID", "合成环境值覆盖仅适用于 allow_synthetic_research", 422
+        )
+    for key, value in overrides.items():
+        limits = _OVERRIDE_RANGES.get(key)
+        if limits is None:
+            raise AppError("INPUT_INVALID", f"未知的合成覆盖字段: {key}", 422)
+        if not math.isfinite(value) or not (limits[0] <= value <= limits[1]):
+            raise AppError(
+                "INPUT_INVALID",
+                f"合成覆盖字段 {key} 超出范围 [{limits[0]}, {limits[1]}]",
+                422,
+            )
 
 
 def _parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:

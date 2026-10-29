@@ -84,6 +84,7 @@ describe('routePlanning adoption/staleness', () => {
     const run = {
       planId: 'plan-1',
       projectId: 'project-1',
+      title: '测试规划',
       vesselId: 'xuelong2',
       mode: 'plan',
       status: 'failed',

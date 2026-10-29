@@ -46,14 +46,15 @@
 - 规划：`backend/app/navigation/planner/{static_grid,grid,energy_model,dstar,dnsga3,
   environment_adapter,service,errors}.py`；`resources/grids/northeast_passage_25km_static.npz`。
 - 任务：`backend/app/navigation/tasks/{service,processor,errors}.py`；
-  `backend/app/models.py` 的 `PlanningRun/PlanningRoute`；迁移 `0005_navigation_planning.py`。
+  `backend/app/models.py` 的 `PlanningRun/PlanningRoute`；迁移 `0005_navigation_planning.py`、
+  `0006_navigation_run_title.py`。
 - API：`backend/app/api/navigation_{environment,vessels,plans,risk}.py`。
 - 前端：`stores/navigation.ts`、`api/navigation.ts`、`types/navigation.ts`、
   `composables/use{EnvironmentOverlays,PlanningRouteLayer,RiskGridLayer}.ts`、
   `components/{EnvironmentLayerPanel,EnvironmentTimeControl,EnvironmentValueTooltip,
   VesselProfilePanel,IntelligentPlanningPanel,NavigationTaskPanel,RouteComparisonPanel,
   RiskAnalysisPanel,PlanningResultPanel}.vue`、`utils/{mapEnvironment,routePlanning}.ts`。
-- 测试：后端 63 个导航新增测试；前端 32 个新增测试/不变量；合成 fixture 生成器与 E2E 脚本。
+- 测试：后端 66 个导航新增测试；前端 32 个新增测试/不变量；合成 fixture 生成器与 E2E 脚本。
 
 ## 4. 重构后的业务架构
 
@@ -130,7 +131,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
   功率上限、0.5 kn 搜索下界/1 kn 运行下界/18 kn 最大/12 kn 参考来自船舶配置。
 - 异步 planning_runs worker；queued/running/completed/failed/cancelled；取消/超时/环境缺失/
   无路线/算法失败细分错误码；风险栅格即使无路线也保留。
-- 持久化：`planning_runs`/`planning_routes` + Alembic 0005；风险栅格 gzip 原子文件。
+- 持久化：`planning_runs`/`planning_routes` + Alembic 0005/0006（任务标题）；风险栅格 gzip 原子文件。
 - `evaluate-route` 读取 run 风险快照，≤5 km 加密、逐格校验；候选/重评风险/能耗/航时一致
   （E2E 断言相等）。
 
@@ -175,13 +176,15 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 ## 12. 新增数据库迁移
 
 `backend/migrations/versions/0005_navigation_planning.py`
-- `planning_runs`（id/project_id/requested_by/vessel_id/mode/status/stage/progress/request_json/
+- `planning_runs`（id/project_id/requested_by/title/vessel_id/mode/status/stage/progress/request_json/
   environment_snapshot_json/algorithm_version/data_policy/risk_model_version/error_code/
   error_message/result_summary_json/risk_grid_path/worker_id/cancel_requested/时间戳）
 - `planning_routes`（run_id CASCADE、route_index、route_id、coordinates_json、风险分项、
   energy_mwh/time_hours/distance_km/quality/algorithm_version；唯一 run+index）
 - 风险栅格不入 DB JSON，写 `PLANNER_RESULT_ROOT/{planId}.json.gz`（临时文件+原子 rename）。
 - 迁移在 fresh SQLite 与“0004 后无 planning 表”场景升级通过；0004 增加幂等保护以支持 fresh DB。
+- `0006_navigation_run_title.py` 为 `planning_runs` 增加可编辑 `title`；已在“0005 后无 title 列”的
+  SQLite 数据库升级通过。
 
 ## 13. Docker 部署变化
 
@@ -198,7 +201,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 
 ## 14. 后端测试结果
 
-- `cd backend && pytest tests/ -q` → **277 passed, 0 failed**（基线 214 + 导航 63）。
+- `cd backend && pytest tests/ -q` → **280 passed, 0 failed**（基线 214 + 导航 66）。
 - 覆盖：契约/单位/时间/方向/质量、Provider 缺文件/NoData/单位/时间/TOPAZ 旋转/WAM FROM/
   CARRA2 变量/合成 manifest、real_only 拒绝 synthetic、故障隔离、船舶/UKC/UNKNOWN、风险公式/
   缺测≠0/陆地/浅水/冰负载、静态网格、D*/NSGA/能耗/两船差异/电流/功率约束、规划 API/权限/取消/
@@ -230,7 +233,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 
 ## 17. 现有 Polar-GIS 功能回归结果
 
-- 后端 277 passed、前端 385 passed、typecheck/build 通过；既有测试全部保留。
+- 后端 280 passed、前端 385 passed、typecheck/build 通过；既有测试全部保留。
 - 自动化覆盖：认证/用户/项目、S-57 API/导入单元、Render Plan 纯函数、海冰 API/Service、
   AIS/气象 demo、要素查询测试（既有覆盖范围内）。
 - 未在本环境运行真实 GeoServer/GWC/S-57 批量导入与浏览器手工 44 项清单（无 GeoServer 数据/服务）；
@@ -264,7 +267,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 集成前 `728020b` 到最终批次（含本报告/文档/部署/脚本）：
 
 ```
-119 files changed, 16810 insertions(+), 69 deletions(-)
+120 files changed, 17530 insertions(+), 70 deletions(-)
 ```
 
 （该统计包含批次 A-E 与最终报告本身；提交后可用 `git diff --stat 728020b` 复核。）
@@ -284,3 +287,18 @@ feat(navigation): 集成 PolarOptionNav V3 环境感知/风险/多目标规划
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>
 ```
+
+## 22. 后续用户反馈修复（2026-10-30）
+
+1. **合成信息不可见/不可修改**：新增 `syntheticOverrides` 契约（10 个字段、范围校验、仅
+   `allow_synthetic_research`）；任务面板展示算法所需字段、“从起点读取当前环境值”与逐项编辑；
+   覆盖应用到全规划区并标 `synthetic`/`research-override`；结果面板显示每字段 quality/source
+   和本次覆盖值。
+2. **进度卡在 10% / 历史任务不能编辑删除**：Provider 采样改为 1000 点分块，块间更新进度和检查
+   取消；阶段推进为环境采样→多目标优化→结果保存（实测 0→2→12…65→95→100）。新增
+   `planning_runs.title` 与 Alembic `0006`；`PATCH` 重命名、`DELETE` 删除终态任务（级联航线/
+   风险文件）；历史列表提供重命名/删除按钮。
+3. **选中任务蓝底浅字**：智能规划抽屉改为亮色主题（深色文字/浅色卡片/浅青选中行+左边框）；
+   环境图层左侧暗色面板保持不变。
+4. 验证：后端 280 passed（新增 3 个）、前端 385 passed、typecheck/build/ruff 通过、迁移 0006
+   通过；API E2E 与 Playwright UI smoke 复跑通过，截图更新。

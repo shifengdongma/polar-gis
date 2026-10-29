@@ -16,6 +16,10 @@ describe('planning workbench panels', () => {
     expect(text).toContain('allow_synthetic_research')
     expect(text).toContain('NSGA-III 固定三目标')
     expect(text).toContain('不可作为真实航行决策依据')
+    expect(text).toContain('合成环境参数')
+    expect(text).toContain('从起点读取当前环境值')
+    expect(text).toContain('syntheticOverrides')
+    expect(text).toContain('overrideValues.depthM')
   })
 
   it('RouteComparisonPanel uses a Pareto chart and adoption, never fake points', () => {
@@ -43,6 +47,10 @@ describe('planning workbench panels', () => {
     expect(text).toContain('含合成环境数据')
     expect(text).toContain('历史任务')
     expect(text).toContain('取消任务')
+    expect(text).toContain('重命名')
+    expect(text).toContain('删除')
+    expect(text).toContain('算法环境字段')
+    expect(text).toContain('合成覆盖')
   })
 
   it('IntelligentPlanningPanel composes task/vessel/comparison/risk/result tabs', () => {

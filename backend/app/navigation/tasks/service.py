@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.models import PlanningRoute, PlanningRun, PlanningRunStatus
 
-from .errors import PlanningLimitExceeded, PlanningNotCancellable, PlanningNotFound
+from .errors import (
+    PlanningLimitExceeded,
+    PlanningNotCancellable,
+    PlanningNotEditable,
+    PlanningNotFound,
+)
 
 
 class PlanningTaskService:
@@ -31,6 +36,7 @@ class PlanningTaskService:
         data_policy: str,
         request_payload: dict[str, object],
         departure: datetime,
+        title: str | None = None,
     ) -> PlanningRun:
         active = db.scalar(
             select(func.count())
@@ -49,6 +55,7 @@ class PlanningTaskService:
         run = PlanningRun(
             project_id=project_id,
             requested_by=requested_by,
+            title=(title or "智能规划").strip()[:120],
             vessel_id=vessel_id,
             mode=mode,
             status=PlanningRunStatus.QUEUED.value,
@@ -120,6 +127,26 @@ class PlanningTaskService:
         if route is None:
             raise PlanningNotFound("Planning route not found.")
         return route
+
+    def rename(self, db: Session, run: PlanningRun, title: str) -> PlanningRun:
+        cleaned = title.strip()
+        if not cleaned:
+            raise PlanningNotEditable("规划标题不能为空")
+        run.title = cleaned[:120]
+        run.updated_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(run)
+        return run
+
+    def delete(self, db: Session, run: PlanningRun) -> None:
+        if run.status in {
+            PlanningRunStatus.QUEUED.value,
+            PlanningRunStatus.RUNNING.value,
+        }:
+            raise PlanningNotEditable("运行中的规划任务不能删除，请先取消")
+        self.risk_grid_file(run.id).unlink(missing_ok=True)
+        db.delete(run)
+        db.commit()
 
     def cancel(self, db: Session, run: PlanningRun) -> PlanningRun:
         if run.status == PlanningRunStatus.QUEUED.value:

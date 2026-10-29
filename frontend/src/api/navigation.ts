@@ -132,6 +132,18 @@ export async function cancelPlanningRun(planId: string): Promise<PlanningRun> {
   return response.data
 }
 
+export async function renamePlanningRun(
+  planId: string,
+  title: string,
+): Promise<PlanningRun> {
+  const response = await api.patch<PlanningRun>(`/navigation/plans/${planId}`, { title })
+  return response.data
+}
+
+export async function deletePlanningRun(planId: string): Promise<void> {
+  await api.delete(`/navigation/plans/${planId}`)
+}
+
 export async function fetchRiskGrid(
   planId: string,
   field: RiskField,

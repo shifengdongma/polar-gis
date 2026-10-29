@@ -1767,3 +1767,29 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 未运行真实 GeoServer/GWC/S-57 批量导入与 44 项手工浏览器回归；不得宣称真实服务回归通过。
 - Docker 镜像构建尝试已启动（受网络/时间限制）；compose 配置已验证，最终构建结果以实际日志为准。
 - 无项目成员 ACL、无实时船位/自动操舵/路线执行；Worker 串行。
+
+---
+
+## 会话 #29 — 用户反馈修复：合成参数/进度/任务列表/对比度（2026-10-30）
+
+### 问题与修复
+
+1. **看不到/无法修改合成信息**
+   - 新增 `syntheticOverrides` 请求契约与校验（仅 allow_synthetic_research，10 个字段/范围）。
+   - 任务面板显示算法所需字段、说明空值由 Provider/gap-fill 自动处理，支持“从起点读取当前环境值”
+     并逐项编辑；覆盖应用到全规划区，逐格标 synthetic + research-override。
+   - 结果面板显示每个环境字段的 quality/source 与本次合成覆盖值。
+2. **规划卡在 10%，历史任务不能编辑/删除**
+   - Provider 采样改为 1000 点分块并在块间更新进度/检查取消；进度/阶段现在按
+     环境采样→多目标优化→结果保存推进（API 实测 0→2→12…65→95→100）。
+   - 新增 `planning_runs.title` + Alembic `0006`；`PATCH` 重命名、`DELETE` 删除终态任务
+     （级联航线、删除风险栅格文件）；结果面板历史项加入重命名/删除按钮。
+3. **选中计划蓝底文字看不清**
+   - 智能规划抽屉改为亮色主题：深色文字/浅色卡片/浅青选中行 + 左边框；环境图层左侧暗色面板不变。
+
+### 验证
+
+- 后端新增 3 个测试，全套 **280 passed**；前端 385 passed；typecheck/build 通过；ruff 通过。
+- 迁移 `0006` 在“0005 后无 title 列”的 SQLite 数据库升级通过。
+- API 实测进度过渡；`PATCH/DELETE` 返回 200/204；Playwright UI smoke 通过，截图已更新
+  （含 `windSpeedMs=13` 合成覆盖标签、浅色可读历史列表）。

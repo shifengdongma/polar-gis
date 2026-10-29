@@ -59,7 +59,17 @@ class PlanningRunProcessor:
                     )
 
             def progress(value: int) -> None:
-                self._update(session_factory, run_id, progress=max(0, min(99, value)), stage="planning")
+                progress_value = max(0, min(99, value))
+                stage = (
+                    "environment"
+                    if progress_value < 65
+                    else "optimizing"
+                    if progress_value < 95
+                    else "persisting"
+                )
+                self._update(
+                    session_factory, run_id, progress=progress_value, stage=stage
+                )
 
             if run.mode == "risk_only":
                 outcome = planner.risk_only(
@@ -159,6 +169,12 @@ class PlanningRunProcessor:
             generations=int(payload.get("generations", 20)),
             seed=int(payload.get("seed", 42)),
             bbox=tuple(float(value) for value in bbox) if bbox and len(bbox) == 4 else None,
+            synthetic_overrides={
+                str(key): float(value)
+                for key, value in (payload.get("syntheticOverrides") or {}).items()
+            }
+            if isinstance(payload.get("syntheticOverrides"), dict)
+            else None,
         )
 
     def _write_risk_grid(self, run_id: UUID, payload: dict[str, object]) -> str:

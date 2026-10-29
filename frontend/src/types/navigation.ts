@@ -145,6 +145,7 @@ export interface PlanningPoint {
 
 export interface PlanningCreatePayload {
   projectId: string
+  title?: string
   start: PlanningPoint
   goal: PlanningPoint
   departureTime: string
@@ -155,11 +156,13 @@ export interface PlanningCreatePayload {
   populationSize?: number
   generations?: number
   seed?: number
+  syntheticOverrides?: Record<string, number>
 }
 
 export interface PlanningRun {
   planId: string
   projectId: string
+  title: string
   vesselId: string
   mode: 'plan' | 'risk_only'
   status: PlanningRunStatus

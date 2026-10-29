@@ -23,3 +23,8 @@ class PlanningNotFound(PlanningTaskError):
 class PlanningNotCancellable(PlanningTaskError):
     code = "PLAN_NOT_CANCELLABLE"
     status_code = 409
+
+
+class PlanningNotEditable(PlanningTaskError):
+    code = "PLAN_NOT_EDITABLE"
+    status_code = 409

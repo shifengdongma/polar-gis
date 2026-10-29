@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import pytest
+
 from app.navigation.contracts import DataQuality, TimeMatchInfo
 from app.navigation.environment.models import (
     EnvironmentSnapshot,
@@ -98,6 +100,39 @@ def test_risk_only_returns_grid_without_routes() -> None:
         for cell in outcome.risk_grid["cells"]
         if not cell["isLand"]
     )
+
+
+def test_synthetic_overrides_are_applied_and_labelled() -> None:
+    service = PlannerService(
+        SnapshotFakeService(),  # type: ignore[arg-type]
+        VesselService(),
+        small_static_grid(),
+    )
+    outcome = service.risk_only(
+        PlanningRequest(
+            start_longitude=120.0,
+            start_latitude=75.0,
+            goal_longitude=120.0,
+            goal_latitude=75.0,
+            departure=DEPARTURE,
+            vessel_id="xuelong2",
+            data_policy="allow_synthetic_research",
+            bbox=(119.0, 74.0, 121.0, 76.0),
+            synthetic_overrides={
+                "windSpeedMs": 12.0,
+                "currentSpeedMs": 0.5,
+                "waveHeightM": 3.0,
+                "iceConcentration": 0.8,
+            },
+        )
+    )
+    cell = outcome.risk_grid["cells"][0]
+    assert cell["environment"]["wind_speed_ms"] == pytest.approx(12.0)
+    assert cell["environment"]["current_speed_ms"] == pytest.approx(0.5)
+    assert cell["environment"]["wave_height_m"] == pytest.approx(3.0)
+    assert cell["environment"]["ice_concentration"] == pytest.approx(0.8)
+    assert cell["quality"]["wind"] == "synthetic"
+    assert cell["sources"]["wind"] == "research-override"
 
 
 def test_evaluate_route_rejects_land_crossing() -> None:

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useNavigationStore } from '../stores/navigation'
 import {
   planningErrorMessage,
@@ -25,9 +26,57 @@ const missingFields = computed(() => {
   const value = run.value?.resultSummary?.missingByField
   return value && typeof value === 'object' ? (value as Record<string, number>) : {}
 })
+const snapshotFields = computed(() => {
+  const fields = run.value?.environmentSnapshot?.fields
+  if (!fields || typeof fields !== 'object') return []
+  return Object.values(fields as Record<string, Record<string, unknown>>).map((field) => ({
+    field: String(field.field ?? ''),
+    quality: String(field.quality ?? 'unknown'),
+    source: field.source == null ? '' : String(field.source),
+  }))
+})
+const syntheticOverrides = computed(() => {
+  const value = run.value?.environmentSnapshot?.syntheticOverrides
+  return value && typeof value === 'object' ? (value as Record<string, number>) : {}
+})
+const stageLabels: Record<string, string> = {
+  queued: '排队',
+  planning: '规划',
+  environment: '环境采样',
+  optimizing: '多目标优化',
+  persisting: '结果保存',
+  completed: '完成',
+  failed: '失败',
+  cancelled: '取消',
+}
 
 function selectRun(planId: string) {
   void navigation.selectRun(planId)
+}
+
+async function renamePlan(planId: string, current: string) {
+  try {
+    const result = await ElMessageBox.prompt('输入新的任务名称', '重命名规划任务', {
+      inputValue: current,
+      inputValidator: (value) => (value?.trim() ? true : '名称不能为空'),
+    })
+    await navigation.renameRun(planId, result.value)
+    ElMessage.success('已重命名')
+  } catch {
+    // cancelled or API error already reported
+  }
+}
+
+async function deletePlan(planId: string) {
+  try {
+    await ElMessageBox.confirm('删除后不可恢复（含候选航线与风险栅格文件）', '删除规划任务', {
+      type: 'warning',
+    })
+    await navigation.deleteRun(planId)
+    ElMessage.success('已删除')
+  } catch {
+    // cancelled or API error already reported
+  }
 }
 </script>
 
@@ -36,7 +85,7 @@ function selectRun(planId: string) {
     <div class="planning-result-heading">
       <div>
         <span class="eyebrow">PLANNING RUN</span>
-        <h3>规划结果</h3>
+        <h3>{{ run?.title || '规划结果' }}</h3>
       </div>
       <el-tag size="small" :type="run?.status === 'completed' ? 'success' : run?.status === 'failed' ? 'danger' : 'info'">
         {{ statusLabel }}
@@ -59,9 +108,22 @@ function selectRun(planId: string) {
       />
       <div class="planning-result-meta">
         <span>任务：{{ run.planId.slice(0, 8) }}</span>
-        <span>阶段：{{ run.stage }}</span>
+        <span>阶段：{{ stageLabels[run.stage] ?? run.stage }}</span>
         <span>风险模型：{{ run.riskModelVersion }}</span>
         <span>快照：{{ snapshotTime ?? '—' }}</span>
+      </div>
+
+      <div v-if="snapshotFields.length" class="planning-snapshot-fields">
+        <span class="planning-snapshot-title">算法环境字段：</span>
+        <span v-for="field in snapshotFields" :key="String(field.field)" class="planning-snapshot-field">
+          {{ field.field }}:
+          {{ field.quality ?? '未知' }}
+          <template v-if="field.source">（{{ field.source }}）</template>
+        </span>
+      </div>
+      <div v-if="Object.keys(syntheticOverrides).length" class="planning-overrides">
+        <span class="planning-snapshot-title">合成覆盖：</span>
+        <span v-for="(value, key) in syntheticOverrides" :key="key">{{ key }}={{ value }}</span>
       </div>
 
       <el-alert
@@ -101,9 +163,21 @@ function selectRun(planId: string) {
         :class="{ 'is-active': item.planId === run?.planId }"
         @click="selectRun(item.planId)"
       >
-        <span>{{ item.planId.slice(0, 8) }}</span>
-        <span>{{ planningStatusLabels[item.status] ?? item.status }}</span>
-        <span>{{ new Date(item.createdAt).toISOString().slice(0, 16).replace('T', ' ') }}</span>
+        <div class="planning-history-meta">
+          <strong>{{ item.title || '智能规划' }}</strong>
+          <span>{{ planningStatusLabels[item.status] ?? item.status }}</span>
+          <span>{{ new Date(item.createdAt).toISOString().slice(0, 16).replace('T', ' ') }}</span>
+        </div>
+        <div class="planning-history-actions" @click.stop>
+          <el-button size="small" text @click="renamePlan(item.planId, item.title)">重命名</el-button>
+          <el-button
+            size="small"
+            text
+            type="danger"
+            :disabled="item.status === 'queued' || item.status === 'running'"
+            @click="deletePlan(item.planId)"
+          >删除</el-button>
+        </div>
       </div>
     </div>
   </section>

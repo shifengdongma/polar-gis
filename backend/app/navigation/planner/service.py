@@ -39,6 +39,7 @@ class PlanningRequest:
     generations: int = 20
     seed: int = 42
     bbox: tuple[float, float, float, float] | None = None
+    synthetic_overrides: dict[str, float] | None = None
 
 
 @dataclass
@@ -80,8 +81,10 @@ class PlannerService:
         vessel = self.vessel_service.get(request.vessel_id)
         departure = ensure_utc(request.departure)
         if progress is not None:
-            progress(5)
+            progress(2)
         snapshot = self.environment_service.snapshot(departure, request.data_policy)
+        if progress is not None:
+            progress(5)
         checker = _stop_checker(should_stop, deadline)
         try:
             build = build_planning_grid(
@@ -94,6 +97,7 @@ class PlannerService:
                 goal=(request.goal_longitude, request.goal_latitude),
                 progress=progress,
                 should_stop=checker,
+                synthetic_overrides=request.synthetic_overrides,
             )
             if progress is not None:
                 progress(65)
@@ -110,7 +114,7 @@ class PlannerService:
                 return PlanningOutcome(
                     routes=[],
                     risk_grid=self._risk_grid_payload(build),
-                    snapshot=snapshot.model_dump(mode="json"),
+                    snapshot=_snapshot_payload(snapshot, request),
                     requested_start=(request.start_longitude, request.start_latitude),
                     requested_goal=(request.goal_longitude, request.goal_latitude),
                     resolved_start=build.resolved_start,
@@ -138,7 +142,7 @@ class PlannerService:
         return PlanningOutcome(
             routes=routes,
             risk_grid=risk_grid,
-            snapshot=snapshot.model_dump(mode="json"),
+            snapshot=_snapshot_payload(snapshot, request),
             requested_start=(request.start_longitude, request.start_latitude),
             requested_goal=(request.goal_longitude, request.goal_latitude),
             resolved_start=build.resolved_start,
@@ -161,6 +165,8 @@ class PlannerService:
         started = perf_counter()
         vessel = self.vessel_service.get(request.vessel_id)
         departure = ensure_utc(request.departure)
+        if progress is not None:
+            progress(2)
         snapshot = self.environment_service.snapshot(departure, request.data_policy)
         checker = _stop_checker(should_stop, deadline)
         build = build_planning_grid(
@@ -174,11 +180,12 @@ class PlannerService:
             goal=(request.goal_longitude, request.goal_latitude),
             progress=progress,
             should_stop=checker,
+            synthetic_overrides=request.synthetic_overrides,
         )
         return PlanningOutcome(
             routes=[],
             risk_grid=self._risk_grid_payload(build),
-            snapshot=snapshot.model_dump(mode="json"),
+            snapshot=_snapshot_payload(snapshot, request),
             requested_start=(request.start_longitude, request.start_latitude),
             requested_goal=(request.goal_longitude, request.goal_latitude),
             resolved_start=build.resolved_start,
@@ -288,6 +295,12 @@ class PlannerService:
             "cellIds": sampled,
             "snapshotId": risk_grid.get("snapshotId"),
         }
+
+
+def _snapshot_payload(snapshot, request: PlanningRequest) -> dict[str, object]:
+    payload = snapshot.model_dump(mode="json")
+    payload["syntheticOverrides"] = request.synthetic_overrides or {}
+    return payload
 
 
 def _stop_checker(

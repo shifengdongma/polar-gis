@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { queryEnvironment } from '../api/navigation'
 import { useNavigationStore } from '../stores/navigation'
 import { useRoutesStore } from '../stores/routes'
 import type { DataPolicy } from '../types/navigation'
@@ -8,6 +9,7 @@ import type { DataPolicy } from '../types/navigation'
 const navigation = useNavigationStore()
 const routesStore = useRoutesStore()
 
+const planTitle = ref('')
 const startLon = ref(120)
 const startLat = ref(75)
 const goalLon = ref(130)
@@ -18,6 +20,18 @@ const populationSize = ref(36)
 const generations = ref(20)
 const seed = ref(42)
 const submitting = ref(false)
+const overrideValues = reactive<Record<string, string>>({
+  depthM: '',
+  iceConcentration: '',
+  iceThicknessM: '',
+  windSpeedMs: '',
+  windDirectionFromDeg: '',
+  currentSpeedMs: '',
+  currentDirectionToDeg: '',
+  waveHeightM: '',
+  wavePeriodS: '',
+  waveDirectionFromDeg: '',
+})
 
 const pickedStart = computed(() => navigation.pickedStart)
 const pickedGoal = computed(() => navigation.pickedGoal)
@@ -67,6 +81,47 @@ function useCurrentRouteEndpoints() {
   goalLat.value = points[points.length - 1].lat
 }
 
+function collectOverrides(): Record<string, number> | undefined {
+  if (dataPolicy.value !== 'allow_synthetic_research') return undefined
+  const result: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(overrideValues)) {
+    if (raw.trim() === '') continue
+    const value = Number(raw)
+    if (Number.isFinite(value)) result[key] = value
+  }
+  return Object.keys(result).length ? result : undefined
+}
+
+async function loadSyntheticDefaults() {
+  try {
+    const sample = await queryEnvironment({
+      longitude: Number(startLon.value),
+      latitude: Number(startLat.value),
+      time: departure.value.endsWith('Z') ? departure.value : `${departure.value}Z`,
+      fields: ['bathymetry', 'ice', 'wind', 'current', 'wave'],
+      dataPolicy: 'allow_synthetic_research',
+    })
+    const set = (key: string, value: unknown) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        overrideValues[key] = String(Number(value.toFixed(4)))
+      }
+    }
+    set('depthM', sample.fields.bathymetry?.values.depthM)
+    set('iceConcentration', sample.fields.ice?.values.concentration)
+    set('iceThicknessM', sample.fields.ice?.values.thicknessM)
+    set('windSpeedMs', sample.fields.wind?.values.speedMs)
+    set('windDirectionFromDeg', sample.fields.wind?.values.directionFromDeg)
+    set('currentSpeedMs', sample.fields.current?.values.speedMs)
+    set('currentDirectionToDeg', sample.fields.current?.values.directionToDeg)
+    set('waveHeightM', sample.fields.wave?.values.heightM)
+    set('wavePeriodS', sample.fields.wave?.values.periodS)
+    set('waveDirectionFromDeg', sample.fields.wave?.values.directionFromDeg)
+    ElMessage.success('已读取起点环境值；空值仍由 Provider/gap-fill 自动处理')
+  } catch {
+    ElMessage.error('起点环境值读取失败，请检查时间/坐标或数据源')
+  }
+}
+
 async function submit() {
   if (!navigation.projectId) {
     ElMessage.error('项目尚未加载')
@@ -86,6 +141,7 @@ async function submit() {
   try {
     await navigation.startPlan({
       projectId: navigation.projectId,
+      title: planTitle.value.trim() || undefined,
       start,
       goal,
       departureTime: departure.value.endsWith('Z') ? departure.value : `${departure.value}Z`,
@@ -96,6 +152,7 @@ async function submit() {
       populationSize: populationSize.value,
       generations: generations.value,
       seed: seed.value,
+      syntheticOverrides: collectOverrides(),
     })
     navigation.setDataPolicy(dataPolicy.value)
     ElMessage.success('规划任务已提交')
@@ -115,6 +172,11 @@ async function submit() {
       :closable="false"
       show-icon
     />
+
+    <div class="navigation-form-section">
+      <div class="navigation-form-title">任务名称</div>
+      <el-input v-model="planTitle" size="small" maxlength="120" placeholder="可选；默认“智能规划”" />
+    </div>
 
     <div class="navigation-form-section">
       <div class="navigation-form-title">起终点（WGS84）</div>
@@ -169,6 +231,27 @@ async function submit() {
         :closable="false"
         show-icon
       />
+    </div>
+
+    <div v-if="dataPolicy === 'allow_synthetic_research'" class="navigation-form-section">
+      <div class="navigation-form-title">合成环境参数（仅研究验证）</div>
+      <small class="navigation-form-note">
+        算法需要：水深、冰密集度/冰厚、风速/风向、流速/流向、浪高/周期/浪向。空值表示不覆盖，
+        由 Provider 或确定性 gap-fill 自动处理；填写后应用到全规划区，并标记为 synthetic。
+      </small>
+      <el-button size="small" plain @click="loadSyntheticDefaults">从起点读取当前环境值</el-button>
+      <div class="navigation-override-grid">
+        <label>水深 m<el-input v-model="overrideValues.depthM" size="small" placeholder="自动" /></label>
+        <label>冰密集度 0–1<el-input v-model="overrideValues.iceConcentration" size="small" placeholder="自动" /></label>
+        <label>冰厚 m<el-input v-model="overrideValues.iceThicknessM" size="small" placeholder="自动" /></label>
+        <label>风速 m/s<el-input v-model="overrideValues.windSpeedMs" size="small" placeholder="自动" /></label>
+        <label>风向 FROM °<el-input v-model="overrideValues.windDirectionFromDeg" size="small" placeholder="自动" /></label>
+        <label>流速 m/s<el-input v-model="overrideValues.currentSpeedMs" size="small" placeholder="自动" /></label>
+        <label>流向 TO °<el-input v-model="overrideValues.currentDirectionToDeg" size="small" placeholder="自动" /></label>
+        <label>浪高 m<el-input v-model="overrideValues.waveHeightM" size="small" placeholder="自动" /></label>
+        <label>浪周期 s<el-input v-model="overrideValues.wavePeriodS" size="small" placeholder="自动" /></label>
+        <label>浪向 FROM °<el-input v-model="overrideValues.waveDirectionFromDeg" size="small" placeholder="自动" /></label>
+      </div>
     </div>
 
     <div class="navigation-form-section">

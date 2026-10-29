@@ -170,6 +170,7 @@ class PointRead(ApiModel):
 
 class PlanningCreateRequest(ApiModel):
     project_id: UUID
+    title: str | None = Field(default=None, max_length=120)
     start: PointRead
     goal: PointRead
     departure_time: datetime
@@ -182,6 +183,11 @@ class PlanningCreateRequest(ApiModel):
     population_size: int = Field(default=36, ge=6, le=120)
     generations: int = Field(default=20, ge=1, le=100)
     seed: int = Field(default=42, ge=0)
+    synthetic_overrides: dict[str, float] | None = None
+
+
+class PlanningRenameRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=120)
 
 
 class RiskEvaluateRequest(ApiModel):
@@ -195,6 +201,7 @@ class RiskEvaluateRequest(ApiModel):
 class PlanningRunRead(ApiModel):
     plan_id: UUID
     project_id: UUID
+    title: str
     vessel_id: str
     mode: str
     status: str

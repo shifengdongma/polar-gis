@@ -129,6 +129,65 @@ def test_risk_only_evaluation_creates_queued_task(
     assert response.json()["status"] == "queued"
 
 
+def test_rename_and_delete_plan(
+    client: TestClient,
+    user_headers: dict[str, str],
+    published_project: Project,
+    db_session: Session,
+) -> None:
+    response = client.post(
+        "/api/v1/navigation/plans",
+        headers=user_headers,
+        json={**create_payload(published_project), "title": "我的规划"},
+    )
+    assert response.status_code == 202, response.text
+    plan_id = response.json()["planId"]
+    assert response.json()["title"] == "我的规划"
+
+    renamed = client.patch(
+        f"/api/v1/navigation/plans/{plan_id}",
+        headers=user_headers,
+        json={"title": "改后的规划"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["title"] == "改后的规划"
+
+    # A queued run cannot be deleted; cancel it first.
+    rejected = client.delete(
+        f"/api/v1/navigation/plans/{plan_id}", headers=user_headers
+    )
+    assert rejected.status_code == 409
+    client.post(f"/api/v1/navigation/plans/{plan_id}/cancel", headers=user_headers)
+    deleted = client.delete(
+        f"/api/v1/navigation/plans/{plan_id}", headers=user_headers
+    )
+    assert deleted.status_code == 204
+    missing = client.get(
+        f"/api/v1/navigation/plans/{plan_id}", headers=user_headers
+    )
+    assert missing.status_code == 404
+
+
+def test_synthetic_overrides_require_research_policy(
+    client: TestClient,
+    user_headers: dict[str, str],
+    published_project: Project,
+    db_session: Session,
+) -> None:
+    payload = create_payload(published_project)
+    payload["dataPolicy"] = "real_only"
+    payload["syntheticOverrides"] = {"windSpeedMs": 12.0}
+    response = client.post("/api/v1/navigation/plans", headers=user_headers, json=payload)
+    assert response.status_code == 422
+
+    payload["dataPolicy"] = "allow_synthetic_research"
+    response = client.post("/api/v1/navigation/plans", headers=user_headers, json=payload)
+    assert response.status_code == 202, response.text
+    run = db_session.get(PlanningRun, UUID(response.json()["planId"]))
+    assert run is not None
+    assert run.request_json["syntheticOverrides"] == {"windSpeedMs": 12.0}
+
+
 def test_plans_require_auth(client: TestClient) -> None:
     assert client.get("/api/v1/navigation/plans").status_code == 401
 

@@ -384,6 +384,7 @@ class PlanningRun(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
     requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(120), default="智能规划")
     vessel_id: Mapped[str] = mapped_column(String(80))
     mode: Mapped[str] = mapped_column(String(16), default=PlanningMode.PLAN.value)
     status: Mapped[str] = mapped_column(String(32), default=PlanningRunStatus.QUEUED.value, index=True)

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from math import cos, pi, radians, sin
+from math import atan2, ceil, cos, degrees, hypot, pi, radians, sin
 
 import numpy as np
 
@@ -61,6 +61,7 @@ def build_planning_grid(
     goal: tuple[float, float] | None = None,
     progress: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    synthetic_overrides: dict[str, float] | None = None,
 ) -> GridBuildResult:
     if policy not in {"real_only", "allow_synthetic_research"}:
         raise ValueError(f"Unsupported data policy: {policy}")
@@ -78,12 +79,17 @@ def build_planning_grid(
     points_lonlat = [(longitude, latitude) for latitude, longitude in points]
 
     observations: dict[str, list[FieldObservation]] = {}
-    for field_name in REQUIRED_FIELDS:
-        observations[field_name] = service.sample_many(
-            field_name, points_lonlat, departure, policy
+    for field_index, field_name in enumerate(REQUIRED_FIELDS):
+        observations[field_name] = _sample_field_chunked(
+            service,
+            field_name,
+            points_lonlat,
+            departure,
+            policy,
+            progress,
+            field_index,
+            should_stop,
         )
-        if progress is not None:
-            progress(10 + REQUIRED_FIELDS.index(field_name) * 10)
 
     missing_by_field = {
         field: sum(1 for observation in observations[field] if not observation.available)
@@ -118,6 +124,8 @@ def build_planning_grid(
     for index, (column, row) in enumerate(indices):
         if should_stop is not None and index % 200 == 0 and should_stop():
             raise PlanningCancelled("planning cancelled")
+        if progress is not None and index and index % 2000 == 0:
+            progress(55 + int(10 * index / len(indices)))
         latitude, longitude = points[index]
         field_obs = {field: observations[field][index] for field in REQUIRED_FIELDS}
         environment, quality, sources, missing = _cell_environment(
@@ -130,6 +138,8 @@ def build_planning_grid(
             day_of_year,
             policy,
         )
+        if policy == "allow_synthetic_research" and synthetic_overrides:
+            _apply_synthetic_overrides(environment, quality, sources, synthetic_overrides)
         risk_input = RiskInput(
             latitude=latitude,
             longitude=longitude,
@@ -393,6 +403,99 @@ def _wave_values(
         height, period, direction = synthetic_wave(latitude, longitude, day_of_year)
         return {"height": height, "period": period, "direction": direction, "missing": False}
     return {"height": height, "period": period, "direction": direction, "missing": False}
+
+
+def _sample_field_chunked(
+    service: EnvironmentService,
+    field: str,
+    points: list[tuple[float, float]],
+    departure: datetime,
+    policy: str,
+    progress: Callable[[int], None] | None,
+    field_index: int,
+    should_stop: Callable[[], bool] | None,
+) -> list[FieldObservation]:
+    """Sample one provider in bounded chunks so progress is visible.
+
+    A single 15k-point call used to leave the UI at the initial 10% for the
+    whole provider read.  Chunking updates the run progress (and checks
+    cancellation) between chunks while keeping one provider handle warm.
+    """
+    chunk_size = 1000
+    chunks = max(1, ceil(len(points) / chunk_size))
+    result: list[FieldObservation] = []
+    for chunk_index in range(chunks):
+        if should_stop is not None and should_stop():
+            raise PlanningCancelled("planning cancelled")
+        start = chunk_index * chunk_size
+        end = min(len(points), start + chunk_size)
+        result.extend(service.sample_many(field, points[start:end], departure, policy))
+        if progress is not None:
+            fraction = (field_index + (chunk_index + 1) / chunks) / len(REQUIRED_FIELDS)
+            progress(10 + int(45 * fraction))
+    return result
+
+
+def _apply_synthetic_overrides(
+    environment: dict[str, float | None],
+    quality: dict[str, str],
+    sources: dict[str, str],
+    overrides: dict[str, float],
+) -> None:
+    """Apply explicit research overrides to every cell.
+
+    Values remain synthetic; the caller/UI must display the override source.
+    """
+    if "depthM" in overrides:
+        environment["depth_m"] = float(overrides["depthM"])
+        quality["depth"] = DataQuality.SYNTHETIC.value
+        sources["depth"] = "research-override"
+    if any(key in overrides for key in ("iceConcentration", "iceThicknessM")):
+        if "iceConcentration" in overrides:
+            environment["ice_concentration"] = float(overrides["iceConcentration"])
+        if "iceThicknessM" in overrides:
+            environment["ice_thickness_m"] = float(overrides["iceThicknessM"])
+        quality["ice"] = DataQuality.SYNTHETIC.value
+        sources["ice"] = "research-override"
+    if any(key in overrides for key in ("windSpeedMs", "windDirectionFromDeg")):
+        speed = float(overrides.get("windSpeedMs", environment.get("wind_speed_ms") or 0.0))
+        direction = float(
+            overrides.get("windDirectionFromDeg", environment.get("wind_direction_deg") or 0.0)
+        )
+        radians_direction = radians(direction)
+        environment["wind_speed_ms"] = speed
+        environment["wind_direction_deg"] = direction
+        environment["wind_u_ms"] = -speed * sin(radians_direction)
+        environment["wind_v_ms"] = -speed * cos(radians_direction)
+        quality["wind"] = DataQuality.SYNTHETIC.value
+        sources["wind"] = "research-override"
+    if any(key in overrides for key in ("currentSpeedMs", "currentDirectionToDeg")):
+        speed = float(overrides.get("currentSpeedMs", environment.get("current_speed_ms") or 0.0))
+        if "currentDirectionToDeg" in overrides:
+            direction = float(overrides["currentDirectionToDeg"])
+        else:
+            existing_u = float(environment.get("current_u_ms") or 0.0)
+            existing_v = float(environment.get("current_v_ms") or 0.0)
+            direction = (
+                degrees(atan2(existing_u, existing_v))
+                if hypot(existing_u, existing_v) > 0
+                else 0.0
+            )
+        radians_direction = radians(direction)
+        environment["current_speed_ms"] = speed
+        environment["current_u_ms"] = speed * sin(radians_direction)
+        environment["current_v_ms"] = speed * cos(radians_direction)
+        quality["current"] = DataQuality.SYNTHETIC.value
+        sources["current"] = "research-override"
+    if any(key in overrides for key in ("waveHeightM", "wavePeriodS", "waveDirectionFromDeg")):
+        if "waveHeightM" in overrides:
+            environment["wave_height_m"] = float(overrides["waveHeightM"])
+        if "wavePeriodS" in overrides:
+            environment["wave_period_s"] = float(overrides["wavePeriodS"])
+        if "waveDirectionFromDeg" in overrides:
+            environment["wave_direction_deg"] = float(overrides["waveDirectionFromDeg"])
+        quality["wave"] = DataQuality.SYNTHETIC.value
+        sources["wave"] = "research-override"
 
 
 def _component_quality(risk: RiskResult) -> dict[str, str]:

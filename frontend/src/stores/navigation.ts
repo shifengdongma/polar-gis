@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import {
   cancelPlanningRun,
   createPlanningRun,
+  deletePlanningRun,
   evaluatePlanningRoute,
   evaluateRiskArea,
   fetchPlanningRun,
@@ -13,6 +14,7 @@ import {
   fetchRiskCell,
   fetchRiskGrid,
   fetchVessels,
+  renamePlanningRun,
 } from '../api/navigation'
 import { apiErrorMessage } from '../api/client'
 import type {
@@ -248,6 +250,36 @@ export const useNavigationStore = defineStore('navigation', () => {
     }
   }
 
+  async function renameRun(planId: string, title: string) {
+    try {
+      const run = await renamePlanningRun(planId, title)
+      updateRunInList(run)
+      if (currentRun.value?.planId === planId) currentRun.value = run
+    } catch (caught) {
+      ElMessage.error(apiErrorMessage(caught, '规划任务重命名失败'))
+      throw caught
+    }
+  }
+
+  async function deleteRun(planId: string) {
+    try {
+      await deletePlanningRun(planId)
+      runs.value = runs.value.filter((item) => item.planId !== planId)
+      if (currentRun.value?.planId === planId) {
+        stopPolling()
+        currentRun.value = null
+        routes.value = []
+        selectedRouteId.value = null
+        riskGrid.value = null
+        riskCell.value = null
+        snapshotTime.value = null
+      }
+    } catch (caught) {
+      ElMessage.error(apiErrorMessage(caught, '删除规划任务失败'))
+      throw caught
+    }
+  }
+
   async function loadRiskGrid(field: RiskField = riskField.value, bbox?: [number, number, number, number]) {
     if (!currentRun.value) return
     try {
@@ -417,6 +449,8 @@ export const useNavigationStore = defineStore('navigation', () => {
     selectRoute,
     requestFitRoute,
     cancelCurrent,
+    renameRun,
+    deleteRun,
     loadRiskGrid,
     loadRiskCell,
     setPickMode,
