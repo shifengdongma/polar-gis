@@ -779,6 +779,9 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
   - **线程契约**：单个 RLock 只保护 netCDF4 Dataset 访问与缓存变更；numpy/PIL/pyproj 在锁外；pyproj Transformer 自 3.1 起内部按线程隔离 PROJ context（实测 8 线程×200 变换结果一致），共享不加锁；tile 缓存 LRU（cap=`ICE_TILE_CACHE_ENTRIES`），价值网格按日期缓存 2 个（LRU）；
   - 降级：目录缺失/为空/文件损坏 → 空索引/空字段，绝不抛到调用方之外（Ice failure ≠ Map failure）。
 - **`app/api/ice.py`**（`/api/v1/ice`）：`GET /info`、`GET /value`（miss 响应**精确** `{"value": null}` 200，时间轴快速拖动不产生错误噪音）、`GET /alignment`（调试 GeoJSON）、`GET /{field}/{projection}/tile/{z}/{x}/{y}.png`（`Cache-Control: private, max-age=300`）。
+  - **进程级共享实例**：`services/ice.py::shared_ice_service()` 按 `(root, cache, maxZoom)` 复用同一个 `IceService`；冰情 API 与导航环境 `IceProvider` 不再各自构造实例，首次进入项目只执行一次全目录元数据扫描/一次预热线程/一份网格缓存。
+  - **`/info` 响应缓存**：目录 `(mtime,size)` 未变化时直接复用上次扫描结果；新增/修改日期才失效。`warm_default_grid()` 每个实例只启动一次（`_start_warm_once`），面板重试不会反复起线程。
+  - **瓦片 PNG 压缩**：`Image.save(..., compress_level=1)` 替代 `optimize=True`（后者每张瓦片执行昂贵的 zlib 参数搜索）；瓦片体积略增、CPU 明显下降。
   - **鉴权边界（唯一无鉴权数据 API，刻意为之）**：OpenLayers XYZ 原生 `<img>` 无法携带 Bearer，生产地图瓦片（`/geoserver` 经 nginx）同为无鉴权读取，后端仅在内网 `internal`、外部唯一入口是 web/nginx —— 故选"与现有地图瓦片相同的只读访问边界"（任务书 §38-A）。熔断开关 `ICE_ENABLED=false` → 404 `ICE_DISABLED`。
   - 服务经懒工厂 `get_ice_service()`（双重检查；不用 lru_cache/Depends，便于 monkeypatch 与"导入期绝不因数据/PROJ 失败"）。
   - 状态码：畸形参数 422（框架）；未知字段/投影/日期/z>max/x≥2^z → 404（`ICE_*` 码）；`/value` 的一切不可用 → 200 null。
@@ -789,7 +792,7 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
 
 - **`utils/mapIce.ts`**（纯函数，jsdom 可测）：EPSG:3411（Hughes）proj4 按需注册、`createIceTileGrid`（3413: ±4194304/256/maxZoom 10 与后端 `half` 严格对齐；3857 标准 extent）、`buildIceTileUrl`（**URL 必带日期**）、`iceFieldAvailable`、`formatIceDate`、`projectIceExtent`（3411→当前投影，hover 预筛用）、`isIceValueValid`（0 有效）、`iceTimelineIndex` / `stepIceDate`（**数组索引边界，绝不按 date±1**）、`ICE_PALETTES` / `iceLegendGradient`（与后端同源）。
 - **`composables/useIceOverlay.ts`**：`info/loading/error/selectedDate/密集度与厚度 visible+opacity/hover/debugAlignment` 状态；`attach()` 幂等、`dispose()` 彻底（removeLayer+dispose+abort）；**日期/可用性/投影变化只 `setSource` 不重建 layer**（换新 XYZ 源含日期参数，旧源自然 GC；`transition:0` 无淡入残影；`crossOrigin:'anonymous'` 供截图合成）；`reloadForProjection()` 保留日期/可见性/透明度只换源与 TileGrid；hover **100ms debounce + AbortController + 请求代次号**（旧响应绝不覆盖新位置），拖图/图层关/无日期/其他交互(`canQueryValue`)/离开范围/销毁一律停止；**不自行注册 map 事件**。
-- **组件**（统一 `ice-` 前缀）：`IceLayerPanel`（密集度/厚度开关+透明度+图例+「当前日期无厚度变量」禁用态+定位冰区+对齐调试开关+免责声明）、`IceTimeline`（`info.dates` 索引驱动、首尾禁用、`n / N 个可用日期`、只显示日期不构造文件名；**左右让位由视图注入**，随面板折叠自适应）、`IceValueTooltip`（原始值+日期+经纬度，像素锚定+边缘翻转，`pointer-events:none`）。
+- **组件**（统一 `ice-` 前缀）：`IceLayerPanel`（密集度/厚度开关+透明度+图例+「当前日期无厚度变量」禁用态+定位冰区+对齐调试开关；会话 #30 起移除安全提示文案）、`IceTimeline`（`info.dates` 索引驱动、首尾禁用、`n / N 个可用日期`、只显示日期不构造文件名；**左右让位由视图注入**，随面板折叠自适应）、`IceValueTooltip`（原始值+日期+经纬度，像素锚定+边缘翻转，`pointer-events:none`）。
 - **视图集成（最小侵入）**：`buildMap()` 中 `iceOverlay.attach()`；唯一 `pointermove` 分发 `handlePointerMove` 并在冰情浮窗显示期间抑制经纬度提示（优先级：航路浮窗/地图工具 > 冰情 > 经纬度）；`pointerleave` 与卸载同步清理；`switchProjection()` 在 `syncMeasureForProjection()` 后调用 `iceOverlay.reloadForProjection()`；环境叠加 dropdown 增「冰情信息」入口；时间轴挂载于 `.map-overlay-root`（打印/截图自动排除，冰情地图图层自然进入截图）。
 
 ### 瓦片加载性能（会话 #26.1 专项，实测驱动）
@@ -797,7 +800,7 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
 **实测根因（修复前）**：① 后端 `_grid` **惊群**——并发冷请求在"归一化在锁外"的窗口内各自完整装载 26M 单元网格（实测单次装载 ≈1.5s；8 张并发冷瓦片**每张 6.6s**、总 7.1s，互相挤占）；② 前端冰情走 OL 默认 `<img>` 加载器——无并发上限（z3 整个北极一次可发 ~64 张）、瓦片被丢弃不中止、无共享缓存 → 请求堆积占满浏览器连接与后端线程，新日期瓦片排队（表现为"时间轴更改无法重新加载"）、海图/底图瓦片被挤占（地图空白）。
 
 **修复**：
-- 后端**按日期单飞装载**（`_grid` 快路径 + per-date 装载锁 + 双检；等待者复用同一次装载结果），并将 `warm_default_grid()` 挂在 `info()` 的后台守护线程上预热默认日期（点击"海冰密集度"直接进入 ~0.1s 渲染路径）；`_refresh_files` 换文件时同步失效对应装载锁语义。
+- 后端**按日期单飞装载**（`_grid` 快路径 + per-date 装载锁 + 双检；等待者复用同一次装载结果），并将 `warm_default_grid()` 挂在 `info()` 的后台守护线程上预热默认日期（点击"海冰密集度"直接进入 ~0.1s 渲染路径）；`_refresh_files` 换文件时同步失效对应装载锁语义。会话 #30 进一步把 `/info` 元数据扫描结果缓存到目录变化为止，并让 API 与导航 Provider 共享同一个 `IceService`（见 5.14 后端节）。
 - 前端冰情瓦片改用**自定义 `tileLoadFunction`**，复用与海图相同的 `TileRequestQueue`/`LRUTileCache` 实例：缓存优先 → 限流 fetch → blob/objectURL；**代次中止**（`refreshLayers` 即日期/投影/开关切换时，`abortStaleTileLoads()` 使上一代全部在飞请求立即中止让出名额）+ 瓦片被 OL 释放（ol10 中 `release()/dispose()` 置 `TileState.EMPTY`）即中止 + 429/502/503/504 与网络错误指数退避重试。
 
 **修复后实测（经 nginx 真实数据）**：冷日期 8 张并发瓦片总耗时 **7.1s → 3.06s**（每张延迟一致、无饥饿）；`/info` 后（预热）全新冷瓦片 **0.13–0.39s**；已验证部署 bundle 含新加载器。**已知特性**：容器重启后**首次** `/info` 在 Windows bind-mount 上约 12s（149 个 HDF5 首次打开；逐日缓存后 0.1s），期间地图与其它功能不受影响，预热仍保证首次点击瓦片快速。
@@ -919,10 +922,11 @@ backend/app/navigation/
 **后端 Provider**（`backend/app/navigation/environment/`）
 - `providers/base.py`：`available/times/sample/sample_many/coverage/close` 统一接口；单 Provider 失败返回 `ProviderSample(available=false, reason)`，不拖垮其他字段。
 - `gebco.py`：GEBCO NetCDF elevation → 正向下深度；陆地 elevation≥0 → `depthM=0,isLand=true`；NoData/越界显式 unavailable；`tile()` 渲染 3413/3857 256px PNG（透明陆地/NoData，LRU+单飞）。
-- `ice.py`：`polar_gis` 后端包装现有 `IceService.value_at`（浓度 %→0–1，厚度缺失只标该分量 missing，不把整个冰字段置 unavailable）；`nextsim` 后端读 `siconc/sithick`；`auto` 按数据根/文件名探测。
-- `carra2.py`：月度 `si10/wdir10`（兼容 `u10/v10`）2D 网格；FROM 风向；输出 speed/from/u/v。
+- `ice.py`：`polar_gis` 后端包装现有 `IceService.value_at`（浓度 %→0–1，厚度缺失只标该分量 missing，不把整个冰字段置 unavailable）；`nextsim` 后端读 `siconc/sithick`；`auto` 按数据根/文件名探测。会话 #30：`polar_gis` 后端复用**共享** `IceService`，`info()` 结果缓存 60s，4326→3413 `Transformer` 只构建一次，避免每个规划格点重扫目录/重建投影器。
+- `carra2.py`：月度 `si10/wdir10`（兼容 `u10/v10`）2D 网格；FROM 风向；输出 speed/from/u/v。会话 #30：`coverage` 网格元数据缓存到月份切换；`sample()` 不再逐点 `nanmin/nanmax`（真实 1200×1200 网格实测 200 点 1.34s→0.17s）。
 - `topaz5.py`：原生极地 x/y（100km 坐标单位，自动识别米制）、`vxo/vyo`；按本地 ENU 方位角旋转为地理东/北，输出 u/v/speed/directionTo。
-- `wam.py`：`VHM0/VTPK/VMDR`；双线性高度/周期、环形方向插值；VMDR 明确为 FROM。
+- `wam.py`：`VHM0/VTPK/VMDR`；双线性高度/周期、环形方向插值；VMDR 明确为 FROM。同样只计算一次 coverage；`sample()` 使用缓存值。
+- `gebco.py`：先读 1-D 坐标轴做覆盖判断，越界点不再加载完整 elevation 数组；coverage 缓存；瓦片 PNG 使用 `compress_level=1`。
 - `manifest.py`：数据根可选 `navigation_manifest.json`，逐字段 `quality=real|synthetic`；`real_only` 拒绝 synthetic 文件（reason=`synthetic_data_not_allowed`），合成研究数据不会伪装成真实观测。
 - `time_manager.py`：`latest_not_after`（默认）只取 requested 之前有效时次；provider 提供 issue_time 时要求 issue≤requested；按源 max-lag（风 6h、冰/流/浪 24h）；研究模式允许 nearest；不把未来预报当历史分析。
 - `service.py`：五字段故障隔离查询/批量/矢量场/快照；`EnvironmentSnapshot` 冻结 requested time、每字段 matched/valid/issue/quality；质量汇总 `combine_quality`。
@@ -946,7 +950,7 @@ backend/app/navigation/
 
 **已知限制**
 - 本机无真实环境数据；Provider 只读配置数据根，缺文件显式 unavailable；E2E 只能用 manifest 标记的合成数据。
-- 环境图层默认允许显示合成研究数据（带“含合成数据”标签）；规划阶段默认 `real_only`，两者策略相互独立。
+- 环境图层默认允许显示合成研究数据；规划阶段默认 `real_only`，两者策略相互独立。会话 #30 起不再显示“含合成数据”黄色标签。
 - 风险栅格/规划图层/采纳编辑在 C/D 批次。
 
 ### 8.6 批次 C：风险、规划算法、异步任务与持久化
@@ -995,7 +999,7 @@ backend/app/navigation/
 - `NavigationTaskPanel`：经纬度+地图选点+手绘航路端点、UTC 出发时间、船舶、固定三目标、real_only/合成研究、种群/代数/seed；合成提示。
 - `RouteComparisonPanel`：表格 + ECharts Pareto 散点（x 能耗、y 风险、tooltip 航时）；只绘制真实候选；采纳按钮。
 - `RiskAnalysisPanel`：综合/冰/深/雾/风/浪切换、风险格加载、地图点选、单格环境值/分项/质量/来源/通航/阻断原因；区域风险评估（bbox+time+vessel+policy）。
-- `PlanningResultPanel`：状态/进度/错误码/取消/历史；快照时间与当前环境时间不一致提示；合成横幅；缺测字段。
+- `PlanningResultPanel`：状态/进度/错误码/取消/历史；快照时间与当前环境时间不一致提示；缺测字段。会话 #30 起不再显示合成/模拟/安全横幅；错误信息拼接后端可操作细节（超时秒数、缺失字段、阻断原因）。
 - 采纳/编辑：`RouteDraft` localStorage 仍用 v1 key，payload 升 v2；`coerceRoute` 保留 adopted/source/snapshot；手动内容不受影响；采纳后切回手动并 fit；修改后 `routeMetricsStale` 显示“已修改，需重新计算”，不把旧指标当当前值，可一键重评。
 
 **测试**：前端新增 `mapEnvironment`（双投影箭头）、环境/船舶面板、`routePlanning`（hash/stale）、navigation store、planning layers、planning panels、MapWorkspace 规划不变量；全套 **28 files / 385 tests passed**；`vue-tsc` 零错误；生产构建通过。
@@ -1055,3 +1059,34 @@ backend/app/navigation/
   浅色背景，修复选中行浅青底上浅色文字不可读；环境图层（左侧深色面板）保持原暗色样式。
 - 测试：后端 **280 passed**（新增重命名/删除、覆盖校验、覆盖落地、合成查询补值等）；前端
   **386 passed**；typecheck/build 通过；API E2E + Playwright UI smoke 通过。
+
+### 8.10 会话 #30：智能规划超时、环境叠加首载与冰情性能
+
+**智能规划超时/失败根因**
+- `CARRA2WindProvider` 与 `WAMWaveProvider` 的 `sample()` 每个格点都调用 `coverage()`，后者对完整 2-D/1-D 坐标数组执行 `nanmin/nanmax`。真实数据规模下实测单次约 6 ms；全网格 15,731 格 × 风/浪两字段会产生数百秒 CPU，直接撞上 `PLANNER_TIMEOUT=300s`。
+- `GEBCOBathymetryProvider.sample()` 在越界/NoData 分支也重复计算 coverage；`IceProvider` 的 `polar_gis` 分支每个格点调用 `IceService.info()` 并新建 `Transformer`，同样把环境采样拖到分钟级。
+- **修复**：coverage 作为网格元数据只计算一次并缓存（月份/文件切换时失效）；`sample()` 只读缓存；GEBCO 先读坐标轴再决定是否加载 elevation；冰情 Provider 缓存 info 60s 并复用 Transformer。基准（1200×1200 风/浪、600×600 流、1200×1200 冰/水深，15,731 格）：环境采样合计 **19.78s**（风 7.24s、浪 3.60s、流 3.16s、冰 1.54s、水深 1.28s），加 NSGA-III 后仍远低于 300s。
+- **错误可操作性**：worker 的 `PLANNER_TIMEOUT / ENVIRONMENT_DATA_MISSING / NO_FEASIBLE_ROUTE` 统一输出中文原因与建议；`real_only` 在 API 入队前探测起点五字段，缺失立即 422 并提示改用“合成研究数据”；前端错误标签保留后端细节。
+
+**正确使用方式（写给用户/运维）**
+1. 无真实 GEBCO/NetCDF 环境文件时，数据策略选择**合成研究数据**；`real_only` 需要航线沿途冰/风/流/浪真实值齐全。
+2. 起终点必须落在东北航道规划网格内（60°–90°N、30°E–191°E）且位于可航水域；默认 `120,75 → 122,77` 可直接得到候选航线。
+3. 合成覆盖优先留空，由 Provider/确定性 gap-fill 自动处理；水深覆盖不得低于船舶所需水深（雪龙2 为 9.85 m）；过高冰密集度/冰厚会把整片区域判为不可通行。
+4. 默认 pop36/gen20 已足够；任务由**独立 worker** 串行执行，需确认 worker 服务运行。规划失败时结果面板会保留风险栅格，可切换“风险”页查看阻断原因。
+
+**环境叠加首次进入无信息**
+- 后端：冰情 API 与导航 `IceProvider` 共享同一个 `IceService`，避免两份全目录扫描/预热；`/info` 结果按目录变化缓存；FastAPI `lifespan` 启动后台 `ice-prewarm` 线程，在用户进入项目前完成元数据扫描与默认网格预热（失败只降级冰情显示）。
+- 前端：`/ice/info` 与 `/navigation/environment/sources` 在 `onMounted` 读取 map-config 后**立即**启动，不再等待默认数据集加载与 `buildMap()`；超时从 30s 提升到 120s；面板首次打开/失败后再次打开会重试；菜单状态区分“加载中/待加载/无数据/不可用”。
+- 冰情面板与菜单不再把“尚未返回”误显示为“无数据”。
+
+**冰情图层加载**
+- `info()` 只扫描一次并缓存；`warm_default_grid()` 每实例只启动一次；共享实例使规划与环境面板复用同一份 26M 单元网格缓存。
+- 瓦片 PNG 改用 `compress_level=1`；GEBCO 瓦片同步调整。
+- 前端瓦片仍复用 `TileRequestQueue + LRUTileCache`，日期/投影切换沿用代次中止。
+
+**提示文案清理**
+- 移除合成/模拟/安全类黄色提示与声明：智能规划辅助决策原型、含合成环境数据、当前航路仅用于功能模拟、天气演示数据、AIS 演示提示、冰情“非认证/不可替代”说明、管理概览“非认证航海信息系统”、地图页“非认证航海显示”等；保留数据加载失败/缺测/操作失败等真实错误提示。
+
+**验证**
+- 后端新增 coverage 不重算、`/info` 缓存、共享实例 3 个回归测试；全套后端通过。
+- 前端 29 files / 389 tests passed；`vue-tsc` 零错误；`npm run build` 通过；合成 E2E（含 real_only 422 负例）通过。

@@ -50,6 +50,10 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
         self._latitude: np.ndarray | None = None
         self._longitude: np.ndarray | None = None
         self._elevation: np.ndarray | None = None
+        # Coordinate coverage is independent of the (potentially huge)
+        # elevation array; cache it so per-point out-of-coverage checks never
+        # rescan the grid.
+        self._coverage: dict[str, float] | None = None
         self._tiles: OrderedDict[tuple[int, int, int, str], bytes] = OrderedDict()
         self._tile_cache_entries = tile_cache_entries
         self.max_zoom = max_zoom
@@ -63,13 +67,15 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
     def coverage(self) -> dict[str, float] | None:
         if not self.available():
             return None
-        latitude, longitude = self._axes()
-        return {
-            "minLatitude": float(np.nanmin(latitude)),
-            "maxLatitude": float(np.nanmax(latitude)),
-            "minLongitude": float(np.nanmin(longitude)),
-            "maxLongitude": float(np.nanmax(longitude)),
-        }
+        if self._coverage is None:
+            latitude, longitude = self._coordinate_axes()
+            self._coverage = {
+                "minLatitude": float(np.nanmin(latitude)),
+                "maxLatitude": float(np.nanmax(latitude)),
+                "minLongitude": float(np.nanmin(longitude)),
+                "maxLongitude": float(np.nanmax(longitude)),
+            }
+        return self._coverage
 
     def sample(
         self,
@@ -89,7 +95,10 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
                 reason="bathymetry_file_missing",
             )
         try:
-            lat_axis, lon_axis, elevation = self._grid()
+            # Read the coordinate axes first.  The elevation array can be
+            # hundreds of MB, so an out-of-coverage point must not force it to
+            # load.
+            lat_axis, lon_axis = self._coordinate_axes()
         except Exception as error:  # noqa: BLE001 - provider failure is data, not app failure
             return ProviderSample(
                 available=False,
@@ -107,6 +116,15 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
                 reason="out_of_coverage",
                 coverage=self.coverage(),
             )
+        try:
+            elevation = self._elevation_grid()
+        except Exception as error:  # noqa: BLE001
+            return ProviderSample(
+                available=False,
+                source=self.source_name,
+                time=time,
+                reason=f"bathymetry_read_error:{type(error).__name__}",
+            )
         raw = float(elevation[lat_index, lon_index])
         if not np.isfinite(raw):
             return ProviderSample(
@@ -114,7 +132,7 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
                 source=self.source_name,
                 time=time,
                 reason="no_data",
-                coverage=self.coverage(),
+                coverage=self._coverage,
             )
         depth = max(0.0, -raw)
         return ProviderSample(
@@ -124,7 +142,7 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
             component_quality={"depthM": DataQuality.REAL},
             source=self.source_name,
             time=time,
-            coverage=self.coverage(),
+            coverage=self._coverage,
         )
 
     def tile(self, crs: str, z: int, x: int, y: int) -> bytes:
@@ -175,7 +193,7 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
             rgba[valid, 3] = np.where(water, 175, 0).astype(np.uint8)
         image = Image.fromarray(rgba, mode="RGBA")
         output = BytesIO()
-        image.save(output, format="PNG", optimize=True)
+        image.save(output, format="PNG", compress_level=1)
         return output.getvalue()
 
     def close(self) -> None:
@@ -185,43 +203,61 @@ class GEBCOBathymetryProvider(BaseEnvironmentProvider):
         self._latitude = None
         self._longitude = None
         self._elevation = None
+        self._coverage = None
 
     def _axes(self) -> tuple[np.ndarray, np.ndarray]:
-        self._load()
-        assert self._latitude is not None and self._longitude is not None
-        return self._latitude, self._longitude
+        return self._coordinate_axes()
 
     def _grid(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        self._load()
-        assert self._latitude is not None and self._longitude is not None
-        assert self._elevation is not None
-        return self._latitude, self._longitude, self._elevation
+        latitude, longitude = self._coordinate_axes()
+        return latitude, longitude, self._elevation_grid()
 
-    def _load(self) -> None:
-        if self._dataset is not None:
-            return
+    def _coordinate_axes(self) -> tuple[np.ndarray, np.ndarray]:
+        """Read only the 1-D coordinate axes (no elevation array)."""
+        if self._latitude is not None and self._longitude is not None:
+            return self._latitude, self._longitude
         if self.path is None:
             raise ProviderUnavailable("bathymetry_file_missing")
-        dataset = open_netcdf(self.path)
+        dataset = self._dataset or open_netcdf(self.path)
         try:
             lat_name, lon_name = _find_lat_lon(dataset)
-            elevation_name = _find_elevation(dataset)
             latitude = np.asarray(dataset.variables[lat_name][:], dtype=np.float64)
             longitude = np.asarray(dataset.variables[lon_name][:], dtype=np.float64)
-            elevation_variable = dataset.variables[elevation_name]
             if latitude.ndim != 1 or longitude.ndim != 1:
                 raise ValueError("GEBCO latitude/longitude must be one-dimensional.")
-            units = str(getattr(elevation_variable, "units", "")).strip().casefold()
-            if units not in {"m", "meter", "meters", "metre", "metres"}:
-                raise ValueError("GEBCO elevation must use metres.")
-            elevation = np.ma.asarray(elevation_variable[:], dtype=np.float64).filled(np.nan)
         except Exception:
-            dataset.close()
+            if self._dataset is None:
+                dataset.close()
             raise
         self._dataset = dataset
         self._latitude = latitude
         self._longitude = longitude
-        self._elevation = elevation
+        return latitude, longitude
+
+    def _elevation_grid(self) -> np.ndarray:
+        """Load the elevation array once, after coverage has been validated."""
+        if self._elevation is not None:
+            return self._elevation
+        if self.path is None:
+            raise ProviderUnavailable("bathymetry_file_missing")
+        self._coordinate_axes()
+        assert self._dataset is not None
+        try:
+            elevation_name = _find_elevation(self._dataset)
+            elevation_variable = self._dataset.variables[elevation_name]
+            units = str(getattr(elevation_variable, "units", "")).strip().casefold()
+            if units not in {"m", "meter", "meters", "metre", "metres"}:
+                raise ValueError("GEBCO elevation must use metres.")
+            self._elevation = np.ma.asarray(
+                elevation_variable[:], dtype=np.float64
+            ).filled(np.nan)
+        except Exception:
+            self._dataset.close()
+            self._dataset = None
+            self._latitude = None
+            self._longitude = None
+            raise
+        return self._elevation
 
 
 def _find_lat_lon(dataset: Dataset) -> tuple[str, str]:

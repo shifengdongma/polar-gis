@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.navigation_environment import get_environment_service
 from app.api.projects import project_or_404
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -159,7 +160,7 @@ def create_plan(
     except ValueError as error:
         raise AppError("INPUT_INVALID", "出发时间必须包含时区", 422) from error
     try:
-        VesselService().get(payload.vessel_id)
+        vessel = VesselService().get(payload.vessel_id)
     except VesselNotFound as error:
         raise AppError("VESSEL_NOT_FOUND", "船舶资料不存在", 404) from error
     objectives = set(payload.objectives)
@@ -178,6 +179,47 @@ def create_plan(
         raise AppError("INPUT_INVALID", "起点与终点不能相同", 422)
     if static.nearest_cell(start[1], start[0]) is None or static.nearest_cell(goal[1], goal[0]) is None:
         raise AppError("INPUT_INVALID", "起点或终点不在东北航道规划网格内", 422)
+    if (
+        payload.synthetic_overrides
+        and payload.synthetic_overrides.get("depthM") is not None
+        and payload.synthetic_overrides["depthM"] < vessel.required_depth_m
+    ):
+        raise AppError(
+            "INPUT_INVALID",
+            f"水深覆盖值小于船舶所需水深 {vessel.required_depth_m:.2f} m，整片规划区将不可通行",
+            422,
+        )
+    if payload.data_policy == "real_only":
+        # Fail before queueing instead of spending time on a full-grid worker
+        # only to discover that the start point has no real environment data.
+        probe = get_environment_service().query(
+            start[0],
+            start[1],
+            departure,
+            ["bathymetry", "ice", "wind", "current", "wave"],
+            "real_only",
+        )
+        missing = [
+            field
+            for field, observation in probe.fields.items()
+            if not observation.available
+        ]
+        if missing:
+            labels = {
+                "bathymetry": "水深",
+                "ice": "海冰",
+                "wind": "风场",
+                "current": "海流",
+                "wave": "海浪",
+            }
+            raise AppError(
+                "ENVIRONMENT_DATA_MISSING",
+                "起点缺少真实环境数据："
+                + "、".join(labels.get(field, field) for field in sorted(missing))
+                + "。“真实数据 only”无法完成规划；如仅做研究验证，"
+                "请将数据策略改为“合成研究数据”。",
+                422,
+            )
     request_payload = payload.model_dump(mode="json", by_alias=True)
     try:
         run = get_task_service().create_run(

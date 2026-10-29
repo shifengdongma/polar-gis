@@ -23,8 +23,12 @@ const concentrationAvailable = computed(() => props.ice.concentrationAvailable.v
 const thicknessAvailable = computed(() => props.ice.thicknessAvailable.value)
 const selectedDate = computed(() => props.ice.selectedDate.value)
 const error = computed(() => props.ice.error.value)
+const loading = computed(() => props.ice.loading.value)
 const empty = computed(
-  () => !props.ice.info.value && !error.value || (props.ice.info.value?.dates.length ?? 0) === 0,
+  () =>
+    !loading.value &&
+    ((!props.ice.info.value && !error.value) ||
+      (props.ice.info.value?.dates.length ?? 0) === 0),
 )
 const debugAlignment = computed(() => props.ice.debugAlignment.value)
 
@@ -61,7 +65,8 @@ function onDebugAlignment(value: string | number | boolean) {
       <span class="ice-panel-badge">环境叠加</span>
     </div>
 
-    <div v-if="error" class="ice-panel-empty">{{ error }}</div>
+    <div v-if="loading" class="ice-panel-empty">正在扫描冰情数据…</div>
+    <div v-else-if="error" class="ice-panel-empty">{{ error }}</div>
     <div v-else-if="empty" class="ice-panel-empty">无可用冰情数据</div>
 
     <template v-else>
@@ -146,9 +151,6 @@ function onDebugAlignment(value: string | number | boolean) {
         <el-switch :model-value="debugAlignment" size="small" @change="onDebugAlignment" />
       </div>
 
-      <p class="ice-panel-note">
-        本平台属非认证航海显示系统;冰情数据用于环境信息展示与功能验证,数据有效性以实际导入数据来源为准,不可替代正式航海冰情资料。
-      </p>
     </template>
   </section>
 </template>

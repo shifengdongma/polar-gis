@@ -701,11 +701,31 @@ watch(
 )
 /** 环境叠加菜单中的冰情状态文案 */
 const iceOverlayState = computed(() => {
+  if (iceOverlay.loading.value) return '加载中'
   if (iceOverlay.error.value) return '不可用'
+  if (!iceOverlay.infoLoaded.value) return '待加载'
   if ((iceOverlay.info.value?.dates.length ?? 0) === 0) return '无数据'
   return iceOverlay.concentrationVisible.value || iceOverlay.thicknessVisible.value
     ? '已开启'
     : '未开启'
+})
+
+// Opening a panel is an explicit user retry: if the first index attempt
+// failed (cold start / transient network), load it again instead of showing a
+// permanent empty state.
+watch(icePanelOpen, (open) => {
+  if (open && !iceOverlay.loading.value && (!iceOverlay.infoLoaded.value || iceOverlay.error.value)) {
+    void iceOverlay.loadInfo()
+  }
+})
+watch(environmentPanelOpen, (open) => {
+  if (
+    open &&
+    !environmentOverlays.sourcesLoading.value &&
+    (!environmentOverlays.sourcesLoaded.value || environmentOverlays.sourcesError.value)
+  ) {
+    void environmentOverlays.loadSources()
+  }
 })
 
 watch(layerSearch, () => {
@@ -895,9 +915,10 @@ async function buildMap() {
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
-  hoverViewport = map.getViewport()
-  hoverViewport.addEventListener('pointerleave', hideHover)
-  hoverViewport.addEventListener('pointerleave', iceOverlay.clearHover)
+  const viewport = map.getViewport()
+  hoverViewport = viewport ?? null
+  viewport?.addEventListener('pointerleave', hideHover)
+  viewport?.addEventListener('pointerleave', iceOverlay.clearHover)
   map.on('pointermove', (event) => {
     const [longitude, latitude] = toLonLat(event.coordinate, currentCrs.value)
     coordinateText.value = `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`
@@ -2573,9 +2594,8 @@ async function toggleAis() {
     }
     aisLayer.setVisible(true)
     aisVisible.value = true
-    ElMessage.warning('当前显示的是AIS演示数据')
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error, 'AIS演示数据加载失败'))
+    ElMessage.error(apiErrorMessage(error, 'AIS 数据加载失败'))
   }
 }
 
@@ -2610,6 +2630,11 @@ onMounted(async () => {
     currentCrs.value = config.value.project.defaultCrs
     routesStore.ensureLoaded(config.value.project.id)
     navigationStore.setProject(config.value.project.id)
+    // Start the independent environment/ice indexes immediately: they must
+    // not wait for default datasets (which may involve many GeoServer calls)
+    // or for buildMap().  This removes the first-entry "no data" window.
+    void iceOverlay.loadInfo()
+    void environmentOverlays.loadSources()
     void navigationStore.loadRuns()
     void navigationStore.loadVessels()
     runtimeDatasets.value = config.value.datasets.map((dataset) => ({
@@ -2630,8 +2655,6 @@ onMounted(async () => {
     await nextTick()
     await buildMap()
     routeDrawing.syncRoutesToMap()
-    // 冰情:数据加载失败只降级为"无可用冰情数据",绝不影响地图
-    void iceOverlay.loadInfo()
     startPerfPoll()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '项目地图加载失败'))
@@ -2678,7 +2701,6 @@ onBeforeUnmount(() => {
       </div>
       <div class="map-view-controls">
         <div class="projection-switch"><button :class="{ active: currentCrs === 'EPSG:3857' }" @click="switchProjection('EPSG:3857')">常规地图</button><button :class="{ active: currentCrs === 'EPSG:3413' }" @click="switchProjection('EPSG:3413')">北极投影</button></div>
-        <div class="map-disclaimer">非认证航海显示</div>
       </div>
     </header>
     <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed }]">
@@ -2824,7 +2846,7 @@ onBeforeUnmount(() => {
           <template #dropdown>
             <el-dropdown-menu class="overlay-menu">
               <el-dropdown-item command="ais">
-                <span class="demo-badge">演示</span><span>AIS 船位</span><span class="overlay-state">{{ aisVisible ? '已开启' : '未开启' }}</span>
+                <span>AIS 船位</span><span class="overlay-state">{{ aisVisible ? '已开启' : '未开启' }}</span>
               </el-dropdown-item>
               <el-dropdown-item command="ice">
                 <span>冰情信息</span><span class="overlay-state">{{ iceOverlayState }}</span>
@@ -2890,10 +2912,10 @@ onBeforeUnmount(() => {
     </div>
     <div class="map-tools glass-panel">
       <el-tooltip content="要素识别" placement="left"><button :class="{ active: queryMode }" @click="toggleQueryMode"><el-icon><Location /></el-icon></button></el-tooltip>
-      <el-tooltip content="点位气象演示" placement="left"><button :class="{ active: weatherMode }" @click="toggleWeatherMode"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
+      <el-tooltip content="点位气象" placement="left"><button :class="{ active: weatherMode }" @click="toggleWeatherMode"><el-icon><DataAnalysis /></el-icon></button></el-tooltip>
       <el-tooltip content="测量距离" placement="left"><button :class="{ active: measureMode === 'LineString' }" @click="activateMeasure('LineString')"><el-icon><MapLocation /></el-icon></button></el-tooltip>
       <el-tooltip content="测量面积" placement="left"><button :class="{ active: measureMode === 'Polygon' }" @click="activateMeasure('Polygon')"><el-icon><FullScreen /></el-icon></button></el-tooltip>
-      <el-tooltip content="航路规划模拟 · 打开面板绘制/管理航路，地图上随时可点选航路查看详情" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
+      <el-tooltip content="航路规划 · 打开面板绘制/管理航路，地图上随时可点选航路查看详情" placement="left"><button :class="{ active: routePanelVisible }" @click="routePanelVisible = !routePanelVisible"><el-icon><Compass /></el-icon></button></el-tooltip>
       <el-tooltip content="地图截图" placement="left"><button @click="captureMap"><el-icon><Camera /></el-icon></button></el-tooltip>
       <el-tooltip content="打印地图" placement="left"><button @click="printMap"><el-icon><Printer /></el-icon></button></el-tooltip>
     </div>
@@ -2950,8 +2972,7 @@ onBeforeUnmount(() => {
         <el-descriptions-item label="查询/导出">{{ metadataLayer.queryable ? '可查询' : '不可查询' }} / {{ metadataLayer.exportable ? '可导出' : '不可导出' }}</el-descriptions-item>
       </el-descriptions>
     </el-drawer>
-    <el-drawer v-model="weatherVisible" title="72小时水文气象演示" size="48%">
-      <el-alert title="演示数据，仅用于功能验证，不代表实时或权威海洋信息。" type="warning" :closable="false" show-icon />
+    <el-drawer v-model="weatherVisible" title="72小时水文气象" size="48%">
       <p v-if="weatherCoordinate" class="weather-coordinate">查询坐标：{{ weatherCoordinate[1].toFixed(4) }}°, {{ weatherCoordinate[0].toFixed(4) }}°</p>
       <WeatherChart :items="weatherItems" />
     </el-drawer>

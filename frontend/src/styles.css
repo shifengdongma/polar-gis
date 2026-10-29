@@ -1528,6 +1528,7 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .environment-policy-row { display: flex; align-items: center; gap: 6px; color: #9fbcc6; font-size: 10px; }
 .environment-policy-row small { color: #c8841f; font-size: 8px; line-height: 1.35; }
 .environment-source-error { margin: 0; }
+.environment-panel-loading { color: #7897a3; font-size: 9px; }
 .environment-layer-row { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; border-bottom: 1px solid rgba(178, 211, 220, .08); }
 .environment-layer-main { display: flex; align-items: center; gap: 6px; }
 .environment-layer-title { display: flex; flex-direction: column; min-width: 0; }
@@ -1594,7 +1595,7 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .planning-result-heading, .route-comparison-heading, .risk-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .planning-result-heading h3, .route-comparison-heading h3, .risk-panel-heading h3 { margin: 1px 0 0; color: var(--text); font-size: 13px; }
 .planning-result-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 8px; }
-.planning-missing-fields { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; color: #9a5a00; font-size: 9px; }
+.planning-missing-fields { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; color: var(--muted); font-size: 9px; }
 .planning-snapshot-fields, .planning-overrides { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--text); font-size: 8px; }
 .planning-snapshot-title { color: var(--muted); font-weight: 600; }
 .planning-snapshot-field { color: var(--text); }

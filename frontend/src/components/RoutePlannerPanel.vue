@@ -304,8 +304,7 @@ function handleApplyBatch() {
   >
     <template #header>
       <div class="route-planner-header">
-        <span class="route-planner-title">航路规划模拟</span>
-        <span class="route-planner-badge">演示功能</span>
+        <span class="route-planner-title">航路规划</span>
       </div>
     </template>
 
@@ -315,13 +314,6 @@ function handleApplyBatch() {
     </div>
 
     <div v-show="planningMode === 'manual'">
-    <el-alert
-      title="当前航路仅用于功能模拟，不作为实际导航依据。"
-      type="warning"
-      :closable="false"
-      show-icon
-      class="route-planner-alert"
-    />
 
     <div class="route-toolbar">
       <el-button type="primary" size="small" @click="handleCreateRoute">+ 新建航路</el-button>
@@ -486,7 +478,6 @@ function handleApplyBatch() {
         <p class="route-units-note">
           坐标：WGS84 经纬度（经度, 纬度）· 距离：km / NM（1 NM = 1852 m）· 方位：初始真方位角（非磁方位）
           · 距离为按航路点顺序的球面最短路径（大圆）分段之和，为近似地表距离。
-          <strong>模拟航路，仅供展示与交互验证，不作为实际导航依据。</strong>
         </p>
       </div>
     </template>

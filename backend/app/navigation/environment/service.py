@@ -73,6 +73,9 @@ class EnvironmentService:
                 settings.ice_data_root,
                 self.manifest,
                 backend=settings.navigation_ice_backend,
+                # Match /api/v1/ice so both paths share the same IceService.
+                tile_cache_entries=settings.ice_tile_cache_entries,
+                max_zoom=settings.ice_tile_max_zoom,
             ),
             "wind": CARRA2WindProvider(self.root, self.manifest),
             "current": TOPAZ5CurrentProvider(self.root, self.manifest),

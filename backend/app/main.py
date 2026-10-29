@@ -77,6 +77,34 @@ def _spawn_gwc_3413_backfill() -> None:
     threading.Thread(target=_run, name="gwc-3413-backfill", daemon=True).start()
 
 
+def _spawn_ice_prewarm() -> None:
+    """Warm the ice metadata index (and default grid) before the first user.
+
+    A cold production directory may contain hundreds of NetCDF files; opening
+    them on the first ``/ice/info`` request made the first project entry wait
+    while the panel showed no data.  Startup is the natural time to pay that
+    cost.  Errors only degrade the ice overlay, never the application.
+    """
+    if not settings.ice_enabled:
+        return
+
+    def _run() -> None:
+        try:
+            from app.services.ice import shared_ice_service
+
+            service = shared_ice_service(
+                settings.ice_data_root,
+                tile_cache_entries=settings.ice_tile_cache_entries,
+                max_zoom=settings.ice_tile_max_zoom,
+            )
+            info = service.info()
+            logger.info("冰情索引预热完成: %d 个日期", len(info.get("dates", [])))
+        except Exception as exc:  # noqa: BLE001 - ice failure != app failure
+            logger.warning("冰情索引预热失败: %s", exc)
+
+    threading.Thread(target=_run, name="ice-prewarm", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.storage_root.mkdir(parents=True, exist_ok=True)
@@ -84,6 +112,7 @@ async def lifespan(_: FastAPI):
     init_database()
     ensure_initial_admin()
     _spawn_gwc_3413_backfill()
+    _spawn_ice_prewarm()
     yield
 
 

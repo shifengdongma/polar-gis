@@ -98,14 +98,7 @@ async function evaluateArea() {
     <el-alert
       v-if="navigation.currentRun?.status === 'failed' && navigation.currentRun?.errorCode === 'NO_FEASIBLE_ROUTE'"
       title="没有可行航线，但仍可查看风险栅格"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
-    <el-alert
-      v-if="navigation.isSynthetic"
-      title="风险结果含合成环境数据，不可作为真实航行依据"
-      type="warning"
+      type="info"
       :closable="false"
       show-icon
     />

@@ -112,23 +112,27 @@ def login(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
 
 
+def plan_payload(project_id: UUID, policy: str) -> dict:
+    return {
+        "projectId": str(project_id),
+        "start": {"longitude": 120.0, "latitude": 75.0},
+        "goal": {"longitude": 122.0, "latitude": 77.0},
+        "departureTime": "2025-02-15T12:00:00Z",
+        "vesselId": "xuelong2",
+        "dataPolicy": policy,
+        "algorithm": "dnsga3",
+        "objectives": ["risk", "energy", "time"],
+        "populationSize": 8,
+        "generations": 2,
+        "seed": 7,
+    }
+
+
 def create_plan(client: TestClient, headers: dict[str, str], project_id: UUID, policy: str) -> str:
     response = client.post(
         "/api/v1/navigation/plans",
         headers=headers,
-        json={
-            "projectId": str(project_id),
-            "start": {"longitude": 120.0, "latitude": 75.0},
-            "goal": {"longitude": 122.0, "latitude": 77.0},
-            "departureTime": "2025-02-15T12:00:00Z",
-            "vesselId": "xuelong2",
-            "dataPolicy": policy,
-            "algorithm": "dnsga3",
-            "objectives": ["risk", "energy", "time"],
-            "populationSize": 8,
-            "generations": 2,
-            "seed": 7,
-        },
+        json=plan_payload(project_id, policy),
     )
     assert response.status_code == 202, response.text
     return response.json()["planId"]
@@ -232,12 +236,14 @@ def main() -> int:
             "(identical to candidate)"
         )
 
-        real_only_id = create_plan(client, headers, project_id, "real_only")
-        run_worker(real_only_id)
-        real_only = get_plan(client, headers, real_only_id)
-        assert real_only["status"] == "failed", real_only
-        assert real_only["errorCode"] == "ENVIRONMENT_DATA_MISSING", real_only
-        print("real_only negative OK: synthetic fixtures rejected")
+        real_only_response = client.post(
+            "/api/v1/navigation/plans",
+            headers=headers,
+            json=plan_payload(project_id, "real_only"),
+        )
+        assert real_only_response.status_code == 422, real_only_response.text
+        assert real_only_response.json()["code"] == "ENVIRONMENT_DATA_MISSING"
+        print("real_only negative OK: synthetic fixtures rejected before queue")
 
         area = client.post(
             "/api/v1/navigation/risk/evaluate",

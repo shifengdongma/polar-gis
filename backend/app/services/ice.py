@@ -128,6 +128,11 @@ class IceService:
         self._grids: dict[str, dict[str, _Grid]] = {}
         self._tiles: dict[tuple[str, str, str, int, int, int], bytes] = {}
         self._warned_units: set[str] = set()
+        # The metadata scan opens every NetCDF file once.  Cache the response
+        # until the directory actually changes so the first page load does not
+        # repeat it for /info, sources and planning.
+        self._info_cache: dict[str, Any] | None = None
+        self._warm_started = False
         # 单飞(per-date):冷日期并发首请求只允许一个线程真正读文件+归一化,
         # 其余等待 —— 否则 N 张并发瓦片会各自完整装载 26M 单元网格(实测
         # 8 张冷瓦片每张 6.6s;单飞后应约为 1 次装载 + N 次快速渲染)。
@@ -153,12 +158,13 @@ class IceService:
 
     def info(self) -> dict[str, Any]:
         """扫描全部日期,给出字段并集与可用日期;目录为空时优雅返回。"""
-        self._refresh_files()
+        changed = self._refresh_files()
         dates = self.dates
         if not dates:
             return {"dates": [], "fields": [], "default_date": None}
-        # 后台预热默认日期网格(不阻塞响应;单飞保证重复触发零成本)
-        threading.Thread(target=self.warm_default_grid, name="ice-warm", daemon=True).start()
+        if self._info_cache is not None and not changed:
+            self._start_warm_once()
+            return self._info_cache
         field_info: dict[str, dict[str, Any]] = {}
         extent: list[float] | None = None
         for day in dates:
@@ -169,7 +175,7 @@ class IceService:
                 field_info.setdefault(field, {**value, "available_dates": []})[
                     "available_dates"
                 ].append(day)
-        return {
+        response = {
             "dates": dates,
             "fields": [{"id": key, **value} for key, value in field_info.items()],
             "default_date": dates[0],
@@ -178,6 +184,20 @@ class IceService:
             "extent": extent,
             "missing_dates_are_excluded": True,
         }
+        self._info_cache = response
+        # 先完成元数据扫描再后台预热网格，避免首次 /info 与重网格加载争抢
+        # HDF5/磁盘带宽而延长面板“空窗期”。
+        self._start_warm_once()
+        return response
+
+    def _start_warm_once(self) -> None:
+        """Kick off grid warm-up exactly once per service instance."""
+        if self._warm_started:
+            return
+        self._warm_started = True
+        threading.Thread(
+            target=self.warm_default_grid, name="ice-warm", daemon=True
+        ).start()
 
     def tile(self, field: str, projection: str, day: str, z: int, tx: int, ty: int) -> bytes:
         """渲染单张 256×256 RGBA PNG 瓦片(带 LRU 缓存;渲染在锁外)。"""
@@ -324,8 +344,12 @@ class IceService:
             files[match.group(1)] = _FileEntry(path, stat.st_mtime, stat.st_size)
         return files
 
-    def _refresh_files(self) -> None:
-        """重扫目录;(mtime,size) 变化的日期逐日期失效 metadata/grid/tile 缓存。"""
+    def _refresh_files(self) -> bool:
+        """重扫目录;(mtime,size) 变化的日期逐日期失效 metadata/grid/tile 缓存。
+
+        Returns ``True`` when the directory index changed, so ``info()`` can
+        reuse its cached response instead of re-inspecting every date.
+        """
         fresh = self._index_files()
         with self._lock:
             changed = {
@@ -341,6 +365,9 @@ class IceService:
                 for key in [k for k in self._tiles if k[2] == day]:
                     self._tiles.pop(key, None)
             self._files = fresh  # 原子换绑,读者不会看到半更新索引
+            if changed:
+                self._info_cache = None
+            return bool(changed)
 
     # ── 元数据与网格加载(锁内) ─────────────────────────────────────────
 
@@ -480,8 +507,8 @@ class IceService:
             return
         try:
             self._grid(dates[0], "concentration")
-        except AppError:
-            logger.warning("冰情默认日期网格预热失败: %s", dates[0])
+        except Exception:  # noqa: BLE001 - warm-up must never kill the thread silently
+            logger.warning("冰情默认日期网格预热失败: %s", dates[0], exc_info=True)
 
     def _normalize(
         self, field: str, raw: np.ndarray, units: str, x: np.ndarray, y: np.ndarray
@@ -581,5 +608,39 @@ class IceService:
                 scaled[mask], stops_array, colors_array[:, channel]
             ).astype(np.uint8)
         output = BytesIO()
-        Image.fromarray(image, "RGBA").save(output, "PNG", optimize=True)
+        # ``optimize=True`` runs an expensive zlib parameter search on every
+        # tile.  Ice tiles are tiny and cached; level 1 cuts render CPU
+        # substantially with a negligible size increase.
+        Image.fromarray(image, "RGBA").save(output, "PNG", compress_level=1)
         return output.getvalue()
+
+
+# ── 进程级共享实例 ──────────────────────────────────────────────────────
+# 冰情 API 与导航环境 Provider 读取同一数据根时，必须共享同一个 IceService：
+# 否则首次进入项目会并发执行两遍全目录元数据扫描、两个预热线程、两份 26M
+# 单元网格缓存。共享后 /ice/info、环境 sources 与规划采样复用同一份索引。
+
+_SHARED_SERVICES: dict[tuple[str, int, int], IceService] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_ice_service(
+    root: Path,
+    tile_cache_entries: int = 256,
+    max_zoom: int = 10,
+) -> IceService:
+    """Return one IceService per (data root, cache size, max zoom)."""
+    try:
+        key = (str(Path(root).expanduser().resolve()), int(tile_cache_entries), int(max_zoom))
+    except OSError:
+        key = (str(root), int(tile_cache_entries), int(max_zoom))
+    with _SHARED_LOCK:
+        service = _SHARED_SERVICES.get(key)
+        if service is None:
+            service = IceService(
+                Path(root),
+                tile_cache_entries=tile_cache_entries,
+                max_zoom=max_zoom,
+            )
+            _SHARED_SERVICES[key] = service
+        return service

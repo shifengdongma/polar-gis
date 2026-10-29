@@ -1805,3 +1805,67 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - S-57 `optional_other` zIndex 100→45，避免可选海图图层盖住风险格；风险页打开且任务已完成时
   自动加载 combined 风险格，`setGrid` 显式设置可见。
 - 最终：后端 280 passed、前端 386 passed、typecheck/build/ruff 通过。
+
+---
+
+## 会话 #30 — 智能规划超时/首载空态/冰情性能（2026-10-30）
+
+### 问题定位（证据驱动）
+
+1. **智能规划耗时/失败**：规划网格固定 15,731 个 25km 单元。`CARRA2` 与 `WAM` 的
+   `sample()` 对每个格点调用 `coverage()`，每次都要对完整坐标网格做 `nanmin/nanmax`。
+   用 1200×1200 网格实测：200 个风场点从 0.065s 增至 1.339s（约 6.4ms/点）；按 15,731
+   格推算风/浪两字段即需数百秒，必然触发 300s `PLANNER_TIMEOUT`。`GEBCO` 的越界分支
+   同样重复计算 coverage；`IceProvider(polar_gis)` 每个格点调用 `info()` 并新建
+   `Transformer`，进一步放大耗时。
+2. **首次进入环境叠加无信息**：`/ice/info` 会打开目录内每个 NetCDF 做元数据扫描；导航
+   `EnvironmentService` 又构造了**第二个** `IceService`，同一目录被并发扫描两遍。前端
+   默认 30s 超时，冷启动超时后 `info=null`，菜单显示“无数据”，退出重进时服务端已有缓存
+   才恢复。且 `loadInfo/loadSources` 原先排在默认数据集加载之后，进一步扩大空窗。
+3. **冰情图层慢**：冷日期 `_grid` 需整读 26M 单元；`info()` 每次重扫；`warm_default_grid`
+   每次 `/info` 都新起线程；PNG 使用 `optimize=True` 做全参数搜索。
+
+### 修改
+
+**后端**
+- `environment/providers/carra2.py`、`wam.py`：coverage 缓存 + `sample()` 不再逐点计算。
+- `environment/providers/gebco.py`：先读坐标轴判断覆盖，越界不加载 elevation；coverage 缓存；
+  `_elevation_grid()` 延迟加载；PNG `compress_level=1`。
+- `environment/providers/ice.py`：polar 后端缓存 `info()` 60s、复用 `Transformer`；
+  `EnvironmentService` 传入与 API 相同的 cache/zoom，构造共享实例。
+- `services/ice.py`：新增 `shared_ice_service()`；`info()` 结果缓存（目录变化失效）；
+  `_start_warm_once()` 防止重复预热；PNG `compress_level=1`。
+- `api/ice.py`：改用共享实例。
+- `main.py`：FastAPI startup 后台执行冰情索引/默认网格预热，失败仅告警。
+- `tasks/processor.py`：`PLANNER_TIMEOUT / ENVIRONMENT_DATA_MISSING / NO_FEASIBLE_ROUTE`
+  输出中文原因与可操作建议。
+- `api/navigation_plans.py`：`real_only` 起点缺测时入队前 422，字段名中文化并提示改用合成研究。
+
+**前端**
+- `MapWorkspaceView.vue`：`loadInfo/loadSources` 提前到 map-config 之后、默认数据集与
+  `buildMap()` 之前；冰情菜单增加“加载中/待加载”；面板打开时失败重试；移除模拟/安全提示。
+- `useIceOverlay.ts`：`infoLoaded` 状态、并发保护、attach 自动加载。
+- `useEnvironmentOverlays.ts`：`sourcesLoaded` 状态、并发保护、attach 自动加载、失败保留旧数据、
+  available 时清除 layer error。
+- `api/ice.ts` / `api/navigation.ts`：首载超时 30s→120s。
+- `utils/routePlanning.ts`：错误信息保留后端细节。
+- `NavigationTaskPanel.vue`：补充网格范围与合成覆盖使用说明；“合成环境参数”去掉“仅研究验证”。
+- `RouteInfoFlyout/RoutePlannerPanel/MapWorkspaceView/AdminDashboardView/AppLayout/IceLayerPanel`：
+  删除合成/模拟/非认证等黄色提示与声明。
+
+### 验证
+
+- 后端：`pytest backend/tests` 全通过；新增 provider coverage 不重算、`/info` 缓存、共享实例
+  3 个回归测试；ruff 对改动文件通过（仓库既有 39 个无关 lint 未处理）。
+- 性能基准：1200×1200 风/浪等大网格、15,731 规划格，环境采样合计 19.78s（修复前同规模风场
+  单字段即约 100s+）。
+- 合成 E2E：3 条候选、风险格 787 features、采纳重评一致、real_only 422 负例、risk_only 完成。
+- 前端：29 files / 389 tests passed；`vue-tsc` 零错误；`npm run build` 通过。
+
+### 决策与已知限制
+
+- 未获得真实 GEBCO/CARRA2/TOPAZ5/WAM 数据，无法在本机验证真实环境规划；性能基准使用
+  格式正确的合成 NetCDF，规模按真实 1200×1200 网格模拟。
+- 真实 Provider 仍为逐点 Python 采样；若数据网格显著大于 1200×1200，风场仍可能成为瓶颈，
+  后续可做 Provider 级向量化 `sample_many`。
+- 冰情冷日期仍会整读一次网格；已通过共享实例、单飞、预热与 info 缓存降低首载影响。

@@ -104,14 +104,6 @@ async function deletePlan(planId: string) {
       </el-tag>
     </div>
 
-    <el-alert
-      v-if="navigation.isSynthetic"
-      title="含合成环境数据，不可作为真实航行决策依据"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
-
     <template v-if="run">
       <el-progress
         :percentage="run.progress"
@@ -153,7 +145,7 @@ async function deletePlan(planId: string) {
           v-for="(count, field) in missingFields"
           :key="field"
           size="small"
-          type="warning"
+          type="info"
         >{{ field }}: {{ count }}</el-tag>
       </div>
 

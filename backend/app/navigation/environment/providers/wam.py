@@ -42,6 +42,9 @@ class WAMWaveProvider(BaseEnvironmentProvider):
         self._time_index: int | None = None
         self._slices: dict[str, np.ma.MaskedArray] = {}
         self._slice_cache: OrderedDict[int, dict[str, np.ma.MaskedArray]] = OrderedDict()
+        # Grid metadata is constant for a file; computing nanmin/nanmax for
+        # every sample made full-grid planning unnecessarily slow.
+        self._coverage: dict[str, float] | None = None
 
     def available(self) -> bool:
         return bool(self._paths_by_date)
@@ -52,17 +55,20 @@ class WAMWaveProvider(BaseEnvironmentProvider):
     def coverage(self) -> dict[str, float] | None:
         if not self.available():
             return None
-        try:
-            self._activate(next(iter(self._paths_by_date.values())))
-            assert self._latitude is not None and self._longitude is not None
-            return {
-                "minLatitude": float(np.nanmin(self._latitude)),
-                "maxLatitude": float(np.nanmax(self._latitude)),
-                "minLongitude": float(np.nanmin(self._longitude)),
-                "maxLongitude": float(np.nanmax(self._longitude)),
-            }
-        except Exception:  # noqa: BLE001
-            return None
+        with self._lock:
+            if self._coverage is None:
+                try:
+                    self._activate(next(iter(self._paths_by_date.values())))
+                    assert self._latitude is not None and self._longitude is not None
+                    self._coverage = {
+                        "minLatitude": float(np.nanmin(self._latitude)),
+                        "maxLatitude": float(np.nanmax(self._latitude)),
+                        "minLongitude": float(np.nanmin(self._longitude)),
+                        "maxLongitude": float(np.nanmax(self._longitude)),
+                    }
+                except Exception:  # noqa: BLE001
+                    return None
+            return self._coverage
 
     def sample(
         self,
@@ -130,7 +136,7 @@ class WAMWaveProvider(BaseEnvironmentProvider):
                     },
                     source=self.source_name,
                     time=selection.match_info(),
-                    coverage=self.coverage(),
+                    coverage=self._coverage,
                 )
         except Exception as error:  # noqa: BLE001
             return _unavailable(
@@ -151,6 +157,7 @@ class WAMWaveProvider(BaseEnvironmentProvider):
             self._time_index = None
             self._slices = {}
             self._slice_cache.clear()
+            self._coverage = None
 
     def _activate(self, path: Path) -> None:
         if self._active_path == path and self._dataset is not None:
@@ -181,6 +188,7 @@ class WAMWaveProvider(BaseEnvironmentProvider):
         self._time_index = None
         self._slices = {}
         self._slice_cache.clear()
+        self._coverage = None
 
     def _load_slice(self, time_index: int) -> None:
         if self._time_index == time_index:

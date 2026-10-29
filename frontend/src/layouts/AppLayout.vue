@@ -104,10 +104,6 @@ async function logout() {
           <span class="topbar-separator">/</span>
           <strong>{{ route.meta.title || '工作台' }}</strong>
         </div>
-        <div class="topbar-notice">
-          <span class="status-dot"></span>
-          非认证航海信息系统
-        </div>
       </header>
       <section class="page-content">
         <RouterView />

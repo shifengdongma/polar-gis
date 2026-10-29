@@ -101,14 +101,17 @@ class PlanningRunProcessor:
                 session_factory,
                 run_id,
                 "PLANNER_TIMEOUT",
-                "Planning exceeded the configured timeout.",
+                f"规划超过 {self.settings.planner_timeout_seconds} 秒仍未完成。"
+                "请减少种群/代数后重试；若持续超时，请检查环境数据文件是否过大或磁盘读取过慢。",
             )
         except EnvironmentDataMissing as error:
+            missing = "、".join(sorted(error.fields)) if error.fields else "未知字段"
             self._finish_failed(
                 session_factory,
                 run_id,
                 "ENVIRONMENT_DATA_MISSING",
-                str(error),
+                f"环境数据缺失（{missing}），无法完成规划。"
+                "请检查数据目录，或在没有真实数据时选择“合成研究数据”。",
                 details={"fields": error.fields},
             )
         except NoFeasibleRoute as error:
@@ -116,7 +119,10 @@ class PlanningRunProcessor:
                 session_factory,
                 run_id,
                 "NO_FEASIBLE_ROUTE",
-                str(error),
+                "规划区内没有可行航线：起点/终点可能被陆地、浅水或冰情阻断，"
+                "或真实数据在航线沿途缺测。请调整起终点；如仅做研究验证，"
+                "请选择“合成研究数据”并清除过高的冰情/水深覆盖值。"
+                f"（{error}）",
             )
         except Exception as error:  # noqa: BLE001 - never kill the only worker
             logger.exception("Planning run %s failed", run_id)
@@ -256,7 +262,12 @@ class PlanningRunProcessor:
                 run.status = PlanningRunStatus.FAILED.value
                 run.stage = "failed"
                 run.error_code = "NO_FEASIBLE_ROUTE"
-                run.error_message = outcome.no_route_reason
+                run.error_message = (
+                    "规划区内没有可行航线：起点/终点可能被陆地、浅水或冰情阻断，"
+                    "或真实数据在航线沿途缺测。请调整起终点；如仅做研究验证，"
+                    "请选择“合成研究数据”并清除过高的冰情/水深覆盖值。"
+                    f"（{outcome.no_route_reason}）"
+                )
             else:
                 run.status = PlanningRunStatus.COMPLETED.value
                 run.stage = "completed"

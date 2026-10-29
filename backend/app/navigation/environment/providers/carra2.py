@@ -58,6 +58,10 @@ class CARRA2WindProvider(BaseEnvironmentProvider):
         self._speed_slice: np.ma.MaskedArray | None = None
         self._direction_slice: np.ma.MaskedArray | None = None
         self._slice_cache: OrderedDict[int, tuple[np.ma.MaskedArray, np.ma.MaskedArray]] = OrderedDict()
+        # Coverage is grid metadata, not a per-sample value.  Scanning the full
+        # 2-D coordinate arrays for every point used to dominate planning
+        # (≈6 ms × 15k grid cells).  Cache it once per activated month.
+        self._coverage: dict[str, float] | None = None
 
     def available(self) -> bool:
         return bool(self._paths_by_month)
@@ -68,17 +72,20 @@ class CARRA2WindProvider(BaseEnvironmentProvider):
     def coverage(self) -> dict[str, float] | None:
         if not self.available():
             return None
-        try:
-            self._activate_month(next(iter(self._paths_by_month)))
-            assert self._latitude is not None and self._longitude is not None
-            return {
-                "minLatitude": float(np.nanmin(self._latitude)),
-                "maxLatitude": float(np.nanmax(self._latitude)),
-                "minLongitude": float(np.nanmin(self._longitude)),
-                "maxLongitude": float(np.nanmax(self._longitude)),
-            }
-        except Exception:  # noqa: BLE001
-            return None
+        with self._lock:
+            if self._coverage is None:
+                try:
+                    self._activate_month(next(iter(self._paths_by_month)))
+                    assert self._latitude is not None and self._longitude is not None
+                    self._coverage = {
+                        "minLatitude": float(np.nanmin(self._latitude)),
+                        "maxLatitude": float(np.nanmax(self._latitude)),
+                        "minLongitude": float(np.nanmin(self._longitude)),
+                        "maxLongitude": float(np.nanmax(self._longitude)),
+                    }
+                except Exception:  # noqa: BLE001
+                    return None
+            return self._coverage
 
     def sample(
         self,
@@ -145,7 +152,9 @@ class CARRA2WindProvider(BaseEnvironmentProvider):
                     },
                     source=self.source_name,
                     time=selection.match_info(),
-                    coverage=self.coverage(),
+                    # Never recompute coverage per point; use the cached value
+                    # when it is already known.
+                    coverage=self._coverage,
                 )
         except Exception as error:  # noqa: BLE001
             return _unavailable(requested, f"wind_read_error:{type(error).__name__}")
@@ -163,6 +172,7 @@ class CARRA2WindProvider(BaseEnvironmentProvider):
             self._speed_slice = None
             self._direction_slice = None
             self._slice_cache.clear()
+            self._coverage = None
 
     def _activate_month(self, month: datetime) -> None:
         if self._active_month == month and self._speed_dataset is not None:
@@ -200,6 +210,7 @@ class CARRA2WindProvider(BaseEnvironmentProvider):
         self._speed_slice = None
         self._direction_slice = None
         self._slice_cache.clear()
+        self._coverage = None
         self._speed_name = speed_name
         self._direction_name = direction_name
         self._convention = convention

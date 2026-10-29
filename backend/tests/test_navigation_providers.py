@@ -127,6 +127,37 @@ def test_topaz_current_is_rotated_to_east_north(fixture_root: Path) -> None:
     provider.close()
 
 
+def test_sampling_does_not_recompute_coverage(fixture_root: Path) -> None:
+    """Coverage is grid metadata; per-point rescans made planning time out."""
+    manifest = load_manifest(fixture_root / "navigation_manifest.json")
+    providers = [
+        CARRA2WindProvider(fixture_root, manifest),
+        WAMWaveProvider(fixture_root, manifest),
+    ]
+    for provider in providers:
+        original = provider.coverage
+
+        def make_counting(coverage, counter: list[int]):
+            def counting() -> dict[str, float] | None:
+                counter[0] += 1
+                return coverage()
+
+            return counting
+
+        counter = [0]
+        provider.coverage = make_counting(original, counter)  # type: ignore[method-assign]
+        for index in range(10):
+            provider.sample(
+                120.0 + index * 0.01,
+                75.0 + index * 0.01,
+                REQUESTED,
+                max_lag_hours=24,
+                allow_future=False,
+            )
+        assert counter[0] == 0, f"{type(provider).__name__} recomputed coverage per sample"
+        provider.close()
+
+
 def test_wam_wave_height_period_direction(fixture_root: Path) -> None:
     manifest = load_manifest(fixture_root / "navigation_manifest.json")
     provider = WAMWaveProvider(fixture_root, manifest)

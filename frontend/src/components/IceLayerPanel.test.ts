@@ -5,7 +5,7 @@
  *   开关,绝不生成假数据、绝不把缺失当 0;
  * - 图例色值必须来自 mapIce 的 ICE_PALETTES(与后端 PALETTE_STOPS 同源),
  *   不允许在组件里再写一套颜色;
- * - 免责声明必须保留(非认证显示/不可替代正式航海冰情资料);
+ * - 不再显示“非认证/不可替代正式航海冰情资料”等安全提示;
  * - class 统一 ice- 前缀,不污染现有样式。
  */
 import { readFileSync } from 'node:fs'
@@ -51,9 +51,10 @@ describe('IceLayerPanel 图例与免责', () => {
     expect(source).toContain('5+')
   })
 
-  it('免责声明与定位冰区入口保留', () => {
-    expect(source).toContain('不可替代正式航海冰情资料')
+  it('定位冰区入口保留,安全提示已移除', () => {
     expect(source).toContain('fitIceExtent')
+    expect(source).not.toContain('不可替代正式航海冰情资料')
+    expect(source).not.toContain('非认证航海')
   })
 
   it('调试对齐默认关闭(class 带 ice- 前缀)', () => {

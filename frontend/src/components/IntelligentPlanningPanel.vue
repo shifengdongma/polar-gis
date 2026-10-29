@@ -30,7 +30,7 @@ function adopt(route: PlanningRoute) {
     ElMessage.error('采纳航线失败：项目尚未加载')
     return
   }
-  ElMessage.success('已采纳为可编辑草稿（非自动驾驶执行）')
+  ElMessage.success('已采纳为可编辑草稿')
   emit('adopted', draft)
 }
 </script>

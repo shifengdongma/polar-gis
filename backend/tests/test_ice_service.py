@@ -541,6 +541,41 @@ def test_concurrent_tile_requests_load_grid_once(
     assert all(png[:8] == b"\x89PNG\r\n\x1a\n" for png in results)
 
 
+def test_info_response_is_cached_until_directory_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated /info calls (page entry, panel opening) must not rescan dates."""
+    write_nc(tmp_path / "a_20220101.nc", np.full((len(GRID_Y), len(GRID_X)), 60.0))
+    write_nc(tmp_path / "b_20220102.nc")
+    service = IceService(tmp_path)
+    first = service.info()
+
+    calls: list[str] = []
+    original = IceService._inspect
+
+    def counting(self: IceService, day: str):
+        if day not in self._metadata:
+            calls.append(day)
+        return original(self, day)
+
+    monkeypatch.setattr(IceService, "_inspect", counting)
+    assert service.info() == first
+    assert calls == []
+
+    # A new file invalidates the response and only the new date is inspected.
+    write_nc(tmp_path / "c_20220103.nc")
+    refreshed = service.info()
+    assert refreshed["dates"] == ["20220101", "20220102", "20220103"]
+    assert calls == ["20220103"]
+
+
+def test_shared_ice_service_reuses_instance(tmp_path: Path) -> None:
+    from app.services.ice import shared_ice_service
+
+    first = shared_ice_service(tmp_path)
+    assert shared_ice_service(tmp_path) is first
+
+
 def test_warm_default_grid_is_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

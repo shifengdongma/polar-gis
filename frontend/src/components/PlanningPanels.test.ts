@@ -15,7 +15,7 @@ describe('planning workbench panels', () => {
     expect(text).toContain('real_only')
     expect(text).toContain('allow_synthetic_research')
     expect(text).toContain('NSGA-III 固定三目标')
-    expect(text).toContain('不可作为真实航行决策依据')
+    expect(text).not.toContain('不可作为真实航行决策依据')
     expect(text).toContain('合成环境参数')
     expect(text).toContain('从起点读取当前环境值')
     expect(text).toContain('syntheticOverrides')
@@ -44,7 +44,7 @@ describe('planning workbench panels', () => {
   it('PlanningResultPanel distinguishes snapshot time and synthetic data', () => {
     const text = source('src/components/PlanningResultPanel.vue')
     expect(text).toContain('规划快照时间与当前地图环境时间不同')
-    expect(text).toContain('含合成环境数据')
+    expect(text).not.toContain('含合成环境数据')
     expect(text).toContain('历史任务')
     expect(text).toContain('取消任务')
     expect(text).toContain('重命名')

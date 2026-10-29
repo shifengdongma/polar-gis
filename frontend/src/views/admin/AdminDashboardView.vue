@@ -34,13 +34,6 @@ onMounted(async () => {
       <article class="stat-card"><span>数据集</span><strong>{{ stats.datasets }}</strong><small>可复用数据目录</small></article>
       <article class="stat-card accent"><span>活动任务</span><strong>{{ stats.activeJobs }}</strong><small>排队或处理中</small></article>
     </div>
-    <el-alert
-      title="非认证航海信息系统"
-      description="平台用于海图与环境信息展示，不替代ECDIS或法定航海设备。"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
   </div>
 </template>
 

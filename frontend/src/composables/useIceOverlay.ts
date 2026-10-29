@@ -83,6 +83,8 @@ const HOVER_FLIP_Y_RATIO = 0.6
 export function useIceOverlay(options: IceOverlayOptions) {
   const info = shallowRef<IceInfo | null>(null)
   const loading = ref(false)
+  /** True once the first /ice/info request has settled (success or failure). */
+  const infoLoaded = ref(false)
   const error = ref('')
   const selectedDate = ref<string | null>(null)
   const concentrationVisible = ref(false)
@@ -221,6 +223,9 @@ export function useIceOverlay(options: IceOverlayOptions) {
   // ── 数据加载 ────────────────────────────────────────────────────────
 
   async function loadInfo() {
+    // The first metadata scan may legitimately take a while on a cold data
+    // directory; never let a panel-open event start a second concurrent scan.
+    if (loading.value) return
     loading.value = true
     error.value = ''
     try {
@@ -239,6 +244,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
       error.value = apiErrorMessage(caught, '冰情数据加载失败')
     } finally {
       loading.value = false
+      infoLoaded.value = true
       refreshLayers()
     }
   }
@@ -275,6 +281,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
     map.addLayer(alignmentLayer)
     attached = true
     refreshLayers()
+    if (!infoLoaded.value && !loading.value) void loadInfo()
   }
 
   function dispose() {
@@ -514,6 +521,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
   return {
     info,
     loading,
+    infoLoaded,
     error,
     selectedDate,
     dates,

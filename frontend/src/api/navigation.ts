@@ -18,7 +18,12 @@ import type {
 } from '../types/navigation'
 
 export async function fetchNavigationSources(signal?: AbortSignal): Promise<EnvironmentSource[]> {
-  const response = await api.get<EnvironmentSource[]>('/navigation/environment/sources', { signal })
+  // The first call builds the provider index (and may scan ice metadata);
+  // 30 s is too tight on a cold production data directory.
+  const response = await api.get<EnvironmentSource[]>('/navigation/environment/sources', {
+    signal,
+    timeout: 120_000,
+  })
   return response.data
 }
 

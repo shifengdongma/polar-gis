@@ -12,8 +12,9 @@ const routesStore = useRoutesStore()
 const planTitle = ref('')
 const startLon = ref(120)
 const startLat = ref(75)
-const goalLon = ref(130)
-const goalLat = ref(78)
+// Demo-friendly default inside the NEP grid and the bundled synthetic extent.
+const goalLon = ref(122)
+const goalLat = ref(77)
 const departure = ref(new Date().toISOString().slice(0, 19))
 const dataPolicy = ref<DataPolicy>('real_only')
 const populationSize = ref(36)
@@ -179,13 +180,6 @@ async function submit() {
 
 <template>
   <section class="navigation-task-panel">
-    <el-alert
-      title="智能规划为辅助决策原型，不构成认证 ECDIS 或自动驾驶指令；候选航线必须人工审核。"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
-
     <div class="navigation-form-section">
       <div class="navigation-form-title">任务名称</div>
       <el-input v-model="planTitle" size="small" maxlength="120" placeholder="可选；默认“智能规划”" />
@@ -208,6 +202,9 @@ async function submit() {
         <span v-if="pickedGoal">终点已选：{{ pickedGoal.longitude.toFixed(4) }}, {{ pickedGoal.latitude.toFixed(4) }}</span>
         <el-button size="small" text :disabled="!activeRoute" @click="useCurrentRouteEndpoints">取当前手绘航路端点</el-button>
       </div>
+      <small class="navigation-form-note">
+        规划网格为东北航道（60°–90°N、30°E–191°E）；起终点需落在网格内的可航水域。
+      </small>
     </div>
 
     <div class="navigation-form-section">
@@ -237,20 +234,18 @@ async function submit() {
         <el-radio value="real_only">真实数据 only（默认）</el-radio>
         <el-radio value="allow_synthetic_research">合成研究数据</el-radio>
       </el-radio-group>
-      <el-alert
-        v-if="dataPolicy === 'allow_synthetic_research'"
-        title="含合成环境数据，不可作为真实航行决策依据"
-        type="warning"
-        :closable="false"
-        show-icon
-      />
+      <small class="navigation-form-note">
+        无真实环境文件时请选择“合成研究数据”；真实文件就绪时使用 real_only。
+      </small>
     </div>
 
     <div v-if="dataPolicy === 'allow_synthetic_research'" class="navigation-form-section">
-      <div class="navigation-form-title">合成环境参数（仅研究验证）</div>
+      <div class="navigation-form-title">合成环境参数</div>
       <small class="navigation-form-note">
         算法需要：水深、冰密集度/冰厚、风速/风向、流速/流向、浪高/周期/浪向。空值表示不覆盖，
         由 Provider 或确定性 gap-fill 自动处理；填写后应用到全规划区，并标记为 synthetic。
+        水深覆盖值必须不小于船舶所需水深；冰密集度/冰厚过大将导致整片区域不可通行，
+        建议优先清空覆盖，让 gap-fill 自动处理。
       </small>
       <div class="navigation-override-actions">
         <el-button size="small" plain @click="loadSyntheticDefaults">从起点读取当前环境值</el-button>

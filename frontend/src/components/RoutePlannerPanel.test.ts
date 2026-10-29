@@ -95,7 +95,7 @@ describe('RoutePlannerPanel 航段与单位说明', () => {
     expect(source).toContain('WGS84')
     expect(source).toContain('经度, 纬度')
     expect(source).toContain('1 NM = 1852 m')
-    expect(source).toContain('不作为实际导航依据')
+    expect(source).not.toContain('不作为实际导航依据')
   })
 
   it('点表可定位航路点,且定位路径只调用 locateRoutePoint(不改数据、不入编辑态、不触发测量)', () => {

@@ -7,6 +7,7 @@ values for environment/risk/planning and never modifies that service.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from app.navigation.environment.models import ProviderSample
 from app.navigation.environment.providers.base import BaseEnvironmentProvider
 from app.navigation.environment.time_manager import select_time
 from app.navigation.netcdf import open_netcdf
-from app.services.ice import IceService
+from app.services.ice import IceService, shared_ice_service
 
 
 class IceProvider(BaseEnvironmentProvider):
@@ -43,8 +44,15 @@ class IceProvider(BaseEnvironmentProvider):
         self._backend = self._choose_backend(backend)
         self._ice_service: IceService | None = None
         self._nextsim: _NextsimBackend | None = None
+        # A Transformer is expensive to build; grid sampling must reuse it.
+        self._to_polar = Transformer.from_crs("EPSG:4326", "EPSG:3413", always_xy=True)
+        # IceService.info() scans NetCDF metadata for every date.  Sampling
+        # thousands of planning cells must not repeat that scan per point.
+        self._info_cache: tuple[float, dict] | None = None
         if self._backend == "polar_gis":
-            self._ice_service = IceService(
+            # Share the exact instance used by /api/v1/ice: one metadata scan,
+            # one warm-up thread and one 26M-cell grid cache per process.
+            self._ice_service = shared_ice_service(
                 self.polar_gis_ice_root,
                 tile_cache_entries=tile_cache_entries,
                 max_zoom=max_zoom,
@@ -65,7 +73,7 @@ class IceProvider(BaseEnvironmentProvider):
 
     def available(self) -> bool:
         if self._backend == "polar_gis":
-            info = self._service().info()
+            info = self._polar_info()
             return bool(info.get("dates")) and any(
                 field.get("id") == "concentration" for field in info.get("fields", [])
             )
@@ -98,6 +106,20 @@ class IceProvider(BaseEnvironmentProvider):
             return self._nextsim.sample(longitude, latitude, requested_time, max_lag_hours, allow_future)
         return _unavailable(requested_time, "ice_data_missing")
 
+    def _polar_info(self) -> dict:
+        """Cache the directory metadata scan for a short period.
+
+        During one planning run the same provider samples ~15k points; calling
+        ``IceService.info()`` (which re-scans every date) once per point made
+        the ice field the slowest part of grid construction.
+        """
+        now = time.monotonic()
+        if self._info_cache is not None and now - self._info_cache[0] < 60.0:
+            return self._info_cache[1]
+        info = self._service().info()
+        self._info_cache = (now, info)
+        return info
+
     def _sample_polar_gis(
         self,
         longitude: float,
@@ -107,7 +129,7 @@ class IceProvider(BaseEnvironmentProvider):
         allow_future: bool,
     ) -> ProviderSample:
         service = self._service()
-        info = service.info()
+        info = self._polar_info()
         dates = [_parse_day(day) for day in info.get("dates", [])]
         selection = select_time(
             dates,
@@ -118,8 +140,7 @@ class IceProvider(BaseEnvironmentProvider):
         if not selection.available or selection.index is None:
             return _unavailable(requested_time, selection.reason or "ice_time_unavailable", selection.match_info())
         day = info["dates"][selection.index]
-        transformed = Transformer.from_crs("EPSG:4326", "EPSG:3413", always_xy=True)
-        x, y = transformed.transform(longitude, latitude)
+        x, y = self._to_polar.transform(longitude, latitude)
         concentration = service.value_at(day, x, y, "EPSG:3413", "concentration")
         thickness = service.value_at(day, x, y, "EPSG:3413", "thickness")
         values: dict[str, float | bool | None] = {}
@@ -159,6 +180,7 @@ class IceProvider(BaseEnvironmentProvider):
         return self._ice_service
 
     def close(self) -> None:
+        self._info_cache = None
         if self._nextsim is not None:
             self._nextsim.close()
 

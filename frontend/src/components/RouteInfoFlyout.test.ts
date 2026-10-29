@@ -40,10 +40,10 @@ describe('RouteInfoFlyout 展示内容', () => {
     expect(source).toContain('activeSegment.to.seq')
   })
 
-  it('声明距离含义与非可航提示,不把球面分段和说成实际可航里程', () => {
+  it('声明距离含义,且不再显示模拟/安全提示', () => {
     expect(source).toContain('大圆')
-    expect(source).toContain('不作为实际导航依据')
-    expect(source).toContain('仅供展示与交互验证')
+    expect(source).not.toContain('不作为实际导航依据')
+    expect(source).not.toContain('仅供展示与交互验证')
   })
 
   it('提供关闭 / 定位整条航路 / 定位所选航点操作', () => {

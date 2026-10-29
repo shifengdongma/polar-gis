@@ -4,7 +4,10 @@ import type { IceInfo, IceValue } from '../types'
 
 /** 扫描后端数据目录:实际日期、字段并集与各字段可用日期、源网格范围。 */
 export async function fetchIceInfo(signal?: AbortSignal): Promise<IceInfo> {
-  const response = await api.get<IceInfo>('/ice/info', { signal })
+  // Scanning every date opens each NetCDF file once on a cold start.  Keep the
+  // request alive long enough for that first index to complete; later calls
+  // are served from the backend metadata cache.
+  const response = await api.get<IceInfo>('/ice/info', { signal, timeout: 120_000 })
   return response.data
 }
 

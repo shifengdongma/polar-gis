@@ -67,8 +67,9 @@ describe('冰情瓦片网格', () => {
   it('3857 使用标准 Web 墨卡托 extent', () => {
     const grid = createIceTileGrid('EPSG:3857')
     const half = Math.PI * 6378137
-    expect(grid.getExtent()[0]).toBeCloseTo(-half, 3)
-    expect(grid.getExtent()[3]).toBeCloseTo(half, 3)
+    const extent = grid.getExtent() ?? []
+    expect(extent[0]).toBeCloseTo(-half, 3)
+    expect(extent[3]).toBeCloseTo(half, 3)
   })
 })
 

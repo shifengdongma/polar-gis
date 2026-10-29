@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import type { EnvironmentOverlaysApi } from '../composables/useEnvironmentOverlays'
 import type { EnvironmentField } from '../types/navigation'
 import EnvironmentTimeControl from './EnvironmentTimeControl.vue'
@@ -19,10 +18,6 @@ const qualityLabels: Record<string, string> = {
   missing: '缺失',
   unknown: '未知',
 }
-
-const hasSynthetic = computed(() =>
-  fields.some((field) => props.env.layers[field.id].quality === 'synthetic'),
-)
 
 function qualityLabel(field: EnvironmentField) {
   const quality = props.env.layers[field].quality
@@ -54,7 +49,6 @@ function onOpacityChange(field: EnvironmentField, value: number | number[]) {
         <span class="eyebrow">ENVIRONMENT</span>
         <h3>环境图层</h3>
       </div>
-      <el-tag v-if="hasSynthetic" size="small" type="warning">含合成数据</el-tag>
     </div>
 
     <EnvironmentTimeControl
@@ -70,9 +64,9 @@ function onOpacityChange(field: EnvironmentField, value: number | number[]) {
         size="small"
         @change="onPolicyChange"
       />
-      <small>合成数据仅用于研究验证，不可作为真实航行依据</small>
     </div>
 
+    <div v-if="env.sourcesLoading.value" class="environment-panel-loading">正在读取环境数据源…</div>
     <el-alert
       v-if="env.sourcesError.value"
       :title="env.sourcesError.value"

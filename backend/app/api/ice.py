@@ -21,7 +21,7 @@ from fastapi import APIRouter, Path, Query, Response
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.schemas import IceInfoRead, IceValueRead
-from app.services.ice import IceService
+from app.services.ice import IceService, shared_ice_service
 
 router = APIRouter(prefix="/ice", tags=["ice"])
 settings = get_settings()
@@ -36,7 +36,7 @@ def get_ice_service() -> IceService:
     if _service is None:
         with _service_lock:
             if _service is None:
-                _service = IceService(
+                _service = shared_ice_service(
                     settings.ice_data_root,
                     tile_cache_entries=settings.ice_tile_cache_entries,
                     max_zoom=settings.ice_tile_max_zoom,

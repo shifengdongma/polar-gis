@@ -16,7 +16,7 @@ describe('EnvironmentLayerPanel', () => {
     expect(source).toContain('EnvironmentTimeControl')
     expect(timeSource).toContain('环境时间（UTC）')
     expect(timeSource).toContain('刷新')
-    expect(source).toContain('含合成数据')
+    expect(source).not.toContain('含合成数据')
     expect(source).toContain('研究数据')
     expect(source).toContain('水深（GEBCO）')
     expect(source).toContain('风场（CARRA2）')

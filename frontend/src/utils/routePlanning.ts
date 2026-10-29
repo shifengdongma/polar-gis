@@ -74,7 +74,15 @@ export const planningErrorLabels: Record<string, string> = {
 
 export function planningErrorMessage(run: PlanningRun | null): string {
   if (!run) return ''
-  if (run.errorCode) return planningErrorLabels[run.errorCode] ?? run.errorMessage ?? run.errorCode
+  if (run.errorCode) {
+    const label = planningErrorLabels[run.errorCode] ?? run.errorCode
+    // Keep the backend's actionable detail (timeout seconds, missing fields,
+    // blocked reason) instead of replacing it with a generic label.
+    if (!run.errorMessage || run.errorMessage === label) return label
+    return run.errorMessage.includes(label)
+      ? run.errorMessage
+      : `${label}：${run.errorMessage}`
+  }
   return run.errorMessage ?? ''
 }
 

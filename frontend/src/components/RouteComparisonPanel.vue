@@ -126,13 +126,6 @@ onBeforeUnmount(() => {
       <el-tag size="small" type="info">{{ routes.length }} 条候选</el-tag>
     </div>
 
-    <el-alert
-      v-if="navigation.isSynthetic"
-      title="含合成环境数据：仅用于研究验证，不可作为真实航行依据"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
 
     <el-table
       v-if="routes.length"

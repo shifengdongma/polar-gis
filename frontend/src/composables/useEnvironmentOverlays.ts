@@ -89,6 +89,8 @@ function defaultRequestedTime(): string {
 export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
   const sources = ref<EnvironmentSource[]>([])
   const sourcesLoading = ref(false)
+  /** True once the first sources request has settled (success or failure). */
+  const sourcesLoaded = ref(false)
   const sourcesError = ref('')
   const requestedTime = ref(defaultRequestedTime())
   const displayPolicy = ref<DataPolicy>('allow_synthetic_research')
@@ -230,10 +232,18 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
       }),
     }
     map.addLayer(bathyLayer)
-    for (const field of VECTOR_FIELDS) map.addLayer(vectorLayers[field])
+    for (const field of VECTOR_FIELDS) {
+      const layer = vectorLayers[field]
+      // The user may toggle a layer from the overlay menu before the map has
+      // finished building.  Re-apply the already-selected state here;
+      // otherwise the layer stays invisible until the project is re-entered.
+      layer.setVisible(layers[field].visible)
+      layer.setOpacity(layers[field].opacity)
+      map.addLayer(layer)
+    }
     attached = true
-    refreshBathy()
-    void loadSources()
+    refreshAll()
+    if (!sourcesLoaded.value && !sourcesLoading.value) void loadSources()
   }
 
   function dispose() {
@@ -260,6 +270,7 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
   }
 
   async function loadSources() {
+    if (sourcesLoading.value) return
     sourcesLoading.value = true
     sourcesError.value = ''
     try {
@@ -269,13 +280,17 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
         layers[source.field].source = source.source
         layers[source.field].available = source.available
         layers[source.field].reason = source.reason
-        if (!source.available) layers[source.field].error = source.reason ?? '数据不可用'
+        layers[source.field].error = source.available
+          ? ''
+          : source.reason ?? '数据不可用'
       }
     } catch (error) {
-      sources.value = []
+      // Keep any previously loaded metadata; a transient failure must not
+      // make an already-populated panel look like it has no data.
       sourcesError.value = apiErrorMessage(error, '环境数据源加载失败')
     } finally {
       sourcesLoading.value = false
+      sourcesLoaded.value = true
     }
   }
 
@@ -510,6 +525,7 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
   return {
     sources,
     sourcesLoading,
+    sourcesLoaded,
     sourcesError,
     requestedTime,
     displayPolicy,
