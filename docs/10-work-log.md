@@ -1669,3 +1669,42 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 未修改 `IceService`/`IceTimeline`/手绘航路/S-57 调度；海冰时间轴仍是冰情唯一底部时间控件。
 - 无真实 GEBCO/neXtSIM/CARRA2/TOPAZ5/WAM 数据，E2E 只能用 `navigation_manifest.json` 标记的合成数据。
 - 风险栅格、规划图层、采纳/编辑/重评留到 C/D 批次。
+
+---
+
+## 会话 #28 — 批次 C：风险、规划算法、异步任务与持久化（2026-10-29）
+
+### 完成内容
+
+- 风险：`risk/evaluator.py` 精确移植 V3 `legacy_v1`（权重/冰/深度/风/浪/雾公式），新增
+  `real_v1`（缺测≠0；雾 null；冰/深度缺失→UNKNOWN/阻断；权重按可用分量归一）；
+  `weights_v1.json` 作为版本化参数源。
+- 规划：静态 NPZ 网格 loader（无 rasterio）、环境适配器（real_only/allow_synthetic_research）、
+  统一 `EdgeTransitResult`（船舶参数注入：max speed/power/UKC/冰能力）、D* Lite（三目标种子）、
+  自研 NSGA-III（Risk/Energy/Time，Distance 仅统计）、PlannerService（plan/risk_only/evaluate_route）。
+- 持久化：`planning_runs`/`planning_routes` 模型 + Alembic `0005_navigation_planning`；
+  风险栅格 gzip 文件原子写；0004 迁移增幂等保护以支持 fresh DB。
+- Worker：`run_once(session_factory)`、`claim_planning_run`、10 分钟心跳超时、短事务心跳/
+  取消新会话读取/worker_id fencing；规划异常只标 failed，不杀唯一 worker。
+- API：`/navigation/plans` 创建/列表/详情/候选/取消/风险格/单格/重评；
+  `/navigation/risk/evaluate` 区域风险（risk_only）；错误码细分。
+
+### 测试
+
+- 后端全套 **277 passed**（新增 31：风险 9、网格/适配 4、D*/NSGA/能耗 6、规划服务 3、
+  Worker 3、规划 API 6）。
+- Alembic：全新 SQLite `upgrade head` 通过；模拟“0004 后无 planning 表”再升级 0005 通过。
+- `ruff` 新增代码通过；既有 29 个历史 lint 未动。
+
+### 决策
+
+- `real_only` 是规划默认；`allow_synthetic_research` 必须显式选择，合成逐格标 quality，UI D 批次提示。
+- `NO_FEASIBLE_ROUTE` 仍写风险栅格，状态 failed 但风险分析可用。
+- `evaluate_route` 只读 run 风险快照（不重新请求 Provider），≤5km 加密并逐格检查；跨陆地/浅水/
+  缺测格返回 blockedCellId/reason。
+- v1 Worker 串行、规划优先级低于导入；文档说明后续可拆独立 planner worker。
+
+### 下一批依赖
+
+- D 批次需要：planning API 客户端、候选航线/风险栅格图层、规划面板/对比/采纳/编辑/stale、
+  唯一 pointermove/singleclick 扩展、localStorage v1→v2 兼容。C 已提供全部后端契约。

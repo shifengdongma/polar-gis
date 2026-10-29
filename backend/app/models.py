@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -358,3 +359,83 @@ class AuditLog(Base):
     request_id: Mapped[str | None] = mapped_column(String(80), index=True)
     changes: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class PlanningRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class PlanningMode(StrEnum):
+    PLAN = "plan"
+    RISK_ONLY = "risk_only"
+
+
+class PlanningRun(Base):
+    __tablename__ = "planning_runs"
+    __table_args__ = (
+        Index("ix_planning_runs_status_queued_at", "status", "queued_at"),
+        Index("ix_planning_runs_project_created_at", "project_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    vessel_id: Mapped[str] = mapped_column(String(80))
+    mode: Mapped[str] = mapped_column(String(16), default=PlanningMode.PLAN.value)
+    status: Mapped[str] = mapped_column(String(32), default=PlanningRunStatus.QUEUED.value, index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="queued")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    request_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    environment_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    algorithm_version: Mapped[str] = mapped_column(String(64), default="")
+    data_policy: Mapped[str] = mapped_column(String(32), default="real_only")
+    risk_model_version: Mapped[str] = mapped_column(String(32), default="real_v1")
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    result_summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    risk_grid_path: Mapped[str | None] = mapped_column(String(500))
+    worker_id: Mapped[str | None] = mapped_column(String(120))
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    routes: Mapped[list["PlanningRoute"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class PlanningRoute(Base):
+    __tablename__ = "planning_routes"
+    __table_args__ = (UniqueConstraint("run_id", "route_index", name="uq_planning_route_index"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("planning_runs.id", ondelete="CASCADE"), index=True
+    )
+    route_index: Mapped[int] = mapped_column(Integer)
+    route_id: Mapped[str] = mapped_column(String(64), index=True)
+    is_recommended: Mapped[bool] = mapped_column(Boolean, default=False)
+    label: Mapped[str] = mapped_column(String(80), default="")
+    coordinates_json: Mapped[list] = mapped_column(JSON, default=list)
+    risk_score: Mapped[float] = mapped_column(Float, default=0)
+    ice_risk: Mapped[float | None] = mapped_column(Float)
+    depth_risk: Mapped[float | None] = mapped_column(Float)
+    fog_risk: Mapped[float | None] = mapped_column(Float)
+    wind_risk: Mapped[float | None] = mapped_column(Float)
+    wave_risk: Mapped[float | None] = mapped_column(Float)
+    energy_mwh: Mapped[float] = mapped_column(Float, default=0)
+    time_hours: Mapped[float] = mapped_column(Float, default=0)
+    distance_km: Mapped[float] = mapped_column(Float, default=0)
+    quality: Mapped[str] = mapped_column(String(16), default="unknown")
+    algorithm_version: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    run: Mapped[PlanningRun] = relationship(back_populates="routes")

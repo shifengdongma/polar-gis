@@ -948,3 +948,32 @@ backend/app/navigation/
 - 本机无真实环境数据；Provider 只读配置数据根，缺文件显式 unavailable；E2E 只能用 manifest 标记的合成数据。
 - 环境图层默认允许显示合成研究数据（带“含合成数据”标签）；规划阶段默认 `real_only`，两者策略相互独立。
 - 风险栅格/规划图层/采纳编辑在 C/D 批次。
+
+### 8.6 批次 C：风险、规划算法、异步任务与持久化
+
+**风险（`backend/app/navigation/risk/`）**
+- `evaluator.py`：`legacy_v1` 精确复现 V3 公式（冰 load/1.35 阻断、深度 draft+UKC、风 11.7/5.0、浪 5.0/1.2、雾先验、原权重 0.4/0.2/0.2/0.1/0.1）；`real_v1` 禁止合成，雾 null，冰/深度缺测→combined null + traversable null，风/浪缺失按可用权重归一；输出分项/综合/quality/sources/blockedReason/modelVersion。
+- `weights_v1.json` 是权重/公式版本源；`real_v1` 不把缺测当 0 风险。
+
+**规划核心（`backend/app/navigation/planner/`）**
+- `static_grid.py`：只读 V3 NPZ（110×240，15,731 格，8,738 可通行）；校验 version=3；不依赖 rasterio；网格是 EPSG:3413 25km 业务网格，不是瓦片/像素/zoom。
+- `environment_adapter.py`：按 policy 构建逐格环境；`real_only` 缺字段→obstacle/unknown，全区域缺字段→`ENVIRONMENT_DATA_MISSING`；`allow_synthetic_research` 才用 V3 确定性 gap-fill，并逐格标 `synthetic`+`gap-fill-v1`。
+- `grid.py` + `energy_model.py`：唯一 `EdgeTransitResult`；船舶参数注入（max speed/power/UKC/冰能力）；静水/冰/风/浪功率、流沿航向 SOG、MWh/hours/kn；两艘不同功率/航速船产生不同 speed/energy。
+- `dstar.py`：一次性 D* Lite（g/rhs/key），三种目标种子路径；协作式 `should_stop`/deadline。
+- `dnsga3.py`：三目标 Risk/Energy/Time，Distance 仅统计；D* 三种子填初始种群，非支配/去重/代表解（最低风险推荐）；默认 pop36/gen20/seed42。
+- `service.py`：快照→网格→风险→D*/NSGA→候选航线→风险栅格；`NO_FEASIBLE_ROUTE` 时仍返回风险栅格；`risk_only` 只生成风险栅格；`evaluate_route` 读取持久化风险栅格，按 ≤5km 加密并逐格检查可通行，跨陆地/浅水/缺测拒绝。
+
+**持久化 / worker**
+- `planning_runs` + `planning_routes`（Alembic `0005_navigation_planning`）；路线坐标 JSON、风险栅格 gzip 文件（临时文件+原子 rename），避免大数组入 DB JSON。
+- `worker/main.py`：`run_once(session_factory)` 可注入测试库；batch→import→planning；`claim_planning_run` 用 `SKIP LOCKED`，10 分钟心跳超时→failed；规划异常只标 failed，不杀唯一 worker；短事务心跳、取消 flag 新会话读取、worker_id 租约 fencing。
+- `PlanningRunProcessor`：queued/running/completed/failed/cancelled；超时/取消/环境缺失/无路线/算法失败分别映射错误码；风险栅格先写后置 completed。
+
+**API**
+- `POST /api/v1/navigation/plans`（202；project/vessel/UTC/三目标/网格校验；返回 planId + 请求坐标）；`GET /plans`、`GET /plans/{id}`、`GET .../routes`、`GET .../routes/{routeId}`。
+- `GET .../risk-grid?field=&bbox=&stride=`（GeoJSON，property 只含 cellId/value/traversable/quality/riskModelVersion；服务端自动 stride 限流）；`GET .../risk-grid/{cellId}` 完整格详情。
+- `POST .../cancel`（queued 立即 cancelled，running 置 flag；requester/admin）。
+- `POST .../evaluate-route`（≤1000 点；读取 run 风险栅格；≤5km 加密；返回 metrics/quality/traversable/reason/blockedCellId）。
+- `POST /api/v1/navigation/risk/evaluate`：`mode=risk_only` 区域风险任务，无航线。
+- 鉴权沿用 JWT + published project；取消 requester/admin；错误码 `ENVIRONMENT_DATA_MISSING/NO_FEASIBLE_ROUTE/PLANNER_TIMEOUT/PLANNER_CANCELLED/PLANNER_FAILED/PLANNER_LIMIT_EXCEEDED/PLANNER_RESULT_NOT_READY/PLANNING_GRID_MISSING/...`。
+
+**测试**：新增 31 个（风险 9、网格/适配 4、D*/NSGA/能耗 6、规划服务 3、Worker 3、规划 API 6），全套 **277 passed**；迁移在全新 SQLite 与“0004 后无 planning 表”两种场景升级通过；同时修正 0004 幂等性以支持 fresh DB。`ruff` 新增代码通过。

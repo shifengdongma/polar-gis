@@ -16,6 +16,8 @@ from app.api import (
     ice,
     layers,
     navigation_environment,
+    navigation_plans,
+    navigation_risk,
     navigation_vessels,
     projects,
     s57_basemaps,
@@ -112,6 +114,8 @@ app.include_router(demo.router, prefix=api)
 app.include_router(ice.router, prefix=api)
 app.include_router(navigation_environment.router, prefix=api)
 app.include_router(navigation_vessels.router, prefix=api)
+app.include_router(navigation_plans.router, prefix=api)
+app.include_router(navigation_risk.router, prefix=api)
 app.include_router(s57_basemaps.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)

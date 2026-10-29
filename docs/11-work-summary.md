@@ -1222,3 +1222,34 @@ docker compose up -d         # 启动服务
 - 环境显示与研究数据开关允许合成研究数据；规划（C 批次）默认 real_only。
 - 风险栅格/规划候选航线/采纳编辑尚未实现（C/D 批次）。
 - 现有 `.gitignore` 的 `data/*` 需在部署批次加 `data/navigation` 白名单；本批次未改部署挂载。
+
+---
+
+## 会话 #28 — 批次 C：风险、规划算法、异步任务与持久化（2026-10-29）
+
+### 做了什么
+
+- 风险分项评价器：`legacy_v1` 复现 V3 权重/公式；`real_v1` 禁止合成、雾 null、冰/深度缺失为
+  UNKNOWN（非 0）、风/浪按可用权重归一；输出 ice/depth/fog/wind/wave/combined/quality/sources。
+- 规划：25km 静态网格 loader、逐格环境适配、统一 EdgeTransitResult（船舶 max speed/power 注入）、
+  D* Lite 三种子、自研 NSGA-III 三目标、PlannerService（候选/推荐/风险格/区域风险/重评）。
+- 持久化：`planning_runs`+`planning_routes`；风险栅格 gzip 原子文件；Alembic 0005；
+  0004 幂等修复支持 fresh DB。
+- Worker：可注入 session 的 `run_once`、规划任务认领/心跳/取消/租约；异常不杀 worker。
+- API：规划任务、候选航线、风险格/单格、取消、区域风险、采纳后评估；错误码区分环境缺失/
+  无路线/超时/取消/算法失败/结果未就绪/网格缺失。
+
+### 效果
+
+- 后端已能在合成 fixture 上真实执行 D* Lite + NSGA-III，返回 Pareto 候选与风险栅格；
+  `real_only` 数据不足时明确失败而非伪造。
+- 风险/能耗/航时全部来自同一 EdgeTransitResult；Distance 仅统计；船舶选择影响速度/能耗。
+- 规划异步执行，不占用地图 API；取消/超时/worker 异常有明确状态。
+- 测试：后端 277 passed；SQLite 迁移升级通过。
+
+### 已知限制
+
+- 尚无前端规划工作台（D 批次）；候选航线/风险格还不能在地图上显示。
+- 本机无真实环境数据；C 的端到端计算使用合成 fixture，真实环境规划未验证。
+- Worker v1 串行，规划会延迟导入任务；后续可拆独立 planner worker。
+- evaluate-route 以 ≤5km 加密采样，路线点数上限 1000；超限需新建规划。
