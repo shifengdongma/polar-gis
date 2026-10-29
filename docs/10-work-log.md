@@ -1577,3 +1577,54 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 4. standard 模式 = 完全向后兼容，一键回退
 5. LRU 保护清单：底图/WMTS/AIS/气象/测量/选择高亮/编辑图层/属性查询图层 永不驱逐
 6. 新增 API 字段全部可选，旧客户端不受影响
+
+---
+
+## 会话 #28 — PolarOptionNav-System-V3 导航集成 / 批次 A：审计、契约、基线（2026-10-29）
+
+### 目标
+
+在不替换 Polar-GIS 现有 S-57、海冰、手绘航路、认证与五服务部署的前提下，为环境感知、
+船舶性能、风险评价与多目标规划建立独立业务域；先完成仓库审计、契约、配置与测试基线。
+
+### 实际基线
+
+- Polar-GIS `master` HEAD：`728020b2bccbfed148bdeefe50fae43fcd564f08`；V3 `main` HEAD：`237767b122ba52ff612411d15984b23a2d2a6495`（嵌套仓库，工作区 clean）。
+- 后端：`pytest tests/ -q` → **214 passed, 0 failed**（72+72+70），仅有 Starlette/httpx 与 NumPy 2.5 deprecation warnings。
+- 前端：`npm test` → **20 files / 353 tests passed**（Vitest 3.2.7/jsdom，38.6s）。
+- `ruff check app tests` → **29 errors（24 fixable）**，均为既有文件问题；本任务新增代码单独检查通过。
+
+### 完成内容
+
+1. 审计报告 `docs/plans/v3-integration-audit.md`：两项目技术栈、六类功能分类、重叠清单、
+   V3 可复用/需重构/不迁移文件、环境/地图/航路冲突、缺失数据、差距矩阵、文档与代码不一致。
+2. `.gitignore` 加入 `PolarOptionNav-System-V3/`（嵌套参考仓库不得提交）与导航测试临时目录。
+3. 新建 `backend/app/navigation/`：
+   - `contracts/{coordinates,directions,time,units,quality,evidence,status}.py`，含
+     `TimeMatchInfo`、`DataQuality`、`combine_quality`、`within_max_lag` 等扩展；
+   - `resources/vessels/xuelong2.json`（V3 原样复制，1,996B）；
+   - `resources/grids/northeast_passage_25km_static.npz`（488,119B）；
+   - `resources/risk/weights_v1.json`（从 V3 `environment_model.py:26-90` 常量生成，记录
+     legacy_v1 权重/公式与 real_v1 缺测策略）。
+4. `backend/app/core/config.py` 新增 `NAVIGATION_*`/`PLANNER_*` 设置与
+   `resolved_navigation_ice_data_root`/`resolved_navigation_manifest_path`。
+5. `backend/tests/conftest.py` 注入临时 `NAVIGATION_DATA_ROOT`/`NAVIGATION_ICE_DATA_ROOT`/
+   `PLANNER_RESULT_ROOT`，避免测试读取开发机数据或写仓库。
+6. 新增 `backend/tests/test_navigation_contracts.py`（10 tests）：单位、方位、FROM/TO、
+   UTC/naive 拒绝、TimeMatch 三值、max-lag、质量合并、FeasibilityStatus 禁止布尔化、WGS84 边界。
+
+### 决策
+
+- 依赖不新增：现有 netCDF4/numpy/Pillow/pyproj 足够；V3 `core/providers/*` 的 netCDF4 readers
+  优先复用，xarray/rasterio 仅在读取不可拆分时评估。
+- 风险模型保留 `legacy_v1` 原权重/公式用于 `allow_synthetic_research`；新增 `real_v1`
+  禁止合成、雾缺失为 null、冰/深度缺失为 UNKNOWN，规划要求五类环境字段齐全。
+- 合成数据必须经 manifest 标记 `quality=synthetic`，`real_only` 拒绝；避免把测试文件伪装成 real。
+- 本批次不新增 API/迁移/前端可见功能；后续 B-E 按计划推进。
+
+### 下一批依赖
+
+- Batch B 需要：Provider 接口（含 `sample_many`/manifest/time match）、IceService 适配、
+  水深瓦片、船舶模型/UKC、前端环境图层骨架。
+- 需要保留的约束：单一 OpenLayers Map、唯一 singleclick/pointermove、手绘航路 localStorage v1
+  key 不变、S-57 瓦片队列/缓存不被打断。

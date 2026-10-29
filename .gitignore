@@ -10,7 +10,11 @@ backend/.env
 backend/storage/
 backend/.pytest-storage/
 backend/.pytest-ice-data/
+backend/.pytest-navigation-data/
+backend/.pytest-planner-results/
 .pytest-ice-data/
+.pytest-navigation-data/
+.pytest-planner-results/
 
 # Node
 node_modules/
@@ -44,6 +48,9 @@ AGENTS.md
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Reference project (nested git repo, integration source only; never commit)
+PolarOptionNav-System-V3/
 
 # Deployment secrets
 deploy/.env

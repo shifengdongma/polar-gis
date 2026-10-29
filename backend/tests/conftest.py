@@ -21,6 +21,12 @@ os.environ["GWC_3413_BACKFILL"] = "0"
 # 各用例通过 monkeypatch 替换 ice_api.get_ice_service 注入 tmp_path 服务。
 os.environ["ICE_DATA_ROOT"] = str(Path(".pytest-ice-data").resolve())
 os.environ["ICE_TILE_MAX_ZOOM"] = "10"
+# 导航模块:测试不得读取开发机真实环境数据,也不得把规划结果写进仓库。
+os.environ["NAVIGATION_ENABLED"] = "1"
+os.environ["NAVIGATION_DATA_ROOT"] = str(Path(".pytest-navigation-data").resolve())
+os.environ["NAVIGATION_ICE_DATA_ROOT"] = str(Path(".pytest-ice-data").resolve())
+os.environ["NAVIGATION_ICE_BACKEND"] = "auto"
+os.environ["PLANNER_RESULT_ROOT"] = str(Path(".pytest-planner-results").resolve())
 
 from app.core.database import Base, get_db
 from app.core.security import hash_password

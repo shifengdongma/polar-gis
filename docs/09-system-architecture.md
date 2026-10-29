@@ -855,3 +855,61 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
 | `docs/11-work-summary.md` | 工作总结 |
 | `docs/12-user-manual.md` | **用户操作使用手册** ⭐ |
 | `docs/plans/` | 优化方案文档 (global enc 导入 / 批量加载性能优化) |
+
+---
+
+## 8. 导航集成（PolarOptionNav-System-V3）— 批次 A 基座
+
+> 2026-10-29 起实施。详细审计见 `docs/plans/v3-integration-audit.md`，实施计划见
+> `C:\Users\liyang\.claude\plans\docs-15-polar-gis-polaroptionnav-system-joyful-toast.md`（计划文件不入库）。
+
+### 8.1 代码组织
+
+导航业务不再使用 V3 的根级 `core/`、`services/` 包，而是作为 Polar-GIS 内部业务域：
+
+```
+backend/app/navigation/
+├── __init__.py                 # NAVIGATION_CONTRACT_VERSION = "1.0"
+├── contracts/                  # 坐标/方向/时间/单位/质量/证据/可行性
+│   ├── coordinates.py          # WGS84 / 本地 ENU / bearing / math yaw
+│   ├── directions.py           # Wind/Wave FROM, Current TO, (u,v) 转换
+│   ├── time.py                 # UTC、TimeMetadata、TimeMatchInfo、max-lag
+│   ├── units.py                # nm/m、kn/m/s、deg/rad
+│   ├── quality.py              # AvailabilityStatus + DataQuality(real/synthetic/missing/unknown)
+│   ├── evidence.py             # 参数来源证据
+│   └── status.py               # PASS/FAIL/UNKNOWN（禁止布尔化）
+├── resources/
+│   ├── vessels/xuelong2.json   # 雪龙2静态资料（来源见文件 sources）
+│   ├── grids/northeast_passage_25km_static.npz  # 25km NEP 静态网格（488KB）
+│   └── risk/weights_v1.json    # legacy_v1 权重/公式与 real_v1 缺测策略
+└── (environment/vessel/risk/planner 由后续批次加入)
+```
+
+### 8.2 配置
+
+`core/config.py` 新增（全部有默认值、可由环境变量覆盖、无 Windows 绝对路径）：
+
+- `NAVIGATION_ENABLED`、`NAVIGATION_DATA_ROOT`、`NAVIGATION_ICE_DATA_ROOT`（缺省复用 `ICE_DATA_ROOT`）、
+  `NAVIGATION_ICE_BACKEND`、`NAVIGATION_MANIFEST_PATH`、`NAVIGATION_DEFAULT_DATA_POLICY=real_only`、
+  `NAVIGATION_ALLOW_FUTURE_MATCH`、各环境源 `NAVIGATION_MAX_LAG_*_HOURS`、瓦片/批量上限。
+- `PLANNER_MAX_CELLS`、`PLANNER_MAX_CANDIDATES`、`PLANNER_MAX_GENERATIONS`、`PLANNER_POPULATION_SIZE`、
+  `PLANNER_TIMEOUT_SECONDS`、`PLANNER_MAX_CONCURRENT_JOBS`、`PLANNER_MAX_QUEUED_RUNS`、
+  `PLANNER_MAX_RETAINED_RUNS`、`PLANNER_RESULT_ROOT`、`PLANNER_RISK_GRID_MAX_CELLS`、`PLANNER_MAX_ROUTE_POINTS`。
+
+### 8.3 边界约束
+
+- 不新增第二个 FastAPI 应用、独立地图实例、认证系统或 V3 根级包。
+- 所有规划/环境/风险接口后续统一挂 `/api/v1/navigation/`；规划耗时任务进入 worker，不占用地图 API。
+- 业务坐标 WGS84 `[lon, lat]`；渲染时才转 EPSG:3413/3857。
+- 质量/时间语义：每字段 `real|synthetic|missing|unknown`；缺失不填 0；`combinedRisk=null` 而非 0。
+- 合成测试数据必须由 `navigation_manifest.json` 标记 `quality=synthetic`；`real_only` 拒绝。
+- 现有 S-57/GeoServer/GWC/海冰/手绘航路/认证/权限保持不变。
+
+### 8.4 批次 A 实际改动
+
+- `.gitignore` 排除嵌套参考仓库 `PolarOptionNav-System-V3/`，避免 `git add -A` 污染提交；
+  新增测试临时目录忽略项。
+- `backend/app/navigation/contracts/*` + 资源文件 + `core/config.py` 导航配置。
+- `backend/tests/conftest.py` 注入临时导航数据根/结果根；新增 `test_navigation_contracts.py`（10 测试）。
+- 基线：后端 214 passed；前端 20 files/353 tests passed；ruff 既有 29 errors（未新增）。
+- 本批次无 API、无数据库迁移、无前端可见变化。

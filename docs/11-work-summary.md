@@ -1164,3 +1164,30 @@ docker compose up -d         # 启动服务
 - 阶段五: SLD 比例尺规则 (s57_styles.py)、PostGIS GiST 索引 + ANALYZE、EPSG:3413 GWC GridSet、GeoServer JVM 调优
 - 阶段六: 性能测试场景 A-D 验收、回归测试、文档更新
 - 可选: 低缩放简化视图 (ST_SimplifyPreserveTopology)
+
+---
+
+## 会话 #28 — PolarOptionNav-System-V3 导航集成 / 批次 A（2026-10-29）
+
+### 做了什么
+
+- 完成 `docs/plans/v3-integration-audit.md`：明确 V3 六类功能状态（可运行/未接真实数据/
+  API 未接 UI/UI 占位/仅文档/缺失），列出可直接复用、必须重构、不可迁移文件与数据缺口。
+- 建立 `backend/app/navigation/` 业务域基座：坐标/方向/时间/单位/质量/证据/可行性契约；
+  雪龙2 静态资料、25km NEP 静态网格、风险权重版本文件。
+- 新增导航配置与测试临时数据根；`.gitignore` 隔离 V3 嵌套仓库。
+- 锁定测试基线：后端 214 passed、前端 353 passed。
+
+### 效果
+
+- 后续环境/船舶/风险/规划代码有唯一落点，不再出现 V3 根级 `core/`/`services/` 第二套体系。
+- `TimeMatchInfo`/`DataQuality`/`FeasibilityStatus` 为“缺测≠0、未知≠安全”提供类型级约束。
+- 合成数据与真实数据通过 manifest quality 区分，`real_only` 可拒绝合成文件。
+- 现有 S-57/海冰/手绘航路/认证行为零改动。
+
+### 已知限制
+
+- 本批次尚无实际环境 Provider、API、数据库迁移或前端图层；B-E 批次完成。
+- 本机无真实 GEBCO/neXtSIM/CARRA2/TOPAZ5/WAM 数据，最终 E2E 只能使用明确标注的合成数据。
+- Polar-GIS 无项目成员 ACL；规划权限沿用“已发布项目 + 认证”，取消限 requester/admin。
+- 既有 `ruff` 29 个历史错误未修复（与本任务无关），新增导航代码已单独通过 lint。

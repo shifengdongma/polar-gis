@@ -1,0 +1,44 @@
+{
+  "version": "legacy_v1",
+  "source": "PolarOptionNav-System-V3 services/planner_service/environment_model.py:26-90 (audited 2026-10-29)",
+  "note": "Prototype weights; not an authoritative maritime risk standard. legacy_v1 reproduces the reference model for synthetic research. real_v1 keeps the same component formulas but excludes unavailable components and renormalizes weights over available components; ice/depth missing makes combinedRisk null and traversable null.",
+  "weights": {
+    "ice": 0.4,
+    "depth": 0.2,
+    "fog": 0.2,
+    "wind": 0.1,
+    "wave": 0.1
+  },
+  "ice": {
+    "thickness_cap_floor_m": 0.1,
+    "multi_year_factor": 1.35,
+    "multi_year_threshold_m": 1.0,
+    "load_offset": 0.12,
+    "load_scale": 1.15,
+    "blocked_load": 1.35
+  },
+  "depth": {
+    "ukc_default_m": 2.0,
+    "warning_margin_m": 40.0
+  },
+  "wind": {
+    "threshold_ms": 11.7,
+    "margin_ms": 5.0,
+    "instant_offset_ms": 6.7
+  },
+  "wave": {
+    "threshold_m": 5.0,
+    "margin_m": 1.2,
+    "instant_offset_m": 3.8
+  },
+  "fog": {
+    "legacy_prior": "clip(0.18 + 0.18*sin(phase + 1.4), 0, 1)",
+    "phase": "radians(lat*2.7 + lon*0.83 + day_of_year*3.1)",
+    "real_v1": null
+  },
+  "real_v1": {
+    "missing_component_policy": "exclude from combined and renormalize weights",
+    "required_planning_fields": ["depth", "ice", "wind", "current", "wave"],
+    "unknown_policy": "ice/depth missing => combined null, traversable null; never 0"
+  }
+}
