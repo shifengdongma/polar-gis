@@ -1628,3 +1628,44 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
   水深瓦片、船舶模型/UKC、前端环境图层骨架。
 - 需要保留的约束：单一 OpenLayers Map、唯一 singleclick/pointermove、手绘航路 localStorage v1
   key 不变、S-57 瓦片队列/缓存不被打断。
+
+---
+
+## 会话 #28 — 批次 B：环境感知与船舶模型（2026-10-29）
+
+### 完成内容
+
+**后端**
+- `backend/app/navigation/environment/`：models（ProviderSample/FieldObservation/Source/Snapshot）、
+  manifest（synthetic 标记）、time_manager（latest_not_after/issue≤requested/max-lag/nearest）、
+  service（五字段故障隔离、查询/批量/矢量场/快照）。
+- `providers/`：GEBCO（深度/陆地/PNG 瓦片）、Ice（IceService 适配 + neXtSIM 后端，浓度/厚度分开）、
+  CARRA2（si10/wdir10 或 u10/v10）、TOPAZ5（原生 x/y + 地理 EN 旋转）、WAM（VHM0/VTPK/VMDR）。
+- API：`/api/v1/navigation/environment/{sources,times,query,batch-query,field,tiles}`（JSON 鉴权，
+  瓦片公开）；`/api/v1/navigation/vessels`（静态资料 + depth-safety）。
+- 雪龙2：draft 7.85m、UKC 2.0m、required 9.85m、15MW、18kn；厚度缺失只标该分量 missing。
+
+**前端**
+- `types/navigation.ts`、`api/navigation.ts`。
+- `useEnvironmentOverlays.ts`：唯一 Map attach/dispose/reload；水深 XYZ（共享 LRU/队列/generation abort）；
+  风/流/浪矢量（moveend 300ms 防抖、旧请求 abort、最多 600 点）；独立 layer state；后端 point query hover。
+- `utils/mapEnvironment.ts`：地理方位角→WGS84 端点→投影（避免 3413 平面 u/v 误用）；箭头/颜色/bbox/格式化。
+- 组件：`EnvironmentLayerPanel`、`EnvironmentTimeControl`、`EnvironmentValueTooltip`、`VesselProfilePanel`。
+- `MapWorkspaceView.vue`：环境叠加菜单 7 项、左侧环境面板、唯一 pointermove/singleclick 扩展、moveend/
+  投影切换/卸载生命周期；zIndex 50/64/66/68。
+
+### 测试
+
+- 后端：`pytest tests/ -q` → **246 passed**（新增契约 10、Provider/Service 10、环境 API 8、船舶 API 4），
+  无失败；新增文件 `ruff` 通过。
+- 前端：`npm test` → **23 files / 365 tests passed**；`npm run typecheck` 零错误。
+- 新增测试覆盖：合成 manifest 下 `real_only` 拒绝、`allow_synthetic_research` 接受、缺文件故障隔离、
+  TOPAZ 旋转、WAM FROM、CARRA2 FROM/u/v、冰浓度 0 有效/厚度缺失、GEBCO 陆地/越界、双投影箭头、
+  bbox 反经线、环境面板/船舶面板源码不变量。
+
+### 决策与限制
+
+- 环境显示默认 `allow_synthetic_research` 并逐层显示 quality；规划阶段仍默认 `real_only`，两种策略分离。
+- 未修改 `IceService`/`IceTimeline`/手绘航路/S-57 调度；海冰时间轴仍是冰情唯一底部时间控件。
+- 无真实 GEBCO/neXtSIM/CARRA2/TOPAZ5/WAM 数据，E2E 只能用 `navigation_manifest.json` 标记的合成数据。
+- 风险栅格、规划图层、采纳/编辑/重评留到 C/D 批次。

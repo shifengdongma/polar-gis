@@ -47,12 +47,15 @@ import { unByKey } from 'ol/Observable'
 import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
+import EnvironmentLayerPanel from '../components/EnvironmentLayerPanel.vue'
+import EnvironmentValueTooltip from '../components/EnvironmentValueTooltip.vue'
 import IceLayerPanel from '../components/IceLayerPanel.vue'
 import IceTimeline from '../components/IceTimeline.vue'
 import IceValueTooltip from '../components/IceValueTooltip.vue'
 import RouteInfoFlyout from '../components/RouteInfoFlyout.vue'
 import RoutePlannerPanel from '../components/RoutePlannerPanel.vue'
 import WeatherChart from '../components/WeatherChart.vue'
+import { useEnvironmentOverlays } from '../composables/useEnvironmentOverlays'
 import { useIceOverlay } from '../composables/useIceOverlay'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useProjectsStore } from '../stores/projects'
@@ -237,7 +240,7 @@ function flushHover() {
   const coordinate = hoverCoordinate
   const pixel = hoverPixel
   // 冰情值浮窗显示期间隐藏经纬度提示(优先级:地图工具/航路浮窗 > 冰情 > 经纬度)
-  if (!hoverEnabled || !coordinate || !pixel || routeFlyout.value || iceOverlay.hover.value) {
+  if (!hoverEnabled || !coordinate || !pixel || routeFlyout.value || iceOverlay.hover.value || environmentOverlays.tooltip.value) {
     hover.value = null
     return
   }
@@ -591,6 +594,7 @@ const aisLayer = new VectorLayer({
 // 缓存 + 丢弃即中止)复用海图同一套通用实例 —— 实测自管 <img> 请求会
 // 堆积拖垮地图(会话 #26.1)。
 const icePanelOpen = ref(false)
+const environmentPanelOpen = ref(false)
 const iceOverlay = useIceOverlay({
   getMap: () => map,
   getCrs: () => currentCrs.value,
@@ -609,6 +613,22 @@ const iceOverlay = useIceOverlay({
 /** 时间轴让位:随图层面板折叠 / 航路面板展开自适应(不写死像素) */
 const iceTimelineLeft = computed(() => (layerPanelCollapsed.value ? 16 : 300))
 const iceTimelineRight = computed(() => (routePanelVisible.value ? 540 : 16))
+
+// ── 环境图层(水深/风/流/浪) ────────────────────────────────────────
+// 与海冰/海图同样只挂到既有唯一地图;不进入 runtimeLayers/bundle/scheduler。
+const environmentOverlays = useEnvironmentOverlays({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  tileCache,
+  tileRequestQueue,
+  canQuery: () =>
+    routesStore.interactionMode === 'idle' &&
+    measureMode.value === 'none' &&
+    !queryMode.value &&
+    !weatherMode.value &&
+    !routeFlyout.value &&
+    !iceOverlay.hover.value,
+})
 /** 环境叠加菜单中的冰情状态文案 */
 const iceOverlayState = computed(() => {
   if (iceOverlay.error.value) return '不可用'
@@ -799,6 +819,7 @@ async function buildMap() {
   map.addLayer(aisLayer)
   map.addLayer(routeDrawing.layer)
   iceOverlay.attach()
+  environmentOverlays.attach()
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
@@ -818,6 +839,11 @@ async function buildMap() {
       coordinate: event.coordinate,
       dragging: event.dragging || pointerSuppressed,
     })
+    environmentOverlays.handlePointerMove({
+      pixel: event.pixel,
+      coordinate: event.coordinate,
+      dragging: event.dragging || pointerSuppressed,
+    })
     if (pointerSuppressed || event.dragging) {
       hideHover()
       return
@@ -829,6 +855,7 @@ async function buildMap() {
   map.on('singleclick', async (event) => {
     // 航路绘制/编辑或测量进行中时,不触发要素识别 / 气象查询 / 航路选中
     if (routesStore.interactionMode !== 'idle' || measureMode.value !== 'none') return
+    environmentOverlays.clearHover()
     const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (weatherMode.value) await queryWeather(lonLat)
     else if (queryMode.value) await identify(lonLat)
@@ -843,6 +870,7 @@ async function buildMap() {
   map.on('moveend', () => {
     window.clearTimeout(reconcileTimer)
     reconcileTimer = window.setTimeout(reconcileRenderPlan, SMART_RECONCILE_DEBOUNCE_MS)
+    environmentOverlays.scheduleRefreshVectors()
     // 滚轮缩放后指针没动,提示里的坐标/小数位需要按新分辨率自校正
     if (hoverCoordinate) scheduleHover()
   })
@@ -1375,6 +1403,7 @@ function switchProjection(crs: string) {
   syncMeasureForProjection()
   // 冰情:保留日期/可见性/透明度,只替换 XYZ Source 与 TileGrid
   iceOverlay.reloadForProjection()
+  environmentOverlays.reloadForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -2463,6 +2492,13 @@ async function toggleAis() {
 function handleOverlayCommand(command: string) {
   if (command === 'ais') void toggleAis()
   else if (command === 'ice') icePanelOpen.value = !icePanelOpen.value
+  else if (command === 'environment') environmentPanelOpen.value = !environmentPanelOpen.value
+  else if (command === 'bathymetry' || command === 'wind' || command === 'current' || command === 'wave') {
+    environmentPanelOpen.value = true
+    environmentOverlays.toggle(command)
+  } else if (command === 'risk') {
+    ElMessage.info('风险栅格需先完成一次规划或区域风险评估')
+  }
 }
 
 function reloadAisGeometry() {
@@ -2519,6 +2555,7 @@ onBeforeUnmount(() => {
   hoverViewport = null
   routeDrawing.dispose()
   iceOverlay.dispose()
+  environmentOverlays.dispose()
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
@@ -2682,10 +2719,11 @@ onBeforeUnmount(() => {
       </div>
       <!-- 冰情信息(独立环境叠加层,不进入海图图层体系) -->
       <IceLayerPanel v-if="icePanelOpen" :ice="iceOverlay" />
+      <EnvironmentLayerPanel v-if="environmentPanelOpen" :env="environmentOverlays" />
       <div class="layer-panel-footer">
         <el-dropdown trigger="click" placement="top-start" @command="handleOverlayCommand">
           <button class="overlay-menu-trigger" type="button" aria-label="环境叠加">
-            <el-icon><Operation /></el-icon><span>环境叠加</span><span class="overlay-menu-count">2</span>
+            <el-icon><Operation /></el-icon><span>环境叠加</span><span class="overlay-menu-count">7</span>
           </button>
           <template #dropdown>
             <el-dropdown-menu class="overlay-menu">
@@ -2694,6 +2732,24 @@ onBeforeUnmount(() => {
               </el-dropdown-item>
               <el-dropdown-item command="ice">
                 <span>冰情信息</span><span class="overlay-state">{{ iceOverlayState }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="environment" divided>
+                <span>环境图层</span><span class="overlay-state">{{ environmentPanelOpen ? '已展开' : '未展开' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="bathymetry">
+                <span>水深</span><span class="overlay-state">{{ environmentOverlays.layers.bathymetry.visible ? '已开启' : '未开启' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="wind">
+                <span>风场</span><span class="overlay-state">{{ environmentOverlays.layers.wind.visible ? '已开启' : '未开启' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="current">
+                <span>海流</span><span class="overlay-state">{{ environmentOverlays.layers.current.visible ? '已开启' : '未开启' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="wave">
+                <span>海浪</span><span class="overlay-state">{{ environmentOverlays.layers.wave.visible ? '已开启' : '未开启' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="risk" disabled>
+                <span>风险评估</span><span class="overlay-state">需规划结果</span>
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -2720,6 +2776,11 @@ onBeforeUnmount(() => {
       />
       <!-- 冰情值浮窗(只读,数据来自后端原始网格查询) -->
       <IceValueTooltip v-if="iceOverlay.hover.value" :hover="iceOverlay.hover.value" />
+      <!-- 环境值浮窗(水深/风/流/浪,只读;数据质量随浮窗展示) -->
+      <EnvironmentValueTooltip
+        v-if="environmentOverlays.tooltip.value"
+        :tooltip="environmentOverlays.tooltip.value"
+      />
       <!-- 冰情时间轴:底部居中,左右让位随面板折叠状态自适应 -->
       <IceTimeline
         v-if="iceOverlay.timelineVisible.value"

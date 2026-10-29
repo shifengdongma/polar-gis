@@ -1515,3 +1515,49 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .ice-panel-note { margin: 2px 0 0; color: #6f919e; font-size: 9px; line-height: 1.5; }
 
 @media print { .ice-timeline { display: none !important; } }
+
+/* ── 环境图层 (Navigation Environment) ───────────────────────────────── */
+.environment-layer-panel { display: flex; flex-direction: column; gap: 7px; max-height: 430px; margin-top: 6px; padding: 8px 2px 2px; overflow-y: auto; border-top: 1px solid rgba(178, 211, 220, .14); }
+.environment-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.environment-panel-heading h3 { margin: 1px 0 0; color: #e7f7fb; font-size: 12px; }
+.environment-time-control { display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid rgba(178, 211, 220, .14); border-radius: 5px; background: rgba(10, 32, 44, .48); }
+.environment-time-label { color: #9fbcc6; font-size: 9px; }
+.environment-time-row { display: flex; gap: 5px; }
+.environment-time-picker { flex: 1; min-width: 0; }
+.environment-time-hint { color: #6f919e; font-size: 8px; line-height: 1.4; }
+.environment-policy-row { display: flex; align-items: center; gap: 6px; color: #9fbcc6; font-size: 10px; }
+.environment-policy-row small { color: #c8841f; font-size: 8px; line-height: 1.35; }
+.environment-source-error { margin: 0; }
+.environment-layer-row { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; border-bottom: 1px solid rgba(178, 211, 220, .08); }
+.environment-layer-main { display: flex; align-items: center; gap: 6px; }
+.environment-layer-title { display: flex; flex-direction: column; min-width: 0; }
+.environment-layer-title strong { color: #d7e8ed; font-size: 11px; }
+.environment-layer-title small { color: #7897a3; font-size: 8px; }
+.environment-layer-detail { display: flex; flex-direction: column; gap: 3px; padding-left: 34px; }
+.environment-layer-detail .el-slider { min-width: 0; }
+.environment-layer-meta { display: flex; flex-wrap: wrap; gap: 6px; color: #6f919e; font-size: 8px; }
+.environment-layer-error { color: #e58b8f; }
+.environment-layer-note { color: #7897a3; font-size: 8px; line-height: 1.5; }
+.quality-badge { padding: 1px 5px; border-radius: 7px; font-size: 8px; white-space: nowrap; }
+.quality-real { color: #9fe3b0; background: rgba(46, 158, 79, .2); }
+.quality-synthetic { color: #f3c37a; background: rgba(200, 132, 31, .22); }
+.quality-missing, .quality-unknown { color: #a9b8c0; background: rgba(138, 148, 166, .2); }
+
+.environment-value-tooltip { position: absolute; display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; color: #d9eaf1; border: 1px solid rgba(178, 211, 220, .24); border-radius: 5px; background: rgba(8, 27, 38, .94); box-shadow: 0 8px 24px rgba(7, 17, 29, .32); backdrop-filter: blur(10px); pointer-events: none; font-size: 10px; white-space: nowrap; transform: translate(14px, 14px); }
+.environment-value-tooltip.is-flip-x { transform: translate(calc(-100% - 14px), 14px); }
+.environment-value-tooltip.is-flip-y { transform: translate(14px, calc(-100% - 14px)); }
+.environment-value-tooltip.is-flip-x.is-flip-y { transform: translate(calc(-100% - 14px), calc(-100% - 14px)); }
+.environment-tooltip-title { display: flex; align-items: center; gap: 6px; color: #fff; font-weight: 600; }
+.environment-tooltip-value { color: #e7f7fb; }
+.environment-tooltip-meta { display: flex; flex-direction: column; gap: 1px; color: #9fbcc6; font-size: 9px; }
+.environment-tooltip-coord { color: #7897a3; font-size: 9px; }
+
+.vessel-profile-panel { display: flex; flex-direction: column; gap: 8px; }
+.vessel-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.vessel-panel-heading h3 { margin: 1px 0 0; color: #e7f7fb; font-size: 13px; }
+.vessel-descriptions { margin-top: 2px; }
+.vessel-live-note { margin-top: 2px; }
+.vessel-source-list { display: flex; flex-direction: column; gap: 3px; color: #7897a3; font-size: 9px; }
+.vessel-source-title { color: #9fbcc6; font-weight: 600; }
+.vessel-source-item a { color: #78e0e8; text-decoration: none; }
+

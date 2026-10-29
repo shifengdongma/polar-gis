@@ -913,3 +913,38 @@ backend/app/navigation/
 - `backend/tests/conftest.py` 注入临时导航数据根/结果根；新增 `test_navigation_contracts.py`（10 测试）。
 - 基线：后端 214 passed；前端 20 files/353 tests passed；ruff 既有 29 errors（未新增）。
 - 本批次无 API、无数据库迁移、无前端可见变化。
+
+### 8.5 批次 B：环境感知与船舶模型
+
+**后端 Provider**（`backend/app/navigation/environment/`）
+- `providers/base.py`：`available/times/sample/sample_many/coverage/close` 统一接口；单 Provider 失败返回 `ProviderSample(available=false, reason)`，不拖垮其他字段。
+- `gebco.py`：GEBCO NetCDF elevation → 正向下深度；陆地 elevation≥0 → `depthM=0,isLand=true`；NoData/越界显式 unavailable；`tile()` 渲染 3413/3857 256px PNG（透明陆地/NoData，LRU+单飞）。
+- `ice.py`：`polar_gis` 后端包装现有 `IceService.value_at`（浓度 %→0–1，厚度缺失只标该分量 missing，不把整个冰字段置 unavailable）；`nextsim` 后端读 `siconc/sithick`；`auto` 按数据根/文件名探测。
+- `carra2.py`：月度 `si10/wdir10`（兼容 `u10/v10`）2D 网格；FROM 风向；输出 speed/from/u/v。
+- `topaz5.py`：原生极地 x/y（100km 坐标单位，自动识别米制）、`vxo/vyo`；按本地 ENU 方位角旋转为地理东/北，输出 u/v/speed/directionTo。
+- `wam.py`：`VHM0/VTPK/VMDR`；双线性高度/周期、环形方向插值；VMDR 明确为 FROM。
+- `manifest.py`：数据根可选 `navigation_manifest.json`，逐字段 `quality=real|synthetic`；`real_only` 拒绝 synthetic 文件（reason=`synthetic_data_not_allowed`），合成研究数据不会伪装成真实观测。
+- `time_manager.py`：`latest_not_after`（默认）只取 requested 之前有效时次；provider 提供 issue_time 时要求 issue≤requested；按源 max-lag（风 6h、冰/流/浪 24h）；研究模式允许 nearest；不把未来预报当历史分析。
+- `service.py`：五字段故障隔离查询/批量/矢量场/快照；`EnvironmentSnapshot` 冻结 requested time、每字段 matched/valid/issue/quality；质量汇总 `combine_quality`。
+
+**API**
+- `GET /api/v1/navigation/environment/sources`、`GET /times`、`POST /query`、`POST /batch-query`：JWT 鉴权；每个字段返回 `available/value/unit/source/matchedTime/validTime/issueTime/quality/reason`；单 Provider 失败不影响其他字段。
+- `POST /field`：bbox+time+zoom+maxPoints，最多 900 点；风/流/浪矢量采样，逐点返回 source/matchedTime/quality/reason。
+- `GET /environment/tiles/bathymetry/{crs}/{z}/{x}/{y}.png`：公开只读标量瓦片（与海冰一致的访问边界）；nginx `^~ /api/` 已优先。
+- `GET /api/v1/navigation/vessels`、`/{id}`、`/{id}/depth-safety?depth_m=`：静态雪龙2资料，明确 `liveStateAvailable=false`；`requiredDepth=draft+UKC=7.85+2.0=9.85m`。
+
+**前端**
+- `useEnvironmentOverlays.ts`：注入既有唯一 Map、`tileCache`、`tileRequestQueue`；水深 XYZ 瓦片 + 风/流/浪 VectorLayer；每层独立 visible/opacity/loading/error/source/matchedTime/quality；`attach/dispose/reloadForProjection`；瓦片 generation abort；矢量 moveend 300ms 防抖、旧请求 abort、最多 600 点。
+- `utils/mapEnvironment.ts`：WGS84 地理方位角构造箭头端点后再投影（不在 EPSG:3413 平面直接使用 u/v）；风/浪 FROM→箭头指向 TO，流 TO；箭头长度随 zoom；颜色按风速/流速/浪高。
+- `EnvironmentValueTooltip.vue` / `EnvironmentLayerPanel.vue` / `EnvironmentTimeControl.vue`：显示原始值、单位、source、matchedTime、quality；`EnvironmentLayerPanel` 内含 UTC 时间控制与研究数据开关；不替换底部 `IceTimeline`。
+- `MapWorkspaceView.vue`：`buildMap` attach；`switchProjection` reload；`moveend` 刷新矢量；唯一 `pointermove` 分发 hover；唯一 `singleclick` 关闭 hover；unmount dispose。zIndex：水深 50、风 64、流 66、浪 68；不进入 `runtimeLayers`/bundle/scheduler。
+- 环境叠加菜单：AIS/冰情/环境图层/水深/风场/海流/海浪/风险评估（风险需规划结果，暂禁用）。
+
+**测试**
+- 后端新增 32 tests（契约 10、Provider/Service 10、环境 API 8、船舶 API 4）；全套 246 passed。
+- 前端新增 `mapEnvironment.test.ts`（双投影箭头/bbox/格式化）、`EnvironmentLayerPanel.test.ts`、`VesselProfilePanel.test.ts`；全套 365 passed；`vue-tsc` 零错误。
+
+**已知限制**
+- 本机无真实环境数据；Provider 只读配置数据根，缺文件显式 unavailable；E2E 只能用 manifest 标记的合成数据。
+- 环境图层默认允许显示合成研究数据（带“含合成数据”标签）；规划阶段默认 `real_only`，两者策略相互独立。
+- 风险栅格/规划图层/采纳编辑在 C/D 批次。

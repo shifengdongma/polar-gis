@@ -1191,3 +1191,34 @@ docker compose up -d         # 启动服务
 - 本机无真实 GEBCO/neXtSIM/CARRA2/TOPAZ5/WAM 数据，最终 E2E 只能使用明确标注的合成数据。
 - Polar-GIS 无项目成员 ACL；规划权限沿用“已发布项目 + 认证”，取消限 requester/admin。
 - 既有 `ruff` 29 个历史错误未修复（与本任务无关），新增导航代码已单独通过 lint。
+
+---
+
+## 会话 #28 — 批次 B：环境感知与船舶模型（2026-10-29）
+
+### 做了什么
+
+- 实现五类环境 Provider：GEBCO 水深、海冰（IceService/neXtSIM）、CARRA2 风、TOPAZ5 流、WAM 浪；
+  统一 `available/times/sample/sample_many/close` 与故障隔离。
+- 引入 `navigation_manifest.json` 质量标记：合成测试数据必须标 `synthetic`，`real_only` 拒绝；
+  无 manifest 时按真实文件 `real`，issue/observation 时间仍可为 unknown。
+- 时间语义：默认 latest-not-after、issue≤requested、按源 max-lag；研究模式才 nearest；
+  每字段返回 requested/matched/valid/issue/quality，不把未来预报冒充历史分析。
+- 船舶：雪龙2 静态资料、draft 7.85m + UKC 2.0m = 9.85m、15MW/18kn/PC3；明确未接入实时状态。
+- API：环境 sources/times/query/batch/field/公开水深瓦片；船舶列表/详情/水深安全。
+- 前端：环境图层（水深栅格 + 风/流/浪矢量）接入唯一地图；箭头按地理方位角构造；独立图层状态/图例/
+  时间/来源/质量；环境面板、UTC 时间控制、值浮窗、船舶面板；不修改海冰/手绘航路/S-57。
+
+### 效果
+
+- 地图可在不打开第二个 Map 的情况下叠加水深/风/流/浪；每个图层独立显隐/透明度/加载/错误/来源。
+- 环境查询单 Provider 失败不影响其他字段；缺测返回 `available=false` + reason，绝不填 0。
+- `real_only` 可拒绝合成文件；前端明确显示“含合成数据”和每层 quality。
+- 测试：后端 246 passed、前端 365 passed、typecheck 零错误。
+
+### 已知限制
+
+- 无真实环境数据；Provider 数据根为空时全部 unavailable，UI 正常降级。
+- 环境显示与研究数据开关允许合成研究数据；规划（C 批次）默认 real_only。
+- 风险栅格/规划候选航线/采纳编辑尚未实现（C/D 批次）。
+- 现有 `.gitignore` 的 `data/*` 需在部署批次加 `data/navigation` 白名单；本批次未改部署挂载。
