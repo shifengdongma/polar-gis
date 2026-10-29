@@ -43,6 +43,7 @@ export function useRiskGridLayer(options: RiskGridLayerOptions) {
 
   function setGrid(next: RiskGridCollection | null) {
     collection.value = next
+    layer.setVisible(Boolean(next))
     rebuild()
   }
 

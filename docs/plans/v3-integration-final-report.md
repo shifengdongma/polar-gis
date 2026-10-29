@@ -210,7 +210,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 
 ## 15. 前端测试结果
 
-- `npm test` → **28 files / 385 tests passed**（基线 20/353 + 新增 8 files/32 tests）。
+- `npm test` → **28 files / 386 tests passed**（基线 20/353 + 新增 8 files/33 tests）。
 - `npm run typecheck` → 零错误；`npm run build` → 成功（仅有既有 chunk 大小提示）。
 - 覆盖：双投影箭头/bbox、环境/船舶面板、路由 hash/stale、navigation store 采纳/选点/互斥、
   规划图层生命周期、面板契约、MapWorkspace 单 Map/单 handler/attach/dispose/projection、
@@ -233,7 +233,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 
 ## 17. 现有 Polar-GIS 功能回归结果
 
-- 后端 280 passed、前端 385 passed、typecheck/build 通过；既有测试全部保留。
+- 后端 280 passed、前端 386 passed，typecheck/build 通过；既有测试全部保留。
 - 自动化覆盖：认证/用户/项目、S-57 API/导入单元、Render Plan 纯函数、海冰 API/Service、
   AIS/气象 demo、要素查询测试（既有覆盖范围内）。
 - 未在本环境运行真实 GeoServer/GWC/S-57 批量导入与浏览器手工 44 项清单（无 GeoServer 数据/服务）；
@@ -267,7 +267,7 @@ PostgreSQL/PostGIS · /data/navigation (ro) · /data/storage/navigation/plans (r
 集成前 `728020b` 到最终批次（含本报告/文档/部署/脚本）：
 
 ```
-120 files changed, 17530 insertions(+), 70 deletions(-)
+122 files changed, 17844 insertions(+), 71 deletions(-)
 ```
 
 （该统计包含批次 A-E 与最终报告本身；提交后可用 `git diff --stat 728020b` 复核。）
@@ -300,5 +300,10 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>
    风险文件）；历史列表提供重命名/删除按钮。
 3. **选中任务蓝底浅字**：智能规划抽屉改为亮色主题（深色文字/浅色卡片/浅青选中行+左边框）；
    环境图层左侧暗色面板保持不变。
-4. 验证：后端 280 passed（新增 3 个）、前端 385 passed、typecheck/build/ruff 通过、迁移 0006
+4. **合成值显示/随机值超时/历史时间/风险格可见性**：合成研究模式下环境查询对缺失字段执行与
+   规划器一致的确定性 gap-fill，任务面板自动填入实际值（不再只显示“自动”）；D* 增加
+   `PLANNER_MAX_SEARCH_EXPANSIONS=200000`，超限返回“没有可行航线”并保留风险栅格，避免随机/
+   极端值导致规划超时；SQLite datetime 补 UTC，历史任务按浏览器本地时区显示；S-57
+   `optional_other` zIndex 100→45，风险页打开已完成任务时自动加载 combined 风险格并显式可见。
+5. 验证：后端 280 passed（新增 3 个）、前端 386 passed、typecheck/build/ruff 通过、迁移 0006
    通过；API E2E 与 Playwright UI smoke 复跑通过，截图更新。

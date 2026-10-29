@@ -185,10 +185,16 @@ def run_nsga3(
     generations: int = 20,
     seed: int = 42,
     should_stop: Callable[[], bool] | None = None,
+    max_search_expansions: int | None = None,
 ) -> list[Individual]:
     rng = np.random.default_rng(seed)
     seed_paths = [
-        DStarLite(grid, mode, should_stop=should_stop).plan()
+        DStarLite(
+            grid,
+            mode,
+            should_stop=should_stop,
+            max_expansions=max_search_expansions,
+        ).plan()
         for mode in ("risk", "energy", "time")
     ]
     if any(not path for path in seed_paths):

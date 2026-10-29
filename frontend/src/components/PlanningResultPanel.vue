@@ -54,6 +54,18 @@ function selectRun(planId: string) {
   void navigation.selectRun(planId)
 }
 
+function formatLocalTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
 async function renamePlan(planId: string, current: string) {
   try {
     const result = await ElMessageBox.prompt('输入新的任务名称', '重命名规划任务', {
@@ -166,7 +178,9 @@ async function deletePlan(planId: string) {
         <div class="planning-history-meta">
           <strong>{{ item.title || '智能规划' }}</strong>
           <span>{{ planningStatusLabels[item.status] ?? item.status }}</span>
-          <span>{{ new Date(item.createdAt).toISOString().slice(0, 16).replace('T', ' ') }}</span>
+          <span :title="new Date(item.createdAt).toLocaleString('zh-CN')">
+            {{ formatLocalTime(item.createdAt) }}
+          </span>
         </div>
         <div class="planning-history-actions" @click.stop>
           <el-button size="small" text @click="renamePlan(item.planId, item.title)">重命名</el-button>

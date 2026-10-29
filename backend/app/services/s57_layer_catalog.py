@@ -342,7 +342,10 @@ _BUCKET_Z_INDEX: Final[dict[str, int]] = {
     "line_structure": 20,
     "hazard_detail": 30,
     "navigation_aid": 50,
-    "optional_other": 100,
+    # Keep optional S-57 layers inside the chart band.  A value of 100 put
+    # them above environment/risk/route overlays and hid the new navigation
+    # layers whenever an optional chart layer was loaded.
+    "optional_other": 45,
 }
 
 

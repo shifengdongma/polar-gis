@@ -64,10 +64,12 @@ class PlannerService:
         environment_service: EnvironmentService,
         vessel_service: VesselService | None = None,
         static_grid: StaticPlanningGrid | None = None,
+        max_search_expansions: int = 200_000,
     ) -> None:
         self.environment_service = environment_service
         self.vessel_service = vessel_service or VesselService()
         self.static_grid = static_grid or load_static_grid()
+        self.max_search_expansions = max_search_expansions
 
     def plan(
         self,
@@ -108,6 +110,7 @@ class PlannerService:
                     generations=request.generations,
                     seed=request.seed,
                     should_stop=checker,
+                    max_search_expansions=self.max_search_expansions,
                 )
             except NoFeasibleRoute as error:
                 # Keep the risk grid for analysis even when no route exists.

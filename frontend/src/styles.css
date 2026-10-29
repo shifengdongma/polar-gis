@@ -1584,6 +1584,8 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .navigation-override-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 7px; }
 .navigation-override-grid label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 8px; }
 .navigation-override-grid .el-input { width: 100%; }
+.navigation-override-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.navigation-override-loaded { color: var(--success); font-size: 8px; }
 .navigation-form-note { color: var(--muted); font-size: 8px; line-height: 1.4; }
 .navigation-param-row { display: flex; gap: 8px; }
 .navigation-param-row label { display: flex; flex: 1; flex-direction: column; gap: 2px; color: var(--muted); font-size: 9px; }

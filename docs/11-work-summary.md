@@ -1329,5 +1329,13 @@ docker compose up -d         # 启动服务
 
 ### 验证
 
-- 后端 280 passed（新增 3 个）、前端 385 passed、typecheck/build/ruff 通过、迁移 0006 通过。
+- 后端 280 passed（新增 3 个）、前端 386 passed、typecheck/build/ruff 通过、迁移 0006 通过。
 - API E2E 与 Playwright UI smoke 复跑通过；截图更新。
+
+### 追加修复
+
+- 合成研究模式下环境查询补缺值，任务面板自动填入实际合成值，不再只显示“自动”；可逐项修改/清空。
+- D* 搜索增加 200000 扩展上限，极端合成值返回“没有可行航线”而非“规划超时”，风险栅格仍保留。
+- SQLite datetime 统一补 UTC，历史任务改为浏览器本地时区显示。
+- S-57 optional_other zIndex 调整为 45，风险格、环境图层、规划航线不再被可选海图图层覆盖；
+  风险页打开时自动加载 combined 风险格。

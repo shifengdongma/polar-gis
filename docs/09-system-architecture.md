@@ -1036,14 +1036,22 @@ backend/app/navigation/
   `depthM/iceConcentration/iceThicknessM/windSpeedMs/windDirectionFromDeg/currentSpeedMs/
   currentDirectionToDeg/waveHeightM/wavePeriodS/waveDirectionFromDeg`；仅
   `allow_synthetic_research` 有效，API 校验字段和范围。任务面板在合成策略下展示算法所需字段，
-  “从起点读取当前环境值”填充当前值，空值表示由 Provider/gap-fill 自动处理；覆盖应用到全规划区，
-  逐格标 `synthetic` + `research-override`。
+  选择合成策略自动“从起点读取当前环境值”，也支持手动读取和逐项修改；环境查询在合成研究模式下
+  对缺失字段使用与规划器相同的确定性 gap-fill 并标 synthetic，因此输入框显示实际值而非仅有“自动”。
+  空值表示不覆盖；覆盖应用到全规划区并逐格标 `synthetic` + `research-override`。
 - **进度不再停在 10%**：Provider 采样按 1000 点分块，进度 2→10…55→65（环境采样）→95（结果保存）
   →100；Worker 阶段显示“环境采样/多目标优化/结果保存”。取消检查在分块间执行。
+- **随机/极端合成值不会无限拖死规划**：D* Lite 增加 `PLANNER_MAX_SEARCH_EXPANSIONS`（默认 200000）
+  搜索上限；超限返回 `NO_FEASIBLE_ROUTE`（保留风险栅格），不再以 `PLANNER_TIMEOUT` 结束。
 - **规划历史管理**：`planning_runs.title`（Alembic `0006_navigation_run_title`）；API
   `PATCH /plans/{planId}` 重命名、`DELETE /plans/{planId}` 删除（仅终态；删除风险栅格文件与级联
   航线）；结果面板历史项提供重命名/删除按钮，选中项为深色文字+浅青底+左边框。
+- **历史时间**：后端把 SQLite 丢失时区的 datetime 统一补为 UTC；前端历史列表使用浏览器本地时区
+  `toLocaleString('zh-CN')` 展示，不再直接显示 UTC ISO 片段。
+- **风险格地图可见性**：S-57 `optional_other` bundle zIndex 从 100 调整为 45，避免可选海图图层
+  盖住风险格/环境/规划航线；风险页打开时若任务已完成会自动加载 combined 风险格，`setGrid` 显式
+  设置图层可见。
 - **抽屉配色**：智能规划工作台使用亮色抽屉主题；新增面板/历史/风险详情/表单输入改为深色文字+
   浅色背景，修复选中行浅青底上浅色文字不可读；环境图层（左侧深色面板）保持原暗色样式。
-- 测试：后端 **280 passed**（新增重命名/删除、覆盖校验、覆盖落地 3 个）；前端 385 passed；
-  typecheck/build 通过；API E2E + Playwright UI smoke 通过。
+- 测试：后端 **280 passed**（新增重命名/删除、覆盖校验、覆盖落地、合成查询补值等）；前端
+  **386 passed**；typecheck/build 通过；API E2E + Playwright UI smoke 通过。

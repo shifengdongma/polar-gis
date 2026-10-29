@@ -32,6 +32,11 @@ const overrideValues = reactive<Record<string, string>>({
   wavePeriodS: '',
   waveDirectionFromDeg: '',
 })
+const syntheticValuesLoaded = ref(false)
+
+watch(dataPolicy, (policy) => {
+  if (policy === 'allow_synthetic_research') void loadSyntheticDefaults()
+})
 
 const pickedStart = computed(() => navigation.pickedStart)
 const pickedGoal = computed(() => navigation.pickedGoal)
@@ -116,10 +121,18 @@ async function loadSyntheticDefaults() {
     set('waveHeightM', sample.fields.wave?.values.heightM)
     set('wavePeriodS', sample.fields.wave?.values.periodS)
     set('waveDirectionFromDeg', sample.fields.wave?.values.directionFromDeg)
-    ElMessage.success('已读取起点环境值；空值仍由 Provider/gap-fill 自动处理')
+    syntheticValuesLoaded.value = true
+    ElMessage.success('已读取起点环境值；可直接修改，清空则恢复自动处理')
   } catch {
+    syntheticValuesLoaded.value = false
     ElMessage.error('起点环境值读取失败，请检查时间/坐标或数据源')
   }
+}
+
+function clearOverrides() {
+  for (const key of Object.keys(overrideValues)) overrideValues[key] = ''
+  syntheticValuesLoaded.value = false
+  ElMessage.info('已清空合成覆盖，规划将使用 Provider / 确定性 gap-fill')
 }
 
 async function submit() {
@@ -239,7 +252,11 @@ async function submit() {
         算法需要：水深、冰密集度/冰厚、风速/风向、流速/流向、浪高/周期/浪向。空值表示不覆盖，
         由 Provider 或确定性 gap-fill 自动处理；填写后应用到全规划区，并标记为 synthetic。
       </small>
-      <el-button size="small" plain @click="loadSyntheticDefaults">从起点读取当前环境值</el-button>
+      <div class="navigation-override-actions">
+        <el-button size="small" plain @click="loadSyntheticDefaults">从起点读取当前环境值</el-button>
+        <el-button size="small" text @click="clearOverrides">清空覆盖</el-button>
+        <span v-if="syntheticValuesLoaded" class="navigation-override-loaded">已载入实际合成值，可修改</span>
+      </div>
       <div class="navigation-override-grid">
         <label>水深 m<el-input v-model="overrideValues.depthM" size="small" placeholder="自动" /></label>
         <label>冰密集度 0–1<el-input v-model="overrideValues.iceConcentration" size="small" placeholder="自动" /></label>

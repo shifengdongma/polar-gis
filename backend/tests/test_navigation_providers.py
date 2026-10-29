@@ -161,7 +161,7 @@ def test_allow_synthetic_research_accepts_marked_fixtures(service: EnvironmentSe
     assert sample.fields["ice"].values["concentration"] is not None
 
 
-def test_fault_isolation_when_only_one_field_exists(tmp_path: Path) -> None:
+def test_synthetic_query_fills_missing_fields_without_losing_bathy(tmp_path: Path) -> None:
     root = tmp_path / "navigation"
     from navigation_fixtures import write_gebco
 
@@ -183,8 +183,11 @@ def test_fault_isolation_when_only_one_field_exists(tmp_path: Path) -> None:
     service = EnvironmentService(settings)
     sample = service.query(119.1, 74.1, REQUESTED, ["bathymetry", "wind", "wave"], "allow_synthetic_research")
     assert sample.fields["bathymetry"].available is True
-    assert sample.fields["wind"].available is False
-    assert sample.fields["wave"].available is False
+    assert sample.fields["wind"].available is True
+    assert sample.fields["wind"].quality is DataQuality.SYNTHETIC
+    assert "synthetic-gap-fill" in (sample.fields["wind"].source or "")
+    assert sample.fields["wave"].available is True
+    assert sample.fields["wave"].values["heightM"] is not None
 
 
 def test_field_vectors_and_snapshot(service: EnvironmentService) -> None:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useNavigationStore } from '../stores/navigation'
 import type { DataPolicy, RiskField } from '../types/navigation'
@@ -38,6 +38,14 @@ function riskText(value: number | null | undefined): string {
 async function loadGrid() {
   await navigation.loadRiskGrid(field.value)
 }
+
+onMounted(() => {
+  // Opening the risk tab after a completed plan should not leave the map
+  // empty until the user clicks again.
+  if (navigation.currentRun?.status === 'completed' && !navigation.riskGrid) {
+    void loadGrid()
+  }
+})
 
 async function evaluateArea() {
   if (!navigation.projectId) {

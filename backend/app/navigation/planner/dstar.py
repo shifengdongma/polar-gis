@@ -25,6 +25,7 @@ class DStarLite:
         start: Point | None = None,
         goal: Point | None = None,
         should_stop: Callable[[], bool] | None = None,
+        max_expansions: int | None = None,
     ) -> None:
         if mode not in {"risk", "energy", "time"}:
             raise ValueError(f"Unsupported planner mode: {mode}")
@@ -33,6 +34,7 @@ class DStarLite:
         self.start = start or grid.start
         self.goal = goal or grid.goal
         self.should_stop = should_stop
+        self.max_expansions = max_expansions
         self.g: dict[Point, float] = {}
         self.rhs: dict[Point, float] = {self.goal: 0.0}
         self.queue: list[tuple[float, float, int, Point]] = []
@@ -84,7 +86,8 @@ class DStarLite:
             self._push(point, self._key(point))
 
     def _compute(self) -> bool:
-        limit = self.grid.width * self.grid.height * 20
+        hard_limit = self.grid.width * self.grid.height * 20
+        limit = min(hard_limit, self.max_expansions) if self.max_expansions else hard_limit
         while True:
             if self.should_stop is not None and self.expanded % 256 == 0 and self.should_stop():
                 raise PlanningCancelled("planning cancelled")

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     planner_max_cells: int = 20000
     planner_max_candidates: int = 20
     planner_max_generations: int = 100
+    planner_max_search_expansions: int = 200000
     planner_population_size: int = 36
     planner_timeout_seconds: int = 300
     planner_max_concurrent_jobs: int = 1

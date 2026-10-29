@@ -46,6 +46,7 @@ class PlanningRunProcessor:
             planner = PlannerService(
                 EnvironmentService(self.settings),
                 VesselService(),
+                max_search_expansions=self.settings.planner_max_search_expansions,
             )
             deadline = perf_counter() + self.settings.planner_timeout_seconds
 

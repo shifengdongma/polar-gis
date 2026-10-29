@@ -1793,3 +1793,15 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 迁移 `0006` 在“0005 后无 title 列”的 SQLite 数据库升级通过。
 - API 实测进度过渡；`PATCH/DELETE` 返回 200/204；Playwright UI smoke 通过，截图已更新
   （含 `windSpeedMs=13` 合成覆盖标签、浅色可读历史列表）。
+
+### 追加修复（同一会话）
+
+- 合成研究模式下环境查询对缺失字段执行与规划器一致的确定性 gap-fill，任务面板选择合成策略后
+  自动填入实际值（不再只显示“自动”）；可清空恢复自动。
+- 新增 `PLANNER_MAX_SEARCH_EXPANSIONS=200000`；D* 超限返回 `NO_FEASIBLE_ROUTE`（保留风险格），
+  避免随机/极端合成值导致 `PLANNER_TIMEOUT`。
+- 后端 `_as_utc` 修复 SQLite datetime 无时区导致的 API 时间偏差；前端历史列表改用本地时区
+  `toLocaleString('zh-CN')`。
+- S-57 `optional_other` zIndex 100→45，避免可选海图图层盖住风险格；风险页打开且任务已完成时
+  自动加载 combined 风险格，`setGrid` 显式设置可见。
+- 最终：后端 280 passed、前端 386 passed、typecheck/build/ruff 通过。

@@ -6,6 +6,7 @@ import gzip
 import json
 import math
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -56,6 +57,15 @@ def _ensure_enabled() -> None:
         raise AppError("NAVIGATION_DISABLED", "导航功能未启用", 404)
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite drops timezone information; re-attach UTC for API clients."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _run_read(run: PlanningRun) -> PlanningRunRead:
     return PlanningRunRead(
         plan_id=run.id,
@@ -74,10 +84,10 @@ def _run_read(run: PlanningRun) -> PlanningRunRead:
         result_summary=run.result_summary_json or {},
         environment_snapshot=run.environment_snapshot_json or {},
         cancel_requested=run.cancel_requested,
-        queued_at=run.queued_at,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        created_at=run.created_at,
+        queued_at=_as_utc(run.queued_at),
+        started_at=_as_utc(run.started_at),
+        finished_at=_as_utc(run.finished_at),
+        created_at=_as_utc(run.created_at),
     )
 
 
@@ -102,7 +112,7 @@ def _route_read(run_id: UUID, route) -> PlanningRouteRead:
         distance_km=route.distance_km,
         source_quality=route.quality,
         algorithm_version=route.algorithm_version,
-        created_at=route.created_at,
+        created_at=_as_utc(route.created_at),
     )
 
 

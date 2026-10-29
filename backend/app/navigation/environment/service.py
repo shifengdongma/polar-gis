@@ -29,6 +29,13 @@ from app.navigation.environment.models import (
     VectorObservation,
 )
 from app.navigation.environment.providers.base import BaseEnvironmentProvider
+from app.navigation.environment.synthetic import (
+    synthetic_current,
+    synthetic_depth,
+    synthetic_ice,
+    synthetic_wave,
+    synthetic_wind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,21 +195,37 @@ class EnvironmentService:
         self._validate_policy(policy)
         requested = ensure_utc(requested_time)
         provider = self._providers[field]
-        if not provider.available() or self._manifest_error is not None:
-            return False, self._manifest_error or "data_missing", [], []
+        if self._manifest_error is not None:
+            return False, self._manifest_error, [], []
+        if not provider.available() and policy != "allow_synthetic_research":
+            return False, "data_missing", [], []
         points = _sample_grid(bbox, zoom, max_points)
         if not points:
             return False, "empty_bbox", [], []
-        samples = provider.sample_many(
-            points,
-            requested,
-            max_lag_hours=self._max_lag(field),
-            allow_future=self._allow_future(policy),
+        samples = (
+            provider.sample_many(
+                points,
+                requested,
+                max_lag_hours=self._max_lag(field),
+                allow_future=self._allow_future(policy),
+            )
+            if provider.available()
+            else None
         )
         observations: list[VectorObservation] = []
         times: list[datetime] = []
-        for index, ((longitude, latitude), sample) in enumerate(zip(points, samples, strict=True)):
-            observation = self._wrap(field, sample, policy)
+        for index, (longitude, latitude) in enumerate(points):
+            sample = samples[index] if samples is not None else None
+            if sample is None:
+                observation = _missing_observation(
+                    field, requested, provider.source_name, "data_missing"
+                )
+            else:
+                observation = self._wrap(field, sample, policy)
+            if policy == "allow_synthetic_research":
+                observation = self._fill_synthetic(
+                    field, longitude, latitude, requested, observation
+                )
             if observation.time.matched_time is not None:
                 times.append(observation.time.matched_time)
             observations.append(
@@ -220,7 +243,14 @@ class EnvironmentService:
                     reason=observation.reason,
                 )
             )
-        return True, None, sorted(set(times)), observations
+        if not observations:
+            return False, "no_points", [], []
+        return (
+            any(observation.available for observation in observations),
+            None,
+            sorted(set(times)),
+            observations,
+        )
 
     # ── snapshot for planning ─────────────────────────────────────────
 
@@ -329,7 +359,12 @@ class EnvironmentService:
                 self._manifest_error,
             )
         if not provider.available():
-            return _missing_observation(field, requested, provider.source_name, "data_missing")
+            missing = _missing_observation(field, requested, provider.source_name, "data_missing")
+            return (
+                self._fill_synthetic(field, longitude, latitude, requested, missing)
+                if policy == "allow_synthetic_research"
+                else missing
+            )
         try:
             sample = provider.sample(
                 longitude,
@@ -346,7 +381,103 @@ class EnvironmentService:
                 provider.source_name,
                 f"provider_error:{type(error).__name__}",
             )
-        return self._wrap(field, sample, policy)
+        observation = self._wrap(field, sample, policy)
+        if policy == "allow_synthetic_research":
+            observation = self._fill_synthetic(field, longitude, latitude, requested, observation)
+        return observation
+
+    def _fill_synthetic(
+        self,
+        field: str,
+        longitude: float,
+        latitude: float,
+        requested: datetime,
+        observation: FieldObservation,
+    ) -> FieldObservation:
+        """Fill missing research values with the same deterministic formulas as the planner.
+
+        The result is always labelled synthetic; it is never presented as
+        provider-observed data.
+        """
+        if self._manifest_error is not None:
+            return observation
+        values = dict(observation.values)
+        component_quality = dict(observation.component_quality)
+        units = dict(observation.units)
+        day = requested.timetuple().tm_yday
+        synthetic_values: dict[str, float | bool | None]
+        if field == "bathymetry":
+            depth = synthetic_depth(latitude, longitude)
+            synthetic_values = {"depthM": depth, "isLand": depth <= 0.0}
+            units.update({"depthM": "m"})
+        elif field == "ice":
+            concentration, thickness = synthetic_ice(latitude, longitude, day)
+            synthetic_values = {"concentration": concentration, "thicknessM": thickness}
+            units.update({"concentration": "1", "thicknessM": "m"})
+        elif field == "wind":
+            speed, direction, u, v = synthetic_wind(latitude, longitude, day)
+            synthetic_values = {
+                "speedMs": speed,
+                "directionFromDeg": direction,
+                "uMs": u,
+                "vMs": v,
+            }
+            units.update({"speedMs": "m/s", "directionFromDeg": "degree", "uMs": "m/s", "vMs": "m/s"})
+        elif field == "current":
+            u, v, speed, direction = synthetic_current(latitude, longitude, day)
+            synthetic_values = {
+                "uMs": u,
+                "vMs": v,
+                "speedMs": speed,
+                "directionToDeg": direction,
+            }
+            units.update({"uMs": "m/s", "vMs": "m/s", "speedMs": "m/s", "directionToDeg": "degree"})
+        elif field == "wave":
+            height, period, direction = synthetic_wave(latitude, longitude, day)
+            synthetic_values = {
+                "heightM": height,
+                "periodS": period,
+                "directionFromDeg": direction,
+            }
+            units.update({"heightM": "m", "periodS": "s", "directionFromDeg": "degree"})
+        else:
+            return observation
+
+        filled = False
+        for key, value in synthetic_values.items():
+            if values.get(key) is None:
+                values[key] = value
+                component_quality[key] = DataQuality.SYNTHETIC
+                filled = True
+        if not filled:
+            return observation
+        source = (
+            f"{observation.source}+synthetic-gap-fill-v1"
+            if observation.source
+            else "synthetic-gap-fill-v1"
+        )
+        return FieldObservation(
+            field=observation.field,
+            available=True,
+            values=values,
+            units=units,
+            component_quality=component_quality,
+            quality=DataQuality.SYNTHETIC,
+            source=source,
+            time=(
+                observation.time
+                if observation.time.matched_time is not None
+                else TimeMatchInfo(
+                    requested_time=requested,
+                    matched_time=requested,
+                    valid_time=requested,
+                    quality="unknown",
+                    match_policy="latest_not_after",
+                )
+            ),
+            reason="synthetic_gap_fill",
+            coverage=observation.coverage,
+        )
 
     def _wrap(self, field: str, sample: ProviderSample, policy: str) -> FieldObservation:
         manifest_quality = self.manifest.quality(field)
