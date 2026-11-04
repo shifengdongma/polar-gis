@@ -1144,7 +1144,8 @@ backend/app/navigation/
 
 - 前端 `typecheck/build` 通过；39 文件 / 459 tests passed。
 - 后端 304 tests collected（303 passed + 1 需 `S57_WATERWAY_TEST_DATABASE_URL` 的 PostGIS 集成测试；配置后通过）；ruff 新增/修改文件通过。
-- 真实 S-57：C110408A（CANALS/CTNARE 等）、GB1DD000（TSSLPT/TSSBND/TSEZNE）与 US1AK90M 基础+`.001` 更新链（TWRTPT=6，v2）导入成功；catalog 计数 CANALS=2、TSSLPT=8、TSSBND=6、TSEZNE=4、CTNARE=3；名称/属性/几何/bbox/详情均来自真实表。
+- 真实 S-57：C110408A（CANALS/CTNARE 等）、GB1DD000（TSSLPT/TSSBND/TSEZNE）与 US1AK90M 基础+`.001` 更新链（TWRTPT=6，v2）导入成功；
+- 真实项目搜索曾因 PostgreSQL 并行查询使用 64MB 默认 `/dev/shm` 报 `DiskFull: could not resize shared memory segment`；已为 postgres 增加 `shm_size: 1gb`，并在 waterway 搜索会话中关闭并行查询（`max_parallel_workers_per_gather=0`），500 修复；前端“航道专题”徽标只统计主类别，不再把 DEPARE/DEPCNT/SOUNDG 等辅助要素计入（真实项目 301 vs 旧 11210）。catalog 计数 CANALS=2、TSSLPT=8、TSSBND=6、TSEZNE=4、CTNARE=3；名称/属性/几何/bbox/详情均来自真实表。
 - 隔离项目浏览器：连续 100 次日期切换后 `q.loading=0、stuck=0`；3857/3413 来回切换后仍为 0；抖动底图 503 自动重试恢复；无 pageerror。
 - 30 分钟 soak 已完成：1804s，结束时 q.loading=0、stuck=0、pageerrors=[]（`output/soak-30min.log`）。
 - 未验证：真实 GWC WMTS 3413 matrix set 未在本次环境配置成功（GWC capabilities 仅 EPSG:4326），作为残留；公共第三方底图限流仅以本地 503 mock 验证。

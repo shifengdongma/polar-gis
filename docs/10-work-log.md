@@ -1937,3 +1937,13 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 公共第三方底图限流使用本地 503 mock；未对公共提供商做压力测试。
 - 30 分钟 soak 已完成：1804s，结束时 q.loading=0、stuck=0、pageerrors=[]。
 - importer 的 schema/sequence/index 修复以真实 C110408A/GB1DD000 导入验证，缺少专门单元测试；后续可补容器化集成测试。
+
+
+### 追加修复（2026-11-04）
+
+- **航道搜索 500**：真实项目 `POST /s57-waterways/search` 报 `psycopg.errors.DiskFull: could not resize shared memory segment ... No space left on device`。根因是 PostgreSQL 对多图层 UNION + 大几何触发并行查询，而 Docker 默认 `/dev/shm` 64MB。修复：
+  - `deploy/compose.yml` 的 postgres 增加 `shm_size: 1gb`；
+  - waterway 搜索会话设置 `statement_timeout` 时同时设置 `max_parallel_workers_per_gather=0`、`max_parallel_workers=0`；
+  - `DiskFull`/共享内存错误映射为 503 `S57_WATERWAY_DB_UNAVAILABLE`，不再裸 500。
+  - 实测默认类别搜索 200、total 258；关键字 `Jinghang` 命中 1；aux DEPARE 200；详情 200。
+- **航道专题计数**：前端徽标原使用 `catalog.total`，把 DEPARE(5586)/DEPCNT(5105)/SOUNDG 等辅助要素也算入，显示 11210。改为仅累加非辅助主类别，真实项目显示 301；实际默认搜索 258（不含 CTNARE/DRGARE）。API 的 `total` 仍保留全类别统计，辅助类别在面板内单独展示。

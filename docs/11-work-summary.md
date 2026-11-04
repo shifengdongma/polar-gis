@@ -1408,3 +1408,8 @@ docker compose up -d         # 启动服务
 
 - 样本无 FAIRWY/RECTRC/NAVLNE/DRGARE，仅合成/单元测试覆盖；GWC WMTS 3413 matrix set 在本验证环境不可用，真实 3413 WMTS 底图未验证；公共提供商限流用本地 503 mock 验证。
 - 未 commit/push（任务书要求）。
+
+### 追加修复（2026-11-04）
+
+- 修复真实项目航道搜索 500：PostgreSQL 并行查询在默认 64MB `/dev/shm` 下报 DiskFull。postgres 增加 `shm_size: 1gb`，waterway 会话关闭并行查询，并映射为可读的 503。
+- 修正“航道专题”徽标计数：只统计主类别，不再累加 DEPARE/DEPCNT/SOUNDG 等辅助要素（真实项目 11210 → 301）。

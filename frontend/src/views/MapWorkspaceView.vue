@@ -732,7 +732,13 @@ const s57Waterways = useS57Waterways({
   getFitPadding: waterwayFitPadding,
 })
 const waterwayCatalogCount = computed(
-  () => s57Waterways.catalog.value?.total ?? 0,
+  // The badge means "航道专题要素", not the sum of auxiliary depth/sounding
+  // objects. Auxiliary classes remain visible in the panel with their own
+  // counts, but must not inflate this badge.
+  () =>
+    (s57Waterways.catalog.value?.classes ?? [])
+      .filter((item) => !item.auxiliary)
+      .reduce((sum, item) => sum + item.count, 0),
 )
 function toggleWaterwayPanel() {
   waterwayPanelOpen.value = !waterwayPanelOpen.value

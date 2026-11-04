@@ -2,6 +2,9 @@ services:
   postgres:
     image: m.daocloud.io/docker.io/postgis/postgis:16-3.4
     restart: unless-stopped
+    # PostgreSQL parallel workers / large geometry queries need more than the
+    # Docker default 64 MiB /dev/shm.
+    shm_size: 1gb
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}

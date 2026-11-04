@@ -684,9 +684,20 @@ def _apply_statement_timeout(db: Session) -> None:
         return
     timeout = str(get_settings().s57_waterway_query_timeout_ms)
     try:
-        db.execute(text("SELECT set_config('statement_timeout', :timeout, true)"), {"timeout": timeout})
+        # The default Docker /dev/shm (64 MiB) is too small for PostgreSQL
+        # parallel workers on a multi-layer UNION with large geometries.
+        # Disable parallel execution for this read-only thematic query and
+        # keep the statement bounded by a timeout.
+        db.execute(
+            text(
+                "SELECT set_config('statement_timeout', :timeout, true), "
+                "set_config('max_parallel_workers_per_gather', '0', true), "
+                "set_config('max_parallel_workers', '0', true)"
+            ),
+            {"timeout": timeout},
+        )
     except DBAPIError:
-        logger.warning("无法设置 S-57 航道查询 statement_timeout", exc_info=True)
+        logger.warning("无法设置 S-57 航道查询会话参数", exc_info=True)
 
 
 def _json_safe(value: Any) -> Any:
@@ -781,6 +792,12 @@ def decode_waterway_id(value: str) -> tuple[UUID, str]:
 
 def _db_error(error: DBAPIError) -> AppError:
     pgcode = getattr(getattr(error, "orig", None), "pgcode", None)
+    if pgcode == "53100" or "shared memory" in str(error).lower() or "diskfull" in str(error).lower():
+        return AppError(
+            "S57_WATERWAY_DB_UNAVAILABLE",
+            "数据库共享内存不足，请稍后重试或联系管理员调整 PostgreSQL 配置",
+            503,
+        )
     if pgcode == "57014" or "statement timeout" in str(error).lower():
         return AppError(
             "S57_WATERWAY_QUERY_TIMEOUT",

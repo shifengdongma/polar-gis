@@ -1401,7 +1401,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ### 10.9 S-57 航道专题
 
-左侧“图层目录”底部新增 **航道专题** 入口（显示项目内可检索要素总数）。面板分为：
+左侧“图层目录”底部新增 **航道专题** 入口（徽标只统计主类别航道要素，不包含 DEPARE/DEPCNT/SOUNDG 等辅助要素）。面板分为：
 
 - **航道与推荐路线**：航道 FAIRWY、推荐航路 RECTRC、航行线 NAVLNE、双向航路段 TWRTPT、运河 CANALS；
 - **交通分隔制**：TSSLPT、TSSBND、TSEZNE、TSSRON；
