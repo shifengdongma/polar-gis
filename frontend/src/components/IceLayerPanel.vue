@@ -72,7 +72,10 @@ function onDebugAlignment(value: string | number | boolean) {
       {{ error }}
       <el-button size="small" text @click="ice.retry()">重新加载冰情</el-button>
     </div>
-    <div v-else-if="empty" class="ice-panel-empty">无可用冰情数据</div>
+    <div v-else-if="empty" class="ice-panel-empty">
+      无可用冰情数据
+      <span class="ice-panel-hint">请确认后端冰情数据目录已挂载 NetCDF 文件（ICE_DATA_ROOT / ICE_DATA_HOST_PATH）。</span>
+    </div>
 
     <template v-else>
       <div v-if="error" class="ice-panel-error">

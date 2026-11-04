@@ -1978,3 +1978,9 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 后端：`pytest -q` 311 tests collected，310 passed + 1 skipped（需 `S57_WATERWAY_TEST_DATABASE_URL` 的 PostGIS 集成测试）；新增快照/图例测试通过。`ruff check` 新增/修改的 app 文件通过；`tests/test_projects.py` 仍报 2 个**既有** B007/F841（非本次改动行）。
 - PostGIS 实测（临时 `postgis/postgis:16-3.4` 容器）：`build_waterway_export_batch_sql()` 键集分批返回 3 条；真实几何类型 `LineString/MultiLineString/Polygon` 均保留；`to_jsonb` 原始属性存在且已去除 `geom`；keyword=`Harbour`、bbox 过滤结果正确。
 - 未执行：未启动完整 Docker Compose 对真实项目执行“保存→下载→`json.load`”端到端验证；未在真实浏览器中逐项点击图例/保存抽屉；上述均需在部署环境补验。
+
+### 追加修复（2026-11-04，会话 #32 用户反馈）
+
+- **保存按钮不显示**：检查 `polar-gis-frontend:latest` 镜像（2026-11-04T11:53Z）与构建产物，确认“保存提取结果/已保存航道数据”字符串已包含在 `MapWorkspaceView-*.js` 中，**不是镜像陈旧**。根因是 `S57WaterwayPanel.vue` 将成果入口放在 `hasWaterwayData` 的 `v-else` 分支内，项目当前版本没有可查询航道要素时整块隐藏。修复：将成果入口移到目录状态判断之前，始终显示；“保存提取结果”在未选类别时给出明确提示，“已保存航道数据”在无当前图层时仍可查看历史快照。新增源码契约测试锁定入口位置。
+- **冰情长时间无数据**：检查 `deploy/.env` 与宿主机目录，`ICE_DATA_HOST_PATH=../data/ice` 指向的 `data/ice` 仅有 README、无任何 `*.nc`；`IceService(data/ice).info()` 返回 `dates=[]`，所以前端显示“无可用冰情数据”是正确降级。`sample-data` 中有 149 个冰情 NetCDF（2022-01-01..2022-05-31），`IceService(sample-data).info()` 返回 149 个日期，首次扫描约 1.85s，仅含密集度字段。修复：本地 `deploy/.env` 临时改为 `ICE_DATA_HOST_PATH=../sample-data`（该文件不入 Git），需重建 backend/worker 容器以重新挂载；前端空状态增加数据目录排查提示。
+- 验证：前端 `typecheck` 通过；`S57WaterwayPanel.test.ts` 7 tests、`IceLayerPanel.test.ts` 7 tests 通过；`npm run build` 通过；已重建 `polar-gis-frontend:latest` 并确认镜像内含新入口与数据目录提示。未启动完整 Compose 验证冰情瓦片；需执行 `docker compose up -d --force-recreate backend worker web` 后在浏览器确认。

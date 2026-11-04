@@ -1509,6 +1509,7 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .ice-panel-title { color: #d7e8ed; font-size: 11px; font-weight: 700; }
 .ice-panel-badge { padding: 1px 6px; color: #07202a; background: var(--ice-500); border-radius: 8px; font-size: 9px; }
 .ice-panel-empty { padding: 8px 0; color: #7897a3; font-size: 10px; }
+.ice-panel-hint { display: block; margin-top: 3px; color: #66818d; font-size: 9px; line-height: 1.5; }
 .ice-panel-error { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 4px 0; padding: 6px 8px; border: 1px solid rgba(239, 139, 96, .35); border-radius: 4px; background: rgba(120, 45, 30, .28); color: #ffd7c7; font-size: 10px; line-height: 1.5; }
 .ice-panel-error .el-button { flex: 0 0 auto; color: #ffd7c7; }
 .ice-field { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }

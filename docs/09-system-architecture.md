@@ -1172,7 +1172,7 @@ backend/app/navigation/
   - manifest 含 snapshotId/projectId/name/createdAt/crs/featureCount/truncated/objectClasses/sourceDatasets/sourceVersionIds/sourceContentHashes/filters/schemaVersion/warnings/geojsonSha256。
   - 列表/详情比较 manifest 与当前 `version_id` 集合，输出 `stale`；旧成果不覆盖、仍可下载。
 - API（固定路径在 `/{feature_id}` 之前）：`POST .../snapshots`（201）、`GET .../snapshots`、`GET .../snapshots/{id}`、`GET .../snapshots/{id}/download`（`application/geo+json`）。
-- 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot`；`S57WaterwayPanel` 增加“保存提取结果”对话框与“已保存航道数据”抽屉（来源数据集/版本、要素数、旧版标记、下载按钮）。不进入航路 store。
+- 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot`；`S57WaterwayPanel` 增加“保存提取结果”对话框与“已保存航道数据”抽屉（来源数据集/版本、要素数、旧版标记、下载按钮）。成果入口位于目录状态判断之前、始终显示，确保当前项目没有可查询航道图层时仍能访问历史快照；不进入航路 store。
 
 #### 8.12.3 图层内联图例
 

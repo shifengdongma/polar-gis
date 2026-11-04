@@ -1428,3 +1428,8 @@ docker compose up -d         # 启动服务
 - 后端 `pytest -q`：311 collected，310 passed + 1 env-gated PostGIS skip；新增快照/图例测试通过；app 文件 ruff 通过（`test_projects.py` 2 个既有 lint 项未处理）。
 - 临时 PostGIS 16-3.4 容器实测导出 SQL：键集分批、LineString/MultiLineString/Polygon 真实几何、`to_jsonb` 原始属性、keyword/bbox 过滤均正确。
 - 未执行完整 Compose/真实项目端到端保存下载与真实浏览器点击验证；需在部署环境补验。航段/航路里程仍使用既有球面模型，与测距工具的椭球结果存在约 0.3%–0.6% 差异，这是本次有意的范围控制。
+
+### 追加修复（2026-11-04，用户反馈）
+
+- **航道成果按钮**：镜像与代码均包含功能，实际根因是入口位于“有航道数据”条件分支内；已移到面板顶部常显，“已保存航道数据”在无当前航道图层时仍可访问。前端 7 个面板契约测试、typecheck、build 通过，前端镜像已重建。
+- **冰情无数据**：`deploy/.env` 原先挂载空的 `data/ice`，后端正确返回 0 个日期。本地已改为 `ICE_DATA_HOST_PATH=../sample-data`（149 个 NetCDF，日期 2022-01-01..2022-05-31，仅密集度），并在面板空状态增加数据目录提示；需重启 backend/worker 使挂载生效。完整 Compose 浏览器验证未执行。

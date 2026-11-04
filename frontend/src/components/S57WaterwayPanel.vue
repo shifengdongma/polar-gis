@@ -183,6 +183,13 @@ function closePanel() {
       </button>
     </div>
 
+    <!-- 成果入口不依赖当前项目是否有可查询航道要素：
+         即使航道图层暂不可用，也必须能查看/下载历史快照。 -->
+    <div class="waterway-snapshot-actions">
+      <el-button size="small" text @click="openSnapshotDialog">保存提取结果</el-button>
+      <el-button size="small" text @click="openSnapshotList">已保存航道数据</el-button>
+    </div>
+
     <div v-if="catalogLoading" class="waterway-panel-empty">正在读取项目航道图层…</div>
     <div v-else-if="catalogError" class="waterway-panel-error">
       <span>{{ catalogError }}</span>
@@ -255,10 +262,6 @@ function closePanel() {
         </div>
       </div>
 
-      <div class="waterway-snapshot-actions">
-        <el-button size="small" text @click="openSnapshotDialog">保存提取结果</el-button>
-        <el-button size="small" text @click="openSnapshotList">已保存航道数据</el-button>
-      </div>
       <div v-if="searchError" class="waterway-panel-error">
         <span>{{ searchError }}</span>
       </div>

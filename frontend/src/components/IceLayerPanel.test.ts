@@ -32,6 +32,7 @@ describe('IceLayerPanel 字段开关与禁用态', () => {
 
   it('无数据/错误时给出明确状态文案,不影响地图', () => {
     expect(source).toContain('无可用冰情数据')
+    expect(source).toContain('ICE_DATA_HOST_PATH')
   })
 })
 

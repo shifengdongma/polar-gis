@@ -50,6 +50,14 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('基于旧版海图数据')
   })
 
+  it('keeps snapshot entry points visible when the project has no waterway data', () => {
+    const actions = source.indexOf('waterway-snapshot-actions')
+    const emptyState = source.indexOf('!hasWaterwayData')
+    expect(actions).toBeGreaterThan(0)
+    expect(emptyState).toBeGreaterThan(0)
+    expect(actions).toBeLessThan(emptyState)
+  })
+
   it('does not write into route state', () => {
     expect(source).not.toContain('routesStore')
     expect(source).not.toContain('routeDrawing')
