@@ -58,6 +58,13 @@ describe('S57WaterwayPanel', () => {
     expect(actions).toBeLessThan(emptyState)
   })
 
+  it('provides a map overview legend and teleports dialog/drawers to body', () => {
+    expect(source).toContain('地图专题图例')
+    expect(source).toContain('在地图显示选中类别')
+    expect(source).toContain('showOverview')
+    expect(source).toContain('append-to-body')
+  })
+
   it('does not write into route state', () => {
     expect(source).not.toContain('routesStore')
     expect(source).not.toContain('routeDrawing')

@@ -1667,6 +1667,16 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-auxiliary { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; border: 1px dashed rgba(151, 190, 201, .22); border-radius: 4px; }
 .waterway-auxiliary-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #9fbcc6; font-size: 9px; }
 .waterway-warnings { display: flex; flex-direction: column; gap: 1px; color: #d8bd7b; font-size: 8px; line-height: 1.4; }
+.waterway-map-legend { display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid rgba(104, 193, 207, .22); border-radius: 4px; background: rgba(4, 20, 29, .42); }
+.waterway-map-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #b9dce4; font-size: 9px; font-weight: 600; }
+.waterway-map-legend-head .el-button { margin-left: 0; padding: 2px 5px; font-size: 8px; }
+.waterway-map-legend-items { display: flex; flex-wrap: wrap; gap: 3px 9px; }
+.waterway-map-legend-item { display: inline-flex; align-items: center; gap: 4px; color: #9fbcc6; font-size: 8px; }
+.waterway-map-legend-item i { width: 9px; height: 9px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .12) inset; }
+.waterway-map-legend-item b { color: #d9f4f8; font-size: 8px; }
+.waterway-map-legend-hint { color: #66818d; font-size: 8px; line-height: 1.45; }
+.waterway-overview-note { color: #8fd7e2; font-size: 8px; line-height: 1.45; }
+.waterway-overview-note.error { color: #ffd7c7; }
 .waterway-results-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #a9c8d1; font-size: 9px; }
 .waterway-result-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; padding-right: 2px; }
 .waterway-result-item { display: flex; flex-direction: column; gap: 3px; padding: 6px; border: 1px solid rgba(151, 190, 201, .14); border-radius: 4px; background: rgba(8, 30, 40, .55); }

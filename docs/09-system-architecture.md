@@ -1172,7 +1172,9 @@ backend/app/navigation/
   - manifest 含 snapshotId/projectId/name/createdAt/crs/featureCount/truncated/objectClasses/sourceDatasets/sourceVersionIds/sourceContentHashes/filters/schemaVersion/warnings/geojsonSha256。
   - 列表/详情比较 manifest 与当前 `version_id` 集合，输出 `stale`；旧成果不覆盖、仍可下载。
 - API（固定路径在 `/{feature_id}` 之前）：`POST .../snapshots`（201）、`GET .../snapshots`、`GET .../snapshots/{id}`、`GET .../snapshots/{id}/download`（`application/geo+json`）。
-- 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot`；`S57WaterwayPanel` 增加“保存提取结果”对话框与“已保存航道数据”抽屉（来源数据集/版本、要素数、旧版标记、下载按钮）。成果入口位于目录状态判断之前、始终显示，确保当前项目没有可查询航道图层时仍能访问历史快照；不进入航路 store。
+- 地图专题总览：新增 `POST .../preview`（`S57WaterwayPreviewRequest/Response`），复用同一套 `_resolve_usable_layers()/_extract_features()` 键集提取，返回与搜索结果同形状的要素、`groupCounts/objectClassCounts`、`truncated`、`warnings`；不写文件。默认上限 `S57_WATERWAY_PREVIEW_MAX_FEATURES=2000`。
+- 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot` 与 `showOverview`；`S57WaterwayPanel` 增加“地图专题图例”+“在地图显示选中类别”按钮、保存对话框与已保存抽屉。总览把返回要素写入独立航道矢量图层，按组颜色渲染并自动 fit；图例颜色与 `mapS57Waterway` 的 `waterwayGroupColor()` 同源。
+- 成果入口位于目录状态判断之前、始终显示，确保当前项目没有可查询航道图层时仍能访问历史快照；不进入航路 store。保存对话框与详情/成果抽屉均 `append-to-body`，避免被左侧窄面板裁剪。
 
 #### 8.12.3 图层内联图例
 

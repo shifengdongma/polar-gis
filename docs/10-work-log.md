@@ -1984,3 +1984,9 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - **保存按钮不显示**：检查 `polar-gis-frontend:latest` 镜像（2026-11-04T11:53Z）与构建产物，确认“保存提取结果/已保存航道数据”字符串已包含在 `MapWorkspaceView-*.js` 中，**不是镜像陈旧**。根因是 `S57WaterwayPanel.vue` 将成果入口放在 `hasWaterwayData` 的 `v-else` 分支内，项目当前版本没有可查询航道要素时整块隐藏。修复：将成果入口移到目录状态判断之前，始终显示；“保存提取结果”在未选类别时给出明确提示，“已保存航道数据”在无当前图层时仍可查看历史快照。新增源码契约测试锁定入口位置。
 - **冰情长时间无数据**：检查 `deploy/.env` 与宿主机目录，`ICE_DATA_HOST_PATH=../data/ice` 指向的 `data/ice` 仅有 README、无任何 `*.nc`；`IceService(data/ice).info()` 返回 `dates=[]`，所以前端显示“无可用冰情数据”是正确降级。`sample-data` 中有 149 个冰情 NetCDF（2022-01-01..2022-05-31），`IceService(sample-data).info()` 返回 149 个日期，首次扫描约 1.85s，仅含密集度字段。修复：本地 `deploy/.env` 临时改为 `ICE_DATA_HOST_PATH=../sample-data`（该文件不入 Git），需重建 backend/worker 容器以重新挂载；前端空状态增加数据目录排查提示。
 - 验证：前端 `typecheck` 通过；`S57WaterwayPanel.test.ts` 7 tests、`IceLayerPanel.test.ts` 7 tests 通过；`npm run build` 通过；已重建 `polar-gis-frontend:latest` 并确认镜像内含新入口与数据目录提示。未启动完整 Compose 验证冰情瓦片；需执行 `docker compose up -d --force-recreate backend worker web` 后在浏览器确认。
+
+### 追加优化（2026-11-04，航道可视化与弹窗布局）
+
+- **地图专题总览**：后端新增 `POST /projects/{projectId}/s57-waterways/preview`，复用快照提取的 `_resolve_usable_layers()/_extract_features()` 键集逻辑，返回与搜索结果同形状的要素及 `groupCounts/objectClassCounts/truncated/warnings`，不写文件；默认上限 `S57_WATERWAY_PREVIEW_MAX_FEATURES=2000`。前端面板新增“地图专题图例”（按四组颜色汇总目录计数）与“在地图显示选中类别”按钮；`useS57Waterways.showOverview()` 将结果写入独立矢量图层、按组颜色渲染并自动 fit，支持“地图点选”查看详情、“清除显示”移除。
+- **保存窗布局**：`el-dialog` 与详情/成果 `el-drawer` 增加 `append-to-body`，改为挂载到 `body`，不再被左侧窄图层面板裁剪；保存对话框保持 520px 宽度居中显示。
+- 验证：后端 `pytest` 312 passed + 1 skipped（新增 preview service/route tests）；前端 `npm test` 41 files / 477 tests passed；`typecheck`、`build` 通过。未启动完整 Compose/浏览器验证地图总览与弹窗视觉效果，需重建 backend/frontend 镜像后补验。

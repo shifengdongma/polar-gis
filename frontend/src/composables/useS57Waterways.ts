@@ -10,6 +10,7 @@
  */
 import { computed, ref, shallowRef } from 'vue'
 import type OlMap from 'ol/Map'
+import { createEmpty, extend } from 'ol/extent'
 import Feature from 'ol/Feature'
 import VectorLayer from 'ol/layer/Vector'
 import VectorSource from 'ol/source/Vector'
@@ -22,6 +23,7 @@ import {
   fetchWaterwayCatalog,
   fetchWaterwayDetail,
   listWaterwaySnapshots,
+  previewWaterways,
   searchWaterways,
 } from '../api/s57Waterways'
 import type {
@@ -78,6 +80,12 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   const snapshotCreating = ref(false)
   const snapshotError = ref('')
 
+  const overviewLoading = ref(false)
+  const overviewError = ref('')
+  const overviewCount = ref(0)
+  const overviewTruncated = ref(false)
+  const overviewWarnings = shallowRef<string[]>([])
+
   let layer: VectorLayer<VectorSource> | null = null
   let source: VectorSource | null = null
   let attached = false
@@ -86,6 +94,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   let detailController: AbortController | null = null
   let snapshotListController: AbortController | null = null
   let snapshotCreateController: AbortController | null = null
+  let overviewController: AbortController | null = null
   let searchGeneration = 0
   const styleCache = new Map<string, Style>()
 
@@ -250,11 +259,103 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     return true
   }
 
+  function resetOverviewState() {
+    overviewController?.abort()
+    overviewController = null
+    overviewLoading.value = false
+    overviewError.value = ''
+    overviewCount.value = 0
+    overviewTruncated.value = false
+    overviewWarnings.value = []
+  }
+
   function clearDisplay() {
+    resetOverviewState()
     displayed.value = new Map()
     selectedId.value = null
     detail.value = null
     rebuildSource()
+  }
+
+  /**
+   * Extract all currently selected waterway classes (with current keyword /
+   * viewport filters) and render them as one thematic overview on the map.
+   * The backend caps the number of features; nothing is persisted.
+   */
+  async function showOverview(): Promise<boolean> {
+    if (selectedClasses.value.size === 0) {
+      overviewError.value = '请至少选择一个航道对象类别'
+      return false
+    }
+    let bbox: [number, number, number, number] | null = null
+    if (viewportOnly.value) {
+      bbox = options.getViewportBbox?.() ?? null
+      if (!bbox) {
+        overviewError.value = '当前视口暂不可用，请关闭“当前视口”后显示'
+        return false
+      }
+    }
+    overviewController?.abort()
+    const controller = new AbortController()
+    overviewController = controller
+    overviewLoading.value = true
+    overviewError.value = ''
+    overviewWarnings.value = []
+    try {
+      const data = await previewWaterways(
+        options.getProjectId(),
+        {
+          keyword: keyword.value.trim() || null,
+          objectClasses: [...selectedClasses.value],
+          includeAuxiliary: includeAuxiliary.value,
+          bbox,
+        },
+        controller.signal,
+      )
+      if (controller.signal.aborted) return false
+      const next = new Map<string, S57WaterwaySearchItem>()
+      for (const item of data.items) {
+        if (item.geometry) next.set(item.id, item)
+      }
+      displayed.value = next
+      selectedId.value = null
+      overviewCount.value = next.size
+      overviewTruncated.value = data.truncated
+      const warnings = [...data.warnings]
+      if (next.size < data.total) {
+        warnings.push(`有 ${data.total - next.size} 条要素无几何，未在地图叠加`)
+      }
+      overviewWarnings.value = warnings
+      rebuildSource()
+      if (data.total === 0) overviewError.value = '没有匹配的航道要素'
+
+      const map = options.getMap()
+      if (map && next.size > 0) {
+        const extent = createEmpty()
+        let hasExtent = false
+        for (const item of next.values()) {
+          const itemExtent = waterwayExtent(item, options.getCrs())
+          if (!itemExtent) continue
+          extend(extent, itemExtent)
+          hasExtent = true
+        }
+        if (hasExtent) {
+          map.getView().fit(extent, {
+            padding: options.getFitPadding?.() ?? [90, 90, 90, 420],
+            maxZoom: 9,
+            duration: 450,
+          })
+        }
+      }
+      return true
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        overviewError.value = apiErrorMessage(caught, '航道专题展示失败')
+      }
+      return false
+    } finally {
+      if (!controller.signal.aborted) overviewLoading.value = false
+    }
   }
 
   async function loadSnapshots() {
@@ -454,6 +555,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   function deactivate() {
     selectionMode.value = false
     closeDetail()
+    resetOverviewState()
     displayed.value = new Map()
     selectedId.value = null
     rebuildSource()
@@ -465,11 +567,13 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     detailController?.abort()
     snapshotListController?.abort()
     snapshotCreateController?.abort()
+    overviewController?.abort()
     catalogController = null
     searchController = null
     detailController = null
     snapshotListController = null
     snapshotCreateController = null
+    overviewController = null
     const map = options.getMap()
     if (layer) {
       if (map) map.removeLayer(layer)
@@ -511,6 +615,11 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     snapshotsError,
     snapshotCreating,
     snapshotError,
+    overviewLoading,
+    overviewError,
+    overviewCount,
+    overviewTruncated,
+    overviewWarnings,
     hasWaterwayData,
     availableClassCount,
     canSearch,
@@ -526,6 +635,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     showItem,
     isItemShown,
     clearDisplay,
+    showOverview,
     loadSnapshots,
     createSnapshot,
     downloadSnapshot,

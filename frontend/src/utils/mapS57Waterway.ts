@@ -26,6 +26,12 @@ const GROUP_COLORS: Record<
 const AUXILIARY_COLOR = { stroke: '#94a3b8', fill: 'rgba(148, 163, 184, 0.12)', dash: [3, 4] }
 const SELECTED_COLOR = '#fde047'
 
+/** Group color used by both the map overlay and the panel legend. */
+export function waterwayGroupColor(group: WaterwayGroup | string, auxiliary = false): string {
+  if (auxiliary) return AUXILIARY_COLOR.stroke
+  return GROUP_COLORS[group as WaterwayGroup]?.stroke ?? GROUP_COLORS.fairway_route.stroke
+}
+
 export function waterwayDisplayName(item: Pick<S57WaterwaySearchItem, 'name'>): string {
   const name = item.name?.trim()
   return name || '未命名航道要素'

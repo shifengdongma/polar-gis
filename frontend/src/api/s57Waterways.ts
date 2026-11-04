@@ -2,6 +2,8 @@ import { api } from './client'
 import type {
   S57WaterwayCatalog,
   S57WaterwayDetail,
+  S57WaterwayPreviewRequest,
+  S57WaterwayPreviewResponse,
   S57WaterwaySearchRequest,
   S57WaterwaySearchResponse,
   S57WaterwaySnapshotCreateRequest,
@@ -41,6 +43,19 @@ export async function fetchWaterwayDetail(
   const response = await api.get<S57WaterwayDetail>(
     `/projects/${projectId}/s57-waterways/${encodeURIComponent(featureId)}`,
     { signal, timeout: 20_000 },
+  )
+  return response.data
+}
+
+export async function previewWaterways(
+  projectId: string,
+  payload: S57WaterwayPreviewRequest,
+  signal?: AbortSignal,
+): Promise<S57WaterwayPreviewResponse> {
+  const response = await api.post<S57WaterwayPreviewResponse>(
+    `/projects/${projectId}/s57-waterways/preview`,
+    payload,
+    { signal, timeout: 120_000 },
   )
   return response.data
 }

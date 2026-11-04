@@ -15,7 +15,11 @@ import type {
   S57WaterwayProperty,
   S57WaterwaySnapshotManifest,
 } from '../types/s57Waterways'
-import { waterwayDisplayName, waterwaySourceLabel } from '../utils/mapS57Waterway'
+import {
+  waterwayDisplayName,
+  waterwayGroupColor,
+  waterwaySourceLabel,
+} from '../utils/mapS57Waterway'
 
 const props = defineProps<{ waterways: S57WaterwaysApi }>()
 const emit = defineEmits<{ (event: 'close'): void }>()
@@ -69,6 +73,40 @@ const snapshotClassSummary = computed(
       .map((item) => `${item.nameZh} ${item.code}`)
       .join('、') || '未选择',
 )
+const overviewLoading = computed(() => props.waterways.overviewLoading.value)
+const overviewError = computed(() => props.waterways.overviewError.value)
+const overviewCount = computed(() => props.waterways.overviewCount.value)
+const overviewTruncated = computed(() => props.waterways.overviewTruncated.value)
+const overviewWarnings = computed(() => props.waterways.overviewWarnings.value)
+const groupSummary = computed(() => {
+  const entries = new Map<
+    string,
+    { key: string; label: string; count: number; color: string }
+  >()
+  for (const item of classes.value) {
+    if (item.layerCount === 0 && item.count === 0) continue
+    const key = item.auxiliary ? 'auxiliary' : item.group
+    const entry = entries.get(key) ?? {
+      key,
+      label: item.auxiliary ? '相关辅助要素' : item.groupNameZh,
+      count: 0,
+      color: waterwayGroupColor(item.group, item.auxiliary),
+    }
+    entry.count += item.count
+    entries.set(key, entry)
+  }
+  return [...entries.values()]
+})
+const overviewMessage = computed(() => {
+  if (overviewLoading.value) return '正在从服务器提取选中类别的航道要素…'
+  if (overviewError.value) return overviewError.value
+  if (overviewCount.value > 0) {
+    return `已在地图显示 ${overviewCount.value} 条${
+      overviewTruncated.value ? '（达到单次显示上限）' : ''
+    }`
+  }
+  return ''
+})
 
 function checked(code: string): boolean {
   return selectedClasses.value.has(code)
@@ -127,6 +165,13 @@ function openSnapshotDialog() {
   snapshotMaxFeatures.value = 20000
   props.waterways.snapshotError.value = ''
   snapshotDialogVisible.value = true
+}
+
+async function showOverviewOnMap() {
+  const shown = await props.waterways.showOverview()
+  if (shown) {
+    ElMessage.success(`已在地图显示 ${props.waterways.overviewCount.value} 条航道要素`)
+  }
 }
 
 async function saveSnapshot() {
@@ -262,6 +307,42 @@ function closePanel() {
         </div>
       </div>
 
+      <div class="waterway-map-legend">
+        <div class="waterway-map-legend-head">
+          <span>地图专题图例</span>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :loading="overviewLoading"
+            :disabled="selectedClasses.size === 0"
+            @click="showOverviewOnMap"
+          >在地图显示选中类别</el-button>
+        </div>
+        <div class="waterway-map-legend-items">
+          <span
+            v-for="entry in groupSummary"
+            :key="entry.key"
+            class="waterway-map-legend-item"
+          >
+            <i :style="{ background: entry.color }"></i>{{ entry.label }}
+            <b>{{ entry.count }}</b>
+          </span>
+        </div>
+        <div class="waterway-map-legend-hint">
+          数字来自图层目录统计；按当前类别与筛选条件提取并叠加，受单次显示上限约束。开启“地图点选”后可点击要素查看详情。
+        </div>
+        <div
+          v-if="overviewMessage"
+          :class="['waterway-overview-note', { error: overviewError }]"
+        >{{ overviewMessage }}</div>
+        <div
+          v-for="warning in overviewWarnings"
+          :key="warning"
+          class="waterway-overview-note"
+        >{{ warning }}</div>
+      </div>
+
       <div v-if="searchError" class="waterway-panel-error">
         <span>{{ searchError }}</span>
       </div>
@@ -318,6 +399,7 @@ function closePanel() {
       title="航道要素详情"
       size="420px"
       class="waterway-detail-drawer"
+      append-to-body
       @close="waterways.closeDetail()"
     >
       <div v-if="detailLoading" class="waterway-panel-empty">正在加载要素属性…</div>
@@ -351,6 +433,7 @@ function closePanel() {
       title="保存航道提取结果"
       width="520px"
       class="waterway-snapshot-dialog"
+      append-to-body
     >
       <div class="waterway-snapshot-form">
         <label>成果名称</label>
@@ -392,6 +475,7 @@ function closePanel() {
       title="已保存航道数据"
       size="480px"
       class="waterway-snapshot-drawer"
+      append-to-body
     >
       <div v-if="snapshotsLoading" class="waterway-panel-empty">正在加载已保存成果…</div>
       <div v-else-if="snapshotsError" class="waterway-panel-error">

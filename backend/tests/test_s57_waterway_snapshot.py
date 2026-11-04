@@ -43,6 +43,17 @@ def make_layer(*, key_column="ogc_fid", key_type="int", geometry=True):
     )
 
 
+def versioned_layer():
+    base = make_layer()
+    return WaterwayLayerRef(
+        **{
+            **base.__dict__,
+            "version_id": uuid4(),
+            "content_hash": "b" * 64,
+        }
+    )
+
+
 def payload(**overrides):
     return SimpleNamespace(
         keyword=overrides.get("keyword"),
@@ -221,14 +232,7 @@ class FakeDb:
 
 
 def test_create_snapshot_extracts_all_keyset_batches(tmp_path, monkeypatch):
-    layer = make_layer()
-    layer = WaterwayLayerRef(
-        **{
-            **layer.__dict__,
-            "version_id": uuid4(),
-            "content_hash": "b" * 64,
-        }
-    )
+    layer = versioned_layer()
     monkeypatch.setattr(
         export,
         "resolve_waterway_layers",
@@ -279,6 +283,81 @@ def test_create_snapshot_extracts_all_keyset_batches(tmp_path, monkeypatch):
         feature["geometry"]["type"] for feature in geojson["features"]
     } == {"MultiLineString"}
     assert geojson["features"][0]["properties"]["originalAttributes"]["drval1"] == 11
+
+
+def test_preview_returns_items_counts_and_truncation(tmp_path, monkeypatch):
+    layer = versioned_layer()
+    monkeypatch.setattr(
+        export,
+        "resolve_waterway_layers",
+        lambda _db, _project_id: WaterwayResolution(layers=(layer,), warnings=()),
+    )
+    settings = Settings(
+        storage_root=tmp_path,
+        temp_root=tmp_path / "temp",
+        s57_waterway_preview_max_features=2,
+    )
+    monkeypatch.setattr(export, "get_settings", lambda: settings)
+
+    def row(number: int):
+        return {
+            "feature_key": str(number),
+            "name": f"航道 {number}",
+            "geometry": json.dumps(
+                {
+                    "type": "MultiLineString",
+                    "coordinates": [[[120.0 + number, 75.0], [121.0 + number, 75.5]]],
+                }
+            ),
+            "raw_attributes": {
+                "objnam": f"Fairway {number}",
+                "inform": "preview",
+                "status": "1",
+            },
+        }
+
+    db = FakeDb({None: [row(1), row(2)], "2": [row(3)]})
+    result = export.preview_waterway_items(
+        db, uuid4(), payload(object_classes=["FAIRWY"])
+    )
+    assert result["total"] == 2
+    assert result["truncated"] is True
+    assert result["groupCounts"] == {"fairway_route": 2}
+    assert result["objectClassCounts"] == {"FAIRWY": 2}
+    item = result["items"][0]
+    assert item["name"] == "航道 1"
+    assert item["nameField"] == "OBJNAM"
+    assert item["inform"] == "preview"
+    assert item["status"] == "1"
+    assert item["geometryType"] == "MultiLineString"
+    assert item["bbox"] is not None
+
+
+def test_preview_route_is_not_swallowed_by_feature_route(
+    client, db_session, user_headers, monkeypatch
+):
+    project = published_project(db_session, f"preview-{uuid4().hex[:8]}")
+    from app.api import s57_waterways as api
+
+    monkeypatch.setattr(
+        api.snapshot_service,
+        "preview_waterway_items",
+        lambda _db, _project_id, _payload: {
+            "items": [],
+            "total": 0,
+            "truncated": False,
+            "groupCounts": {},
+            "objectClassCounts": {},
+            "warnings": ["preview-only"],
+        },
+    )
+    response = client.post(
+        f"/api/v1/projects/{project.id}/s57-waterways/preview",
+        headers=user_headers,
+        json={"objectClasses": ["FAIRWY"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["warnings"] == ["preview-only"]
 
 
 def test_snapshot_routes_create_list_detail_download(

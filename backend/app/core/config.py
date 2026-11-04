@@ -50,6 +50,7 @@ class Settings(BaseSettings):
 
     # S-57 waterway snapshots (persisted GeoJSON extraction)
     s57_waterway_snapshot_max_features: int = 20000
+    s57_waterway_preview_max_features: int = 2000
     s57_waterway_snapshot_batch_size: int = 500
     s57_waterway_snapshot_timeout_ms: int = 120000
     s57_waterway_snapshot_root: Path | None = None

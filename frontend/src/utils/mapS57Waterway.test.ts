@@ -9,6 +9,7 @@ import {
   waterwayDisplayName,
   waterwayExtent,
   waterwayFeatureFromItem,
+  waterwayGroupColor,
   waterwaySourceLabel,
   waterwayStyleForFeature,
 } from './mapS57Waterway'
@@ -106,5 +107,7 @@ describe('waterway geometry/style', () => {
     expect(selectedStyle.getStroke()?.getWidth()).toBeGreaterThan(
       fairwayStyle.getStroke()?.getWidth() ?? 0,
     )
+    expect(waterwayGroupColor('fairway_route')).toBe('#22d3ee')
+    expect(waterwayGroupColor('waterway_environment', true)).toBe('#94a3b8')
   })
 })

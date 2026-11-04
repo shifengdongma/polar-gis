@@ -36,6 +36,7 @@ from app.services.s57_waterways import (
     WaterwayLayerRef,
     _apply_statement_timeout,
     _db_error,
+    _geometry_bbox,
     _json_safe,
     _selected_codes,
     build_waterway_export_batch_sql,
@@ -212,9 +213,10 @@ def write_snapshot(
     return {**manifest, "stale": False}
 
 
-def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dict[str, Any]:
-    """Extract every matching waterway feature and persist it as a snapshot."""
-    settings = get_settings()
+def _resolve_usable_layers(
+    db: Session, project_id: UUID, payload: Any
+) -> tuple[list[WaterwayLayerRef], set[str], list[str]]:
+    """Resolve current-version waterway layers usable under the request filters."""
     resolution = resolve_waterway_layers(db, project_id)
     selected, warnings = _selected_codes(payload)
     warnings.extend(resolution.warnings)
@@ -240,7 +242,95 @@ def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dic
             warnings.append(f"图层 {layer.layer_code} 无几何列，视口筛选下已跳过")
             continue
         usable.append(layer)
+    return usable, selected, warnings
 
+
+def _extract_features(
+    db: Session,
+    usable: list[WaterwayLayerRef],
+    payload: Any,
+    max_features: int,
+    batch_size: int,
+) -> tuple[list[tuple[WaterwayLayerRef, dict[str, Any]]], bool]:
+    """Read all matching rows in keyset batches, returning (layer, feature) pairs."""
+    extracted: list[tuple[WaterwayLayerRef, dict[str, Any]]] = []
+    truncated = False
+    _apply_statement_timeout(db, get_settings().s57_waterway_snapshot_timeout_ms)
+    try:
+        for layer in usable:
+            after_key: str | None = None
+            while len(extracted) < max_features:
+                limit = min(batch_size, max_features - len(extracted))
+                sql, params = build_waterway_export_batch_sql(
+                    layer, payload, after_key=after_key, limit=limit
+                )
+                if not sql:
+                    break
+                rows = db.execute(text(sql), params).mappings().all()
+                if not rows:
+                    break
+                for row in rows:
+                    if len(extracted) >= max_features:
+                        break
+                    feature = _feature_from_row(dict(row), layer)
+                    if feature is not None:
+                        extracted.append((layer, feature))
+                after_key = str(rows[-1]["feature_key"])
+                if len(rows) < limit:
+                    break
+            if len(extracted) >= max_features:
+                truncated = True
+                break
+    except DBAPIError as error:
+        raise _db_error(error) from error
+    return extracted, truncated
+
+
+def _preview_item(
+    layer: WaterwayLayerRef, feature: dict[str, Any]
+) -> dict[str, Any]:
+    """Convert an extracted feature into the search-item shape used by the map."""
+    properties = feature.get("properties") or {}
+    geometry = feature.get("geometry")
+    raw = properties.get("originalAttributes") or {}
+    name = properties.get("objectName")
+    if raw.get("objnam"):
+        name_field = "OBJNAM"
+    elif raw.get("nobjnm"):
+        name_field = "NOBJNM"
+    else:
+        name_field = None
+    inform = raw.get("inform") or raw.get("ninfom")
+    status = raw.get("status")
+    return {
+        "id": feature["id"],
+        "layerId": properties["sourceLayerId"],
+        "layerName": properties["sourceLayerName"],
+        "layerCode": properties["sourceLayerCode"],
+        "datasetCode": properties["sourceDatasetCode"],
+        "datasetName": properties["sourceDatasetName"],
+        "versionNo": properties["sourceVersionNo"],
+        "sourceCell": properties["sourceCell"],
+        "objectClass": properties["objectClass"],
+        "objectNameZh": properties["objectNameZh"],
+        "group": properties["group"],
+        "groupNameZh": properties["groupNameZh"],
+        "auxiliary": properties["auxiliary"],
+        "name": name,
+        "nameField": name_field,
+        "inform": str(inform)[:500] if inform else None,
+        "status": str(status) if status is not None else None,
+        "geometryType": (geometry or {}).get("type") or layer.geometry_type,
+        "renderable": bool(layer.renderable and geometry),
+        "geometry": geometry,
+        "bbox": _geometry_bbox(geometry),
+    }
+
+
+def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dict[str, Any]:
+    """Extract every matching waterway feature and persist it as a snapshot."""
+    settings = get_settings()
+    usable, selected, warnings = _resolve_usable_layers(db, project_id, payload)
     if not usable:
         raise AppError(
             "S57_WATERWAY_SNAPSHOT_NO_LAYER",
@@ -254,37 +344,10 @@ def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dic
     effective_max = min(payload.max_features or max_features, max_features)
     batch_size = max(1, settings.s57_waterway_snapshot_batch_size)
 
-    features: list[dict[str, Any]] = []
-    truncated = False
-    _apply_statement_timeout(db, settings.s57_waterway_snapshot_timeout_ms)
-    try:
-        for layer in usable:
-            after_key: str | None = None
-            while len(features) < effective_max:
-                limit = min(batch_size, effective_max - len(features))
-                sql, params = build_waterway_export_batch_sql(
-                    layer, payload, after_key=after_key, limit=limit
-                )
-                if not sql:
-                    break
-                rows = db.execute(text(sql), params).mappings().all()
-                if not rows:
-                    break
-                for row in rows:
-                    if len(features) >= effective_max:
-                        break
-                    feature = _feature_from_row(dict(row), layer)
-                    if feature is not None:
-                        features.append(feature)
-                after_key = str(rows[-1]["feature_key"])
-                if len(rows) < limit:
-                    break
-            if len(features) >= effective_max:
-                truncated = True
-                break
-    except DBAPIError as error:
-        raise _db_error(error) from error
-
+    extracted, truncated = _extract_features(
+        db, usable, payload, effective_max, batch_size
+    )
+    features = [feature for _, feature in extracted]
     if not features:
         raise AppError("S57_WATERWAY_SNAPSHOT_EMPTY", "没有匹配的航道要素", 422)
 
@@ -310,6 +373,46 @@ def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dic
         warnings=warnings,
         truncated=truncated,
     )
+
+
+def preview_waterway_items(db: Session, project_id: UUID, payload: Any) -> dict[str, Any]:
+    """Return matching features for map preview; nothing is written to disk."""
+    settings = get_settings()
+    usable, _selected, warnings = _resolve_usable_layers(db, project_id, payload)
+    if not usable:
+        warnings.append("没有可展示的航道图层，请检查对象类别与筛选条件")
+        return {
+            "items": [],
+            "total": 0,
+            "truncated": False,
+            "groupCounts": {},
+            "objectClassCounts": {},
+            "warnings": warnings,
+        }
+
+    max_features = max(1, settings.s57_waterway_preview_max_features)
+    if payload.max_features is not None and payload.max_features > max_features:
+        warnings.append(f"单次最多显示 {max_features} 个要素，已按上限截取")
+    effective_max = min(payload.max_features or max_features, max_features)
+    batch_size = max(1, settings.s57_waterway_snapshot_batch_size)
+
+    extracted, truncated = _extract_features(
+        db, usable, payload, effective_max, batch_size
+    )
+    items = [_preview_item(layer, feature) for layer, feature in extracted]
+    group_counts: dict[str, int] = {}
+    class_counts: dict[str, int] = {}
+    for item in items:
+        group_counts[item["group"]] = group_counts.get(item["group"], 0) + 1
+        class_counts[item["objectClass"]] = class_counts.get(item["objectClass"], 0) + 1
+    return {
+        "items": items,
+        "total": len(items),
+        "truncated": truncated,
+        "groupCounts": group_counts,
+        "objectClassCounts": class_counts,
+        "warnings": warnings,
+    }
 
 
 def load_snapshot_manifest(

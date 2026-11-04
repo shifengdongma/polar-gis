@@ -86,6 +86,23 @@ export interface S57WaterwaySearchResponse {
   warnings: string[]
 }
 
+export interface S57WaterwayPreviewRequest {
+  keyword?: string | null
+  objectClasses: string[]
+  includeAuxiliary?: boolean
+  bbox?: [number, number, number, number] | null
+  maxFeatures?: number | null
+}
+
+export interface S57WaterwayPreviewResponse {
+  items: S57WaterwaySearchItem[]
+  total: number
+  truncated: boolean
+  groupCounts: Record<string, number>
+  objectClassCounts: Record<string, number>
+  warnings: string[]
+}
+
 export interface S57WaterwaySnapshotCreateRequest {
   name?: string | null
   keyword?: string | null

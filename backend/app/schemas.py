@@ -601,6 +601,10 @@ class S57WaterwaySnapshotCreateRequest(S57WaterwayFilterRequest):
     max_features: int | None = Field(default=None, ge=1, le=100000)
 
 
+class S57WaterwayPreviewRequest(S57WaterwayFilterRequest):
+    max_features: int | None = Field(default=None, ge=1, le=10000)
+
+
 class S57WaterwaySearchItem(ApiModel):
     id: str
     layer_id: str
@@ -631,6 +635,15 @@ class S57WaterwaySearchResponse(ApiModel):
     page_size: int
     total: int
     truncated_layers: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class S57WaterwayPreviewResponse(ApiModel):
+    items: list[S57WaterwaySearchItem] = Field(default_factory=list)
+    total: int
+    truncated: bool = False
+    group_counts: dict[str, int] = Field(default_factory=dict)
+    object_class_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 

@@ -17,6 +17,7 @@ vi.mock('../api/s57Waterways', () => ({
   createWaterwaySnapshot: vi.fn(),
   listWaterwaySnapshots: vi.fn(),
   downloadWaterwaySnapshot: vi.fn(),
+  previewWaterways: vi.fn(),
 }))
 
 import {
@@ -24,6 +25,7 @@ import {
   fetchWaterwayCatalog,
   fetchWaterwayDetail,
   listWaterwaySnapshots,
+  previewWaterways,
   searchWaterways,
 } from '../api/s57Waterways'
 
@@ -248,6 +250,41 @@ describe('useS57Waterways', () => {
     waterways.setIncludeAuxiliary(false)
     expect(waterways.selectedClasses.value.has('DEPARE')).toBe(false)
     expect(waterways.includeAuxiliary.value).toBe(false)
+  })
+
+  it('previews all selected categories on the map and fits their extent', async () => {
+    vi.mocked(previewWaterways).mockResolvedValue({
+      items: [item('id-1', 'A'), item('id-2', 'B')],
+      total: 2,
+      truncated: false,
+      groupCounts: { fairway_route: 2 },
+      objectClassCounts: { FAIRWY: 2 },
+      warnings: [],
+    })
+    const { map, fit } = fakeMap()
+    const waterways = useS57Waterways({
+      getProjectId: () => 'project-1',
+      getMap: () => map as never,
+      getCrs: () => 'EPSG:3857',
+      getFitPadding: () => [80, 80, 80, 380],
+    })
+    waterways.attach()
+    waterways.setClasses(['FAIRWY'])
+    const shown = await waterways.showOverview()
+    expect(shown).toBe(true)
+    expect(previewWaterways).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({
+        keyword: null,
+        objectClasses: ['FAIRWY'],
+        bbox: null,
+      }),
+      expect.any(AbortSignal),
+    )
+    expect(waterways.displayedCount.value).toBe(2)
+    expect(waterways.overviewCount.value).toBe(2)
+    expect(waterways.overviewTruncated.value).toBe(false)
+    expect(fit).toHaveBeenCalled()
   })
 
   it('creates a snapshot from current filters and lists saved results', async () => {

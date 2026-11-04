@@ -13,6 +13,8 @@ from app.models import User
 from app.schemas import (
     S57WaterwayCatalogRead,
     S57WaterwayDetailRead,
+    S57WaterwayPreviewRequest,
+    S57WaterwayPreviewResponse,
     S57WaterwaySearchRequest,
     S57WaterwaySearchResponse,
     S57WaterwaySnapshotCreateRequest,
@@ -47,6 +49,17 @@ def waterway_search(
 ) -> dict:
     project = project_or_404(db, project_id, include_unpublished=False)
     return service.execute_waterway_search(db, project.id, payload)
+
+
+@router.post("/preview", response_model=S57WaterwayPreviewResponse)
+def waterway_preview(
+    project_id: UUID,
+    payload: S57WaterwayPreviewRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict:
+    project = project_or_404(db, project_id, include_unpublished=False)
+    return snapshot_service.preview_waterway_items(db, project.id, payload)
 
 
 @router.post(
