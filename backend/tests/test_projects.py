@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from app.models import (
     LayerStatus,
     Project,
     ProjectLayer,
+    User,
     VersionStatus,
 )
 
@@ -574,3 +575,66 @@ def test_map_datasets_layers_include_gwc_transport_fields(
     assert mypoint["cacheable"] is False
     assert mypoint["renderTransport"] == "wms"
     assert mypoint["tileServiceUrl"] == "/geoserver/pg/wms"
+
+
+def test_layer_legend_exposes_s57_object_class_and_fallback(
+    client: TestClient,
+    user_headers: dict[str, str],
+    db_session: Session,
+) -> None:
+    user = db_session.scalar(select(User))
+    dataset = Dataset(
+        code=f"s57-legend-{uuid4().hex[:8]}",
+        name="图例测试",
+        data_type=DatasetType.S57.value,
+        created_by=user.id,
+    )
+    db_session.add(dataset)
+    db_session.flush()
+    version = DatasetVersion(
+        dataset_id=dataset.id,
+        version_no=1,
+        source_format="000",
+        status=VersionStatus.VALID.value,
+        content_hash="c" * 64,
+    )
+    db_session.add(version)
+    db_session.flush()
+    mapped = Layer(
+        dataset_version_id=version.id,
+        code=f"s57_legend_fairwy_{uuid4().hex[:8]}",
+        name="FAIRWY",
+        geometry_type="MultiLineString",
+        source_table="geo.demo_fairwy",
+        status=LayerStatus.AVAILABLE.value,
+        geoserver_workspace="polar_gis",
+        geoserver_layer_name="demo_fairwy",
+        metadata_json={"s57": {"objectClass": "FAIRWY"}},
+    )
+    unmapped = Layer(
+        dataset_version_id=version.id,
+        code=f"s57_legend_tsslpt_{uuid4().hex[:8]}",
+        name="TSSLPT",
+        geometry_type="MultiLineString",
+        source_table="geo.demo_tsslpt",
+        status=LayerStatus.AVAILABLE.value,
+        geoserver_workspace="polar_gis",
+        geoserver_layer_name="demo_tsslpt",
+        metadata_json={"s57": {"objectClass": "TSSLPT"}},
+    )
+    db_session.add_all([mapped, unmapped])
+    db_session.commit()
+
+    response = client.get(f"/api/v1/layers/{mapped.id}/legend", headers=user_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "GetLegendGraphic" in body["url"]
+    assert body["objectClass"] == "FAIRWY"
+    assert body["fallback"]["geometry"] == "line"
+    assert body["fallback"]["color"] == "#b14e9a"
+
+    response = client.get(f"/api/v1/layers/{unmapped.id}/legend", headers=user_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objectClass"] == "TSSLPT"
+    assert body["fallback"] is None

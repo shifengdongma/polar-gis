@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     s57_waterway_max_page_size: int = 50
     s57_waterway_max_offset: int = 10000
 
+    # S-57 waterway snapshots (persisted GeoJSON extraction)
+    s57_waterway_snapshot_max_features: int = 20000
+    s57_waterway_snapshot_batch_size: int = 500
+    s57_waterway_snapshot_timeout_ms: int = 120000
+    s57_waterway_snapshot_root: Path | None = None
+
     # Navigation / environment
     navigation_enabled: bool = True
     navigation_data_root: Path = Path("/data/navigation")
@@ -97,6 +103,13 @@ class Settings(BaseSettings):
     def resolved_navigation_manifest_path(self) -> Path:
         return self.navigation_manifest_path or (
             self.navigation_data_root / "navigation_manifest.json"
+        )
+
+    @property
+    def resolved_s57_waterway_snapshot_root(self) -> Path:
+        """Waterway snapshots live in the persistent shared storage volume by default."""
+        return self.s57_waterway_snapshot_root or (
+            self.storage_root / "navigation" / "waterways"
         )
 
 

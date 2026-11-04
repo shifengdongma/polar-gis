@@ -92,6 +92,9 @@ class WaterwayLayerRef:
     renderable: bool
     reason: str | None
     updated_at: datetime | None
+    # Snapshot provenance (optional defaults keep existing direct constructions valid).
+    version_id: UUID | None = None
+    content_hash: str | None = None
 
     @property
     def searchable(self) -> bool:
@@ -380,6 +383,8 @@ def resolve_waterway_layers(db: Session, project_id: UUID) -> WaterwayResolution
                 renderable=renderable,
                 reason=reason,
                 updated_at=updated_at,
+                version_id=version.id,
+                content_hash=version.content_hash,
             )
         )
     return WaterwayResolution(layers=tuple(layers), warnings=tuple(warnings), truncated=truncated)
@@ -679,10 +684,80 @@ def build_waterway_search_sql(
     return count_sql, rows_sql, params
 
 
-def _apply_statement_timeout(db: Session) -> None:
+def build_waterway_export_batch_sql(
+    layer: WaterwayLayerRef,
+    payload: Any,
+    *,
+    after_key: str | None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """Build one keyset-paginated export batch for a single waterway layer.
+
+    Unlike the paged search UNION this reads every matching row without deep
+    OFFSET, preserves the real geometry type and returns all original columns
+    (``to_jsonb`` minus the geometry) for downstream route planning.
+
+    ``after_key`` is the last feature key from the previous batch (``None`` for
+    the first batch). Table/column identifiers come only from resolved layer
+    metadata; all values stay bound parameters.
+    """
+    if not layer.searchable or not layer.key_column:
+        return "", {}
+    keyword = (payload.keyword or "").strip()
+    bbox = payload.bbox
+    if keyword and not any(
+        field in layer.fields for field in (*_NAME_FIELDS, *_INFORM_FIELDS)
+    ):
+        return "", {}
+    if bbox and not layer.geometry_column:
+        return "", {}
+
+    params: dict[str, Any] = {}
+    table = _safe_table(layer.source_table)
+    key = _quote_identifier(layer.key_column)
+    conditions: list[str] = []
+    keyword_condition = _keyword_condition(layer, keyword, 0, params) if keyword else ""
+    if keyword_condition:
+        conditions.append(keyword_condition)
+    if bbox:
+        bbox_condition = _bbox_condition(layer, tuple(bbox), params, 0)
+        if bbox_condition:
+            conditions.append(bbox_condition)
+    if after_key is not None:
+        params["after_key"] = after_key
+        if layer.key_type == "int":
+            conditions.append(f"w.{key} > CAST(:after_key AS BIGINT)")
+        else:
+            conditions.append(f"w.{key} > :after_key")
+
+    geometry = (
+        f"ST_AsGeoJSON(ST_Transform(w.{_quote_identifier(layer.geometry_column)}, 4326))"
+        if layer.geometry_column
+        else "NULL::text"
+    )
+    raw_attributes = "to_jsonb(w.*)"
+    if layer.geometry_column:
+        params["geom_field"] = layer.geometry_column
+        raw_attributes += " - CAST(:geom_field AS text)"
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    params["limit"] = limit
+    sql = (
+        "SELECT "
+        f"CAST(w.{key} AS TEXT) AS feature_key, "
+        f"{_name_expr(layer)} AS name, "
+        f"{geometry} AS geometry, "
+        f"{raw_attributes} AS raw_attributes "
+        f"FROM {table} AS w{where} "
+        f"ORDER BY w.{key} "
+        "LIMIT :limit"
+    )
+    return sql, params
+
+
+def _apply_statement_timeout(db: Session, timeout_ms: int | None = None) -> None:
     if db.get_bind().dialect.name != "postgresql":
         return
-    timeout = str(get_settings().s57_waterway_query_timeout_ms)
+    timeout = str(timeout_ms or get_settings().s57_waterway_query_timeout_ms)
     try:
         # The default Docker /dev/shm (64 MiB) is too small for PostgreSQL
         # parallel workers on a multi-layer UNION with large geometries.
@@ -711,6 +786,10 @@ def _json_safe(value: Any) -> Any:
         return base64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, UUID):
         return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
     return str(value)
 
 

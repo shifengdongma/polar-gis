@@ -24,6 +24,8 @@ from app.schemas import (
     Paginated,
 )
 from app.services.audit import write_audit
+from app.services.s57_styles import preset_for_object_class
+from app.services.s57_waterways import object_class_for_layer
 
 public_router = APIRouter(prefix="/layers", tags=["layers"])
 admin_router = APIRouter(prefix="/admin/layers", tags=["admin-layers"])
@@ -220,7 +222,7 @@ def layer_legend(
     layer_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     layer = layer_or_404(db, layer_id, available_only=True)
     workspace = layer.geoserver_workspace or settings.geoserver_workspace
     layer_name = layer.geoserver_layer_name or layer.code
@@ -233,7 +235,25 @@ def layer_legend(
             "layer": f"{workspace}:{layer_name}",
         }
     )
-    return {"url": f"{settings.geoserver_public_url.rstrip('/')}/{workspace}/wms?{query}"}
+    object_class = object_class_for_layer(layer)
+    preset = preset_for_object_class(object_class) if object_class else None
+    fallback = (
+        {
+            "geometry": preset.geometry,
+            "color": preset.color,
+            "fillColor": preset.fill_color,
+            "opacity": 0.42 if preset.geometry == "polygon" else 1.0,
+            "label": preset.name,
+        }
+        if preset is not None
+        else None
+    )
+    return {
+        "url": f"{settings.geoserver_public_url.rstrip('/')}/{workspace}/wms?{query}",
+        "objectClass": object_class or None,
+        "geometryType": layer.geometry_type,
+        "fallback": fallback,
+    }
 
 
 @public_router.post("/{layer_id}/identify")

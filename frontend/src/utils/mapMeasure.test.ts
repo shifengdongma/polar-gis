@@ -5,6 +5,7 @@ import { get as getProjection, fromLonLat } from 'ol/proj'
 import { register } from 'ol/proj/proj4'
 import { DEFAULT_RADIUS, getArea } from 'ol/sphere'
 import proj4 from 'proj4'
+import { geodesicDistanceWGS84, measurePolylineLength } from './geodesicDistance'
 import {
   HOVER_MIN_GROUND_RESOLUTION_METERS,
   buildMeasureGeometry,
@@ -211,10 +212,55 @@ describe('formatMeasureResult 投影无关性', () => {
     const line = formatMeasureResult({ kind: 'LineString', lonLat: [[10, 70], [30, 75]] })
     expect(line).toContain('km')
     expect(line).toContain('NM')
+    expect(line).toContain('WGS84 椭球测地线')
 
     const polygon = formatMeasureResult({ kind: 'Polygon', lonLat: [[10, 70], [30, 70], [30, 76], [10, 76]] })
     expect(polygon).toContain('km²')
     expect(polygon).not.toContain('NM')
     expect(polygon).not.toContain('nmi')
+  })
+})
+
+describe('WGS84 椭球测地线距离', () => {
+  it('普通纬度与 pyproj/Karney 参考值一致', () => {
+    expect(geodesicDistanceWGS84([0, 0], [0, 1])).toBeCloseTo(110574.38855779878, 3)
+    expect(geodesicDistanceWGS84([120, 75], [121, 75.5])).toBeCloseTo(62633.010195258714, 3)
+  })
+
+  it('高纬度与 pyproj/Karney 参考值一致', () => {
+    expect(geodesicDistanceWGS84([0, 80], [1, 80])).toBeCloseTo(19393.246801386882, 3)
+  })
+
+  it('跨 180° 经线与近北极点结果正确', () => {
+    expect(geodesicDistanceWGS84([179.5, 70], [-179.5, 71])).toBeCloseTo(117624.9769285249, 3)
+    expect(geodesicDistanceWGS84([0, 89], [180, 89])).toBeCloseTo(223387.72982839972, 3)
+  })
+
+  it('同一点距离为 0,非法输入为 NaN', () => {
+    expect(geodesicDistanceWGS84([10, 70], [10, 70])).toBe(0)
+    expect(geodesicDistanceWGS84([0, 0], [0, 91])).toBeNaN()
+    expect(geodesicDistanceWGS84([Number.NaN, 0], [0, 0])).toBeNaN()
+    expect(measurePolylineLength([[10, 70]])).toBe(0)
+  })
+
+  it('多段折线总长等于各相邻段测地线距离之和', () => {
+    const points = [[0, 0], [1, 0], [1, 1], [2, 2]] as const
+    const expected =
+      geodesicDistanceWGS84(points[0], points[1]) +
+      geodesicDistanceWGS84(points[1], points[2]) +
+      geodesicDistanceWGS84(points[2], points[3])
+    expect(measurePolylineLength(points)).toBeCloseTo(expected, 6)
+  })
+
+  it.each(['EPSG:3857', 'EPSG:3413'])('%s 下测距数值不随投影变化', (crs) => {
+    const draft: MeasureDraft = { kind: 'LineString', lonLat: [[0, 80], [1, 80], [2, 81]] }
+    const geometry = buildMeasureGeometry(draft, crs)
+    expect(geometry).not.toBeNull()
+    const roundTripped = measureGeometryToDraft(geometry!, crs)
+    expect(roundTripped).not.toBeNull()
+    expect(measurePolylineLength(roundTripped!.lonLat)).toBeCloseTo(
+      measurePolylineLength(draft.lonLat),
+      6,
+    )
   })
 })

@@ -1149,3 +1149,35 @@ backend/app/navigation/
 - 隔离项目浏览器：连续 100 次日期切换后 `q.loading=0、stuck=0`；3857/3413 来回切换后仍为 0；抖动底图 503 自动重试恢复；无 pageerror。
 - 30 分钟 soak 已完成：1804s，结束时 q.loading=0、stuck=0、pageerrors=[]（`output/soak-30min.log`）。
 - 未验证：真实 GWC WMTS 3413 matrix set 未在本次环境配置成功（GWC capabilities 仅 EPSG:4326），作为残留；公共第三方底图限流仅以本地 503 mock 验证。
+
+### 8.12 会话 #32：WGS84 椭球测距、航道快照与图层内联图例
+
+#### 8.12.1 WGS84 椭球测距
+
+- 新增 `frontend/src/utils/geodesicDistance.ts`，依赖 `geographiclib-geodesic@^2.2.0`（官方 GeographicLib JS，MIT，Karney 椭球测地线，含 TS 类型）：
+  - `geodesicDistanceWGS84(pointA, pointB)`：入参 WGS84 `[lon, lat]`，返回米；非法坐标返回 `NaN`，同点返回 0，跨 180° 由库内部归一化。
+  - `measurePolylineLength(points)`：相邻航点逐段椭球反算求和，少于 2 点返回 0。
+- `mapMeasure.ts` 的折线距离由 `ol/sphere.getDistance`（球面 haversine，R=6371008.8 m）改为上述函数；`formatMeasureResult` 折线文本追加“· WGS84 椭球测地线”。面积仍用 Van Oosterom–Strackee 球面算法，`mapRoute.ts` 航段里程仍用球面模型（避免改变航线规划显示）。
+- WGS84 真值、`MeasureDraft`、投影重建、Draw 交互与状态栏位置均未改变；切换 3857/3413 仍由 WGS84 真值重算，数值不变。
+
+#### 8.12.2 S-57 航道快照
+
+- `s57_waterways.py` 新增：
+  - `WaterwayLayerRef.version_id/content_hash`（默认值，用于成果溯源）；`resolve_waterway_layers()` 填充。
+  - `build_waterway_export_batch_sql()`：按图层键集分页（`WHERE key > :after_key ORDER BY key LIMIT :limit`），复用 keyword/bbox 条件；SELECT 真实几何 `ST_AsGeoJSON(ST_Transform(geom,4326))` 与原始属性 `to_jsonb(w.*) - geom`；所有值绑定参数。
+- 新增 `backend/app/services/s57_waterway_export.py`：
+  - 复用 `resolve_waterway_layers()` + `_selected_codes()`，逐图层分批读取全部匹配记录（默认 500/批，单次上限默认 20000）。
+  - 要素保留真实几何类型，properties 含 `objectClass/objectName/objectNameZh/group/groupNameZh/auxiliary/sourceLayerId/sourceDatasetId/sourceVersionId/sourceCell/originalAttributes` 等；坐标 EPSG:4326。
+  - 原子写盘：临时目录 `.<snapshotId>.tmp/` 写入 `waterways.geojson` + `manifest.json` 后 `os.replace` 重命名为最终目录；默认根 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/`（Compose 中为共享卷 `/data/storage/navigation/waterways`）。
+  - manifest 含 snapshotId/projectId/name/createdAt/crs/featureCount/truncated/objectClasses/sourceDatasets/sourceVersionIds/sourceContentHashes/filters/schemaVersion/warnings/geojsonSha256。
+  - 列表/详情比较 manifest 与当前 `version_id` 集合，输出 `stale`；旧成果不覆盖、仍可下载。
+- API（固定路径在 `/{feature_id}` 之前）：`POST .../snapshots`（201）、`GET .../snapshots`、`GET .../snapshots/{id}`、`GET .../snapshots/{id}/download`（`application/geo+json`）。
+- 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot`；`S57WaterwayPanel` 增加“保存提取结果”对话框与“已保存航道数据”抽屉（来源数据集/版本、要素数、旧版标记、下载按钮）。不进入航路 store。
+
+#### 8.12.3 图层内联图例
+
+- `GET /layers/{id}/legend` 保持 `url` 不变，新增 `objectClass`、`geometryType`、`fallback`（来自 `s57_styles.preset_for_object_class`：geometry/color/fillColor/opacity/label；无预设为 null）。
+- 新增 `frontend/src/utils/s57LayerLegend.ts`：模块级缓存，key=`layerId:styleName:objectClass`；失败删除缓存以便重试。
+- 新增 `frontend/src/components/S57LayerLegend.vue`：仅在用户展开图例时请求；优先显示 GeoServer GetLegendGraphic `<img>`（1–2px 空图或错误时降级）；有预设时用 s57_styles 颜色/几何绘制简化 swatch；无预设只显示名称/代码并提示“无可用图例/预设符号”；说明文案明确图例为样式示意、非实时航行状态。
+- `MapWorkspaceView.vue` 图层状态行增加“图例”按钮，行下渲染内联图例；保留原有“图例与元数据”抽屉。图例请求与 TileRequestQueue/Render Bundle/GWC 独立。
+- `s57ObjectNames.ts` 新增 `s57ObjectDescriptions`（常见类别用途说明）与 `s57ObjectDescription()`。

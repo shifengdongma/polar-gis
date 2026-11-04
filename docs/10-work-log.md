@@ -1947,3 +1947,34 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
   - `DiskFull`/共享内存错误映射为 503 `S57_WATERWAY_DB_UNAVAILABLE`，不再裸 500。
   - 实测默认类别搜索 200、total 258；关键字 `Jinghang` 命中 1；aux DEPARE 200；详情 200。
 - **航道专题计数**：前端徽标原使用 `catalog.total`，把 DEPARE(5586)/DEPCNT(5105)/SOUNDG 等辅助要素也算入，显示 11210。改为仅累加非辅助主类别，真实项目显示 301；实际默认搜索 258（不含 CTNARE/DRGARE）。API 的 `total` 仍保留全类别统计，辅助类别在面板内单独展示。
+
+### 会话 #32（2026-11-04）：椭球测距、航道快照与图层内联图例
+
+#### 任务计划
+
+1. 测距：分析现有 `ol/sphere.getDistance` 球面模型，替换为 WGS84 椭球测地线（GeographicLib/Karney），保持 WGS84 真值、投影无关、面积不变。
+2. 航道：复用 `resolve_waterway_layers()`/航道专题，按全部匹配记录键集分批提取真实 `geo.*` 要素，原子保存 GeoJSON + manifest，提供列表/元数据/下载 API 与前端入口。
+3. 图例：增强既有 `GET /layers/{id}/legend`，在图层列表内联展开真实 GeoServer 图例，懒加载缓存，按 `s57_styles.py` 预设降级，补充中文说明。
+
+#### 修改
+
+- 前端测距：新增 `src/utils/geodesicDistance.ts`；`mapMeasure.ts` 折线距离改用椭球反算并标注方法；`mapMeasure.test.ts` 增加普通/高纬/跨 180°/北极/多段/投影一致性测试。`mapRoute.ts` 未改（航段里程仍为球面）。
+- 后端航道：`WaterwayLayerRef` 增加 `version_id/content_hash`；新增 `build_waterway_export_batch_sql()` 与 `services/s57_waterway_export.py`（键集提取、真实几何、`to_jsonb` 原始属性、原子写盘、manifest、列表/stale）；`schemas.py` 增加共享滤波器与快照模型；`api/s57_waterways.py` 新增 4 个 `/snapshots` 路由并置于 `/{feature_id}` 前；`config.py` 增加快照上限/批量/超时/根目录；`deploy/compose.yml` 增加共享卷内 `S57_WATERWAY_SNAPSHOT_ROOT`。
+- 前端航道：`types/s57Waterways.ts`/`api/s57Waterways.ts` 增加快照类型与调用；`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot`；`S57WaterwayPanel.vue` 增加“保存提取结果”对话框与“已保存航道数据”抽屉；`styles.css` 增加对应样式。
+- 图例：`api/layers.py` 图例响应增加 `objectClass/geometryType/fallback`；新增 `utils/s57LayerLegend.ts`（模块级缓存）与 `components/S57LayerLegend.vue`；`s57ObjectNames.ts` 增加常见类别说明；`MapWorkspaceView.vue` 图层行增加“图例”按钮与行内组件；`styles.css` 增加图例样式。
+- 测试：新增 `backend/tests/test_s57_waterway_snapshot.py`、`frontend/src/utils/s57LayerLegend.test.ts`、`frontend/src/components/S57LayerLegend.test.ts`；扩展 `test_projects.py` 图例用例与前端 waterway/measure 测试。
+
+#### 决策
+
+- 仅测距工具改用椭球模型；`mapRoute.ts` 航段、测面积保持原球面算法，避免改变航线规划显示与既有固化测试。
+- 快照复用现有 `STORAGE_ROOT` 持久卷（Compose `shared-storage`），不写只读的 `data/navigation`；不新增数据库表/迁移。
+- 快照使用每图层键集分页而非 UNION + 深 OFFSET，避免分页上限（10000）限制并提升大表提取效率；`to_jsonb` 保留全部原始字段。
+- 旧快照不覆盖；列表按当前 `version_id` 计算 `stale`，前端显示“基于旧版海图数据”。
+- 图例优先 GeoServer GetLegendGraphic；仅在失败/空图时使用后端 `s57_styles.py` 预设；无预设时不伪造符号；图例请求独立于瓦片队列。
+
+#### 验证
+
+- 前端：`npm run typecheck` 通过；`npm test` 41 files / 474 tests passed；`npm run build` 通过（Vite 构建成功，仅有既有 chunk 体积警告）。
+- 后端：`pytest -q` 311 tests collected，310 passed + 1 skipped（需 `S57_WATERWAY_TEST_DATABASE_URL` 的 PostGIS 集成测试）；新增快照/图例测试通过。`ruff check` 新增/修改的 app 文件通过；`tests/test_projects.py` 仍报 2 个**既有** B007/F841（非本次改动行）。
+- PostGIS 实测（临时 `postgis/postgis:16-3.4` 容器）：`build_waterway_export_batch_sql()` 键集分批返回 3 条；真实几何类型 `LineString/MultiLineString/Polygon` 均保留；`to_jsonb` 原始属性存在且已去除 `geom`；keyword=`Harbour`、bbox 过滤结果正确。
+- 未执行：未启动完整 Docker Compose 对真实项目执行“保存→下载→`json.load`”端到端验证；未在真实浏览器中逐项点击图例/保存抽屉；上述均需在部署环境补验。

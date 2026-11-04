@@ -86,6 +86,50 @@ export interface S57WaterwaySearchResponse {
   warnings: string[]
 }
 
+export interface S57WaterwaySnapshotCreateRequest {
+  name?: string | null
+  keyword?: string | null
+  objectClasses: string[]
+  includeAuxiliary?: boolean
+  bbox?: [number, number, number, number] | null
+  maxFeatures?: number | null
+}
+
+export interface S57WaterwaySnapshotSource {
+  datasetId: string
+  datasetCode: string
+  datasetName: string
+  versionId: string | null
+  versionNo: number
+  sourceCell: string | null
+  layerIds: string[]
+  contentHash: string | null
+}
+
+export interface S57WaterwaySnapshotManifest {
+  snapshotId: string
+  projectId: string
+  name: string
+  createdAt: string
+  crs: string
+  featureCount: number
+  truncated: boolean
+  objectClasses: string[]
+  sourceDatasets: S57WaterwaySnapshotSource[]
+  sourceVersionIds: string[]
+  sourceContentHashes: Record<string, string>
+  filters: Record<string, unknown>
+  schemaVersion: string
+  warnings: string[]
+  geojsonSha256: string | null
+  stale: boolean
+}
+
+export interface S57WaterwaySnapshotList {
+  items: S57WaterwaySnapshotManifest[]
+  warnings: string[]
+}
+
 export interface S57WaterwayProperty {
   field: string
   labelZh: string

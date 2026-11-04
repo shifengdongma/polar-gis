@@ -559,13 +559,11 @@ class S57WaterwayCatalogRead(ApiModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class S57WaterwaySearchRequest(ApiModel):
+class S57WaterwayFilterRequest(ApiModel):
     keyword: str | None = Field(default=None, max_length=200)
     object_classes: list[str] = Field(default_factory=list, max_length=50)
     include_auxiliary: bool = False
     bbox: tuple[float, float, float, float] | None = None
-    page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=50)
 
     @field_validator("keyword")
     @classmethod
@@ -591,6 +589,16 @@ class S57WaterwaySearchRequest(ApiModel):
             raise ValueError("bbox 纬度必须满足 -90 <= ymin < ymax <= 90")
         # xmin > xmax is allowed and interpreted as crossing the antimeridian.
         return value
+
+
+class S57WaterwaySearchRequest(S57WaterwayFilterRequest):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=50)
+
+
+class S57WaterwaySnapshotCreateRequest(S57WaterwayFilterRequest):
+    name: str | None = Field(default=None, max_length=120)
+    max_features: int | None = Field(default=None, ge=1, le=100000)
 
 
 class S57WaterwaySearchItem(ApiModel):
@@ -657,6 +665,41 @@ class S57WaterwayDetailRead(ApiModel):
     updated_at: str | None = None
     properties: list[S57WaterwayPropertyRead] = Field(default_factory=list)
     raw_properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class S57WaterwaySnapshotSource(ApiModel):
+    dataset_id: str
+    dataset_code: str
+    dataset_name: str
+    version_id: str | None = None
+    version_no: int
+    source_cell: str | None = None
+    layer_ids: list[str] = Field(default_factory=list)
+    content_hash: str | None = None
+
+
+class S57WaterwaySnapshotManifest(ApiModel):
+    snapshot_id: str
+    project_id: str
+    name: str
+    created_at: str
+    crs: str
+    feature_count: int
+    truncated: bool = False
+    object_classes: list[str] = Field(default_factory=list)
+    source_datasets: list[S57WaterwaySnapshotSource] = Field(default_factory=list)
+    source_version_ids: list[str] = Field(default_factory=list)
+    source_content_hashes: dict[str, str] = Field(default_factory=dict)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    schema_version: str
+    warnings: list[str] = Field(default_factory=list)
+    geojson_sha256: str | None = None
+    stale: bool = False
+
+
+class S57WaterwaySnapshotList(ApiModel):
+    items: list[S57WaterwaySnapshotManifest] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ExportRequest(ApiModel):

@@ -1413,3 +1413,18 @@ docker compose up -d         # 启动服务
 
 - 修复真实项目航道搜索 500：PostgreSQL 并行查询在默认 64MB `/dev/shm` 下报 DiskFull。postgres 增加 `shm_size: 1gb`，waterway 会话关闭并行查询，并映射为可读的 503。
 - 修正“航道专题”徽标计数：只统计主类别，不再累加 DEPARE/DEPCNT/SOUNDG 等辅助要素（真实项目 11210 → 301）。
+
+### 会话 #32（2026-11-04）：椭球测距、航道快照与图层内联图例
+
+#### 完成内容
+
+- **WGS84 椭球测距**：`frontend/src/utils/geodesicDistance.ts` 使用 `geographiclib-geodesic@^2.2.0`（MIT，Karney 算法）；`mapMeasure.ts` 折线距离由球面 haversine 改为椭球测地线逐段求和，并在结果中标注“WGS84 椭球测地线”。普通纬度、80°N 高纬、跨 180°、近北极点、多航点、3857/3413 投影一致性均有单测；WGS84 真值与测面积逻辑不变。
+- **S-57 航道快照**：后端新增键集分批导出 SQL 与 `s57_waterway_export.py`，从已导入 `geo.*` 表提取全部匹配要素（非当前页），保留真实几何类型与 `originalAttributes`，EPSG:4326；原子写入 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/waterways.geojson + manifest.json`；新增 POST/GET/list/detail/download API，绑定 Dataset/Version/Layer 与内容哈希，旧成果不覆盖并标记 `stale`；前端航道面板新增“保存提取结果/已保存航道数据/下载 GeoJSON”。
+- **图层内联图例**：图层列表为 S-57 图层新增“图例”展开，懒加载并缓存 `GET /layers/{id}/legend`（真实 GeoServer GetLegendGraphic）；后端补充对象代码与 `s57_styles.py` 预设降级信息；无可用图例/预设时只显示代码与说明，不伪造符号；新增常见对象中文说明；保留原“图例与元数据”抽屉。图例请求独立于瓦片队列/Render Bundle/GWC。
+
+#### 效果与验证
+
+- 前端 `npm run typecheck`、`npm test`（41 files / 474 tests）、`npm run build` 全部通过。
+- 后端 `pytest -q`：311 collected，310 passed + 1 env-gated PostGIS skip；新增快照/图例测试通过；app 文件 ruff 通过（`test_projects.py` 2 个既有 lint 项未处理）。
+- 临时 PostGIS 16-3.4 容器实测导出 SQL：键集分批、LineString/MultiLineString/Polygon 真实几何、`to_jsonb` 原始属性、keyword/bbox 过滤均正确。
+- 未执行完整 Compose/真实项目端到端保存下载与真实浏览器点击验证；需在部署环境补验。航段/航路里程仍使用既有球面模型，与测距工具的椭球结果存在约 0.3%–0.6% 差异，这是本次有意的范围控制。

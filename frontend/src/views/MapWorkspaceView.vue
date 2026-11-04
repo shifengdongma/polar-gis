@@ -49,6 +49,7 @@ import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
 import EnvironmentLayerPanel from '../components/EnvironmentLayerPanel.vue'
+import S57LayerLegend from '../components/S57LayerLegend.vue'
 import S57WaterwayPanel from '../components/S57WaterwayPanel.vue'
 import EnvironmentValueTooltip from '../components/EnvironmentValueTooltip.vue'
 import IceLayerPanel from '../components/IceLayerPanel.vue'
@@ -241,6 +242,7 @@ const identifyController = ref<AbortController | null>(null)
 const metadataVisible = ref(false)
 const metadataLayer = ref<LayerRecord | null>(null)
 const legendUrl = ref('')
+const legendOpenIds = ref<Set<string>>(new Set())
 const routePanelVisible = ref(false)
 
 /**
@@ -3013,6 +3015,13 @@ async function showLayerDetails(layer: MapLayerConfig) {
   }
 }
 
+function toggleLayerLegend(layer: MapLayerConfig) {
+  const next = new Set(legendOpenIds.value)
+  if (next.has(layer.id)) next.delete(layer.id)
+  else next.add(layer.id)
+  legendOpenIds.value = next
+}
+
 async function identify(coordinate: [number, number]) {
   const layer = runtimeLayers.value.find((item) => item.visible && item.config.queryable)
   if (!layer) {
@@ -3321,31 +3330,43 @@ onBeforeUnmount(() => {
                 <span v-if="dataset.loading" class="dataset-loading">加载中</span>
               </div>
               <template v-if="dataset.expanded && dataset.loaded">
-                <div v-for="runtime in dataset.layers" :key="runtime.config.id" class="layer-row layer-row-child">
-                  <button :class="['visibility-toggle', { active: runtime.visible }]" type="button" @click="toggleLayer(runtime)"><span></span></button>
-                  <div class="layer-name">
-                    <strong>{{ s57LayerTitle(runtime.config) }}</strong>
-                    <small>
-                      <span class="layer-status-text">{{ layerStatusLabel(runtime.config.id) }}</span>
-                      <template v-if="isNonSpatial(runtime.config)">
-                        <span class="layer-state loaded"></span>属性表<span v-if="runtime.config.queryable"> · 可查询</span>
-                      </template>
-                      <template v-else>
-                        <span :class="['layer-state', runtime.loadState]"></span>{{ runtime.config.queryable ? '可查询' : '仅显示' }}<span v-if="runtime.loadState === 'error'"> · 加载失败</span>
-                      </template>
-                    </small>
-                  </div>
-                  <el-popover placement="right-start" :width="230" trigger="click" popper-class="layer-action-popover">
-                    <div class="layer-action-title"><strong>{{ s57LayerTitle(runtime.config) }}</strong><span>{{ Math.round(runtime.opacity * 100) }}%</span></div>
-                    <el-slider v-model="runtime.opacity" :step="0.05" @input="updateOpacity(runtime)" />
-                    <div class="layer-action-list">
-                      <el-button text @click="zoomToLayer(runtime)">定位到图层</el-button>
-                      <el-button text @click="showLayerDetails(runtime.config)">图例与元数据</el-button>
-                      <el-button v-if="runtime.config.queryable" text @click="loadAttributeTable(runtime.config)">查看属性表</el-button>
+                <template v-for="runtime in dataset.layers" :key="runtime.config.id">
+                  <div class="layer-row layer-row-child">
+                    <button :class="['visibility-toggle', { active: runtime.visible }]" type="button" @click="toggleLayer(runtime)"><span></span></button>
+                    <div class="layer-name">
+                      <strong>{{ s57LayerTitle(runtime.config) }}</strong>
+                      <small>
+                        <span class="layer-status-text">{{ layerStatusLabel(runtime.config.id) }}</span>
+                        <template v-if="isNonSpatial(runtime.config)">
+                          <span class="layer-state loaded"></span>属性表<span v-if="runtime.config.queryable"> · 可查询</span>
+                        </template>
+                        <template v-else>
+                          <span :class="['layer-state', runtime.loadState]"></span>{{ runtime.config.queryable ? '可查询' : '仅显示' }}<span v-if="runtime.loadState === 'error'"> · 加载失败</span>
+                        </template>
+                        <button
+                          v-if="runtime.config.objectClass"
+                          :class="['layer-legend-trigger', { active: legendOpenIds.has(runtime.config.id) }]"
+                          type="button"
+                          @click.stop="toggleLayerLegend(runtime.config)"
+                        >图例</button>
+                      </small>
                     </div>
-                    <template #reference><button class="more-button" type="button" aria-label="图层操作"><el-icon><MoreFilled /></el-icon></button></template>
-                  </el-popover>
-                </div>
+                    <el-popover placement="right-start" :width="230" trigger="click" popper-class="layer-action-popover">
+                      <div class="layer-action-title"><strong>{{ s57LayerTitle(runtime.config) }}</strong><span>{{ Math.round(runtime.opacity * 100) }}%</span></div>
+                      <el-slider v-model="runtime.opacity" :step="0.05" @input="updateOpacity(runtime)" />
+                      <div class="layer-action-list">
+                        <el-button text @click="zoomToLayer(runtime)">定位到图层</el-button>
+                        <el-button text @click="showLayerDetails(runtime.config)">图例与元数据</el-button>
+                        <el-button v-if="runtime.config.queryable" text @click="loadAttributeTable(runtime.config)">查看属性表</el-button>
+                      </div>
+                      <template #reference><button class="more-button" type="button" aria-label="图层操作"><el-icon><MoreFilled /></el-icon></button></template>
+                    </el-popover>
+                  </div>
+                  <S57LayerLegend
+                    v-if="legendOpenIds.has(runtime.config.id)"
+                    :layer="runtime.config"
+                  />
+                </template>
               </template>
             </div>
           </section>

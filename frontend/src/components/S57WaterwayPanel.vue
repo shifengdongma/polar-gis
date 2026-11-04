@@ -5,13 +5,15 @@
  * 只驱动 useS57Waterways，不直接操作 OpenLayers；要素名称缺失时显示
  * “未命名航道要素”，绝不生成假名称。辅助要素与航道主类别分开展示。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Close, Location, Search } from '@element-plus/icons-vue'
 import type { S57WaterwaysApi } from '../composables/useS57Waterways'
 import type {
   S57WaterwayClass,
   S57WaterwaySearchItem,
   S57WaterwayProperty,
+  S57WaterwaySnapshotManifest,
 } from '../types/s57Waterways'
 import { waterwayDisplayName, waterwaySourceLabel } from '../utils/mapS57Waterway'
 
@@ -49,6 +51,24 @@ const detailLoading = computed(() => props.waterways.detailLoading.value)
 const detailError = computed(() => props.waterways.detailError.value)
 const warnings = computed(() => props.waterways.warnings.value)
 const hasWaterwayData = computed(() => props.waterways.hasWaterwayData.value)
+const snapshots = computed(() => props.waterways.snapshots.value)
+const snapshotsLoading = computed(() => props.waterways.snapshotsLoading.value)
+const snapshotsError = computed(() => props.waterways.snapshotsError.value)
+const snapshotCreating = computed(() => props.waterways.snapshotCreating.value)
+const snapshotError = computed(() => props.waterways.snapshotError.value)
+const snapshotDialogVisible = ref(false)
+const snapshotListVisible = ref(false)
+const snapshotName = ref('')
+const snapshotMaxFeatures = ref(20000)
+const snapshotClasses = computed(() =>
+  classes.value.filter((item) => selectedClasses.value.has(item.code)),
+)
+const snapshotClassSummary = computed(
+  () =>
+    snapshotClasses.value
+      .map((item) => `${item.nameZh} ${item.code}`)
+      .join('、') || '未选择',
+)
 
 function checked(code: string): boolean {
   return selectedClasses.value.has(code)
@@ -96,6 +116,54 @@ function displayRaw(value: unknown): string {
 
 function propertyValue(property: S57WaterwayProperty): string {
   return property.provided ? displayRaw(property.raw) : '未提供'
+}
+
+function openSnapshotDialog() {
+  if (selectedClasses.value.size === 0) {
+    ElMessage.warning('请至少选择一个航道对象类别')
+    return
+  }
+  snapshotName.value = ''
+  snapshotMaxFeatures.value = 20000
+  props.waterways.snapshotError.value = ''
+  snapshotDialogVisible.value = true
+}
+
+async function saveSnapshot() {
+  const manifest = await props.waterways.createSnapshot({
+    name: snapshotName.value,
+    maxFeatures: snapshotMaxFeatures.value,
+  })
+  if (!manifest) return
+  snapshotDialogVisible.value = false
+  ElMessage.success(`已保存 ${manifest.featureCount} 个航道要素`)
+  snapshotListVisible.value = true
+  void props.waterways.loadSnapshots()
+}
+
+function openSnapshotList() {
+  snapshotListVisible.value = true
+  void props.waterways.loadSnapshots()
+}
+
+async function downloadSnapshot(manifest: S57WaterwaySnapshotManifest) {
+  await props.waterways.downloadSnapshot(manifest)
+  if (props.waterways.snapshotsError.value) {
+    ElMessage.error(props.waterways.snapshotsError.value)
+  }
+}
+
+function formatSnapshotTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function snapshotSourceLabel(snapshot: S57WaterwaySnapshotManifest): string {
+  return (
+    snapshot.sourceDatasets
+      .map((item) => `${item.datasetName} · v${item.versionNo}`)
+      .join('；') || '来源未提供'
+  )
 }
 
 function closePanel() {
@@ -187,6 +255,10 @@ function closePanel() {
         </div>
       </div>
 
+      <div class="waterway-snapshot-actions">
+        <el-button size="small" text @click="openSnapshotDialog">保存提取结果</el-button>
+        <el-button size="small" text @click="openSnapshotList">已保存航道数据</el-button>
+      </div>
       <div v-if="searchError" class="waterway-panel-error">
         <span>{{ searchError }}</span>
       </div>
@@ -269,6 +341,90 @@ function closePanel() {
           </el-table-column>
         </el-table>
       </template>
+    </el-drawer>
+
+    <el-dialog
+      v-model="snapshotDialogVisible"
+      title="保存航道提取结果"
+      width="520px"
+      class="waterway-snapshot-dialog"
+    >
+      <div class="waterway-snapshot-form">
+        <label>成果名称</label>
+        <el-input
+          v-model="snapshotName"
+          size="small"
+          maxlength="120"
+          placeholder="可选，默认按保存时间命名"
+        />
+        <label>航道类别</label>
+        <div class="waterway-snapshot-summary">{{ snapshotClassSummary }}</div>
+        <label>筛选条件</label>
+        <div class="waterway-snapshot-filters">
+          <span>关键词：{{ waterways.keyword.value.trim() || '无' }}</span>
+          <span>当前视口：{{ viewportOnly ? '是' : '否' }}</span>
+          <span>辅助要素：{{ includeAuxiliary ? '包含' : '不包含' }}</span>
+        </div>
+        <label>单次最大要素数</label>
+        <el-input-number
+          v-model="snapshotMaxFeatures"
+          :min="1"
+          :max="100000"
+          :step="1000"
+          size="small"
+        />
+        <p class="waterway-snapshot-hint">
+          服务端会按全部匹配记录分批提取，不是仅当前页；达到上限时会在成果中标注截断。
+        </p>
+        <div v-if="snapshotError" class="waterway-panel-error">{{ snapshotError }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="snapshotDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="snapshotCreating" @click="saveSnapshot">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer
+      v-model="snapshotListVisible"
+      title="已保存航道数据"
+      size="480px"
+      class="waterway-snapshot-drawer"
+    >
+      <div v-if="snapshotsLoading" class="waterway-panel-empty">正在加载已保存成果…</div>
+      <div v-else-if="snapshotsError" class="waterway-panel-error">
+        <span>{{ snapshotsError }}</span>
+        <el-button size="small" text @click="waterways.loadSnapshots()">重试</el-button>
+      </div>
+      <div v-else-if="snapshots.length === 0" class="waterway-panel-empty">
+        尚未保存航道数据成果
+      </div>
+      <div v-else class="waterway-snapshot-list">
+        <article
+          v-for="snapshot in snapshots"
+          :key="snapshot.snapshotId"
+          class="waterway-snapshot-item"
+        >
+          <div class="waterway-snapshot-head">
+            <strong>{{ snapshot.name }}</strong>
+            <span v-if="snapshot.stale" class="waterway-snapshot-stale">基于旧版海图数据</span>
+          </div>
+          <div class="waterway-snapshot-meta">
+            <span>{{ snapshot.snapshotId }}</span>
+            <span>{{ formatSnapshotTime(snapshot.createdAt) }}</span>
+          </div>
+          <div class="waterway-snapshot-meta">
+            <span>{{ snapshotSourceLabel(snapshot) }}</span>
+            <span>{{ snapshot.featureCount }} 个要素</span>
+          </div>
+          <div class="waterway-snapshot-meta">
+            <span>类别：{{ snapshot.objectClasses.join('、') || '—' }}</span>
+            <span v-if="snapshot.truncated" class="waterway-snapshot-stale">
+              已达到单次提取上限
+            </span>
+          </div>
+          <el-button size="small" text @click="downloadSnapshot(snapshot)">下载 GeoJSON</el-button>
+        </article>
+      </div>
     </el-drawer>
   </section>
 </template>

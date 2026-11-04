@@ -12,18 +12,24 @@
  *
  * 面积算法说明:
  * 采用 Van Oosterom–Strackee 球面三角形立体角 + 以 0 号顶点扇形三角化,边按
- * **大圆**处理 —— 与 ol/sphere getLength/getDistance 的大圆语义一致。
- * 该算法与经度回绕无关(不需要 unwrap),且对环绕极点的环同样成立。
+ * **大圆**处理。该算法与经度回绕无关(不需要 unwrap),且对环绕极点的环同样成立。
  * 代价:与 ol/sphere.getArea(其边在 (λ, sinφ) 空间取直线)存在边模型差异 ——
  * 小多边形 0.000%,大范围高纬多边形最大约 -1.8%(如 20°×6° 盒 @70–76°N);
- * 球面模型本身比 WGS84 椭球测地线偏短约 0.28%–0.42%(高纬更大)。
- * 界面按「近似地表距离」表述,不宣称具备航海认证精度。
+ * 球面模型与 WGS84 椭球模型存在约 0.3%–0.8% 量级的面积差异(随纬度/范围变化,
+ * 如 20°×6° 盒 @70–76°N 约 -0.77%)。界面按「近似地表面积」表述,
+ * 不宣称具备航海认证精度。
+ *
+ * 距离算法说明:
+ * 折线长度已由 ol/sphere.getDistance(球面 haversine, R=6371008.8 m)改为
+ * WGS84 椭球测地线反算(GeographicLib/Karney),逐段求和;WGS84 真值不变,
+ * 切换投影只重建显示几何,数值不变。面积仍为上述球面模型,不在本次改造范围。
  */
 import { containsCoordinate } from 'ol/extent'
 import LineString from 'ol/geom/LineString'
 import Polygon from 'ol/geom/Polygon'
 import { fromLonLat, get as getProjection, toLonLat } from 'ol/proj'
-import { DEFAULT_RADIUS, getDistance } from 'ol/sphere'
+import { DEFAULT_RADIUS } from 'ol/sphere'
+import { measurePolylineLength } from './geodesicDistance'
 import { METERS_PER_DEGREE_LAT, formatArea, formatDistance, normalizeLongitude, unwrapLongitudeSequence } from './mapRoute'
 
 // ── 常量 ──────────────────────────────────────────────────────────────
@@ -201,25 +207,25 @@ export function sphericalRingArea(ringLonLat: readonly (readonly number[])[]): n
 
 // ── 结果文本 ──────────────────────────────────────────────────────────
 
-/** 测量真值的折线长度(米):逐段球面最短路径求和 */
+/** 测量真值的折线长度(米):逐段 WGS84 椭球测地线距离求和 */
 function draftLength(draft: MeasureDraft): number {
-  let total = 0
-  for (let i = 1; i < draft.lonLat.length; i++) {
-    total += getDistance(draft.lonLat[i - 1]!, draft.lonLat[i]!)
-  }
-  return total
+  return measurePolylineLength(draft.lonLat)
 }
 
 /**
  * 由 WGS84 真值生成结果文本 —— **与当前投影无关**,因此切换投影后重算必然得到
- * 同一字符串。折线用 formatDistance(km + NM),多边形用 formatArea(m² / km²)。
+ * 同一字符串。折线用 formatDistance(km + NM)并标注 WGS84 椭球测地线,
+ * 多边形用 formatArea(m² / km²,仍为球面面积)。
  */
 export function formatMeasureResult(draft: MeasureDraft): string {
   if (draft.kind === 'Polygon') {
     const area = sphericalRingArea(draft.lonLat)
     return area === null ? EMPTY_VALUE : formatArea(area)
   }
-  return formatDistance(draftLength(draft))
+  const length = draftLength(draft)
+  return Number.isFinite(length)
+    ? `${formatDistance(length)} · WGS84 椭球测地线`
+    : EMPTY_VALUE
 }
 
 /**

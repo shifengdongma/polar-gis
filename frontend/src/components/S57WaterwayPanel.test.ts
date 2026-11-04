@@ -41,6 +41,15 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('没有匹配结果')
   })
 
+  it('supports snapshot save, listing and GeoJSON download', () => {
+    expect(source).toContain('保存提取结果')
+    expect(source).toContain('已保存航道数据')
+    expect(source).toContain('下载 GeoJSON')
+    expect(source).toContain('createSnapshot')
+    expect(source).toContain('loadSnapshots')
+    expect(source).toContain('基于旧版海图数据')
+  })
+
   it('does not write into route state', () => {
     expect(source).not.toContain('routesStore')
     expect(source).not.toContain('routeDrawing')

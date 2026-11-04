@@ -7,17 +7,23 @@ import type {
   S57WaterwayDetail,
   S57WaterwaySearchItem,
   S57WaterwaySearchResponse,
+  S57WaterwaySnapshotManifest,
 } from '../types/s57Waterways'
 
 vi.mock('../api/s57Waterways', () => ({
   fetchWaterwayCatalog: vi.fn(),
   searchWaterways: vi.fn(),
   fetchWaterwayDetail: vi.fn(),
+  createWaterwaySnapshot: vi.fn(),
+  listWaterwaySnapshots: vi.fn(),
+  downloadWaterwaySnapshot: vi.fn(),
 }))
 
 import {
+  createWaterwaySnapshot,
   fetchWaterwayCatalog,
   fetchWaterwayDetail,
+  listWaterwaySnapshots,
   searchWaterways,
 } from '../api/s57Waterways'
 
@@ -92,6 +98,27 @@ function response(items: S57WaterwaySearchItem[], total = items.length): S57Wate
     total,
     truncatedLayers: false,
     warnings: [],
+  }
+}
+
+function snapshotManifest(id = 'snap-1'): S57WaterwaySnapshotManifest {
+  return {
+    snapshotId: id,
+    projectId: 'project-1',
+    name: '成果 A',
+    createdAt: '2026-11-04T10:00:00+00:00',
+    crs: 'EPSG:4326',
+    featureCount: 2,
+    truncated: false,
+    objectClasses: ['FAIRWY'],
+    sourceDatasets: [],
+    sourceVersionIds: ['version-1'],
+    sourceContentHashes: {},
+    filters: {},
+    schemaVersion: '1.0',
+    warnings: [],
+    geojsonSha256: null,
+    stale: false,
   }
 }
 
@@ -221,5 +248,41 @@ describe('useS57Waterways', () => {
     waterways.setIncludeAuxiliary(false)
     expect(waterways.selectedClasses.value.has('DEPARE')).toBe(false)
     expect(waterways.includeAuxiliary.value).toBe(false)
+  })
+
+  it('creates a snapshot from current filters and lists saved results', async () => {
+    const manifest = snapshotManifest()
+    vi.mocked(createWaterwaySnapshot).mockResolvedValue(manifest)
+    vi.mocked(listWaterwaySnapshots).mockResolvedValue({ items: [manifest], warnings: [] })
+    const { map } = fakeMap()
+    const waterways = useS57Waterways({
+      getProjectId: () => 'project-1',
+      getMap: () => map as never,
+      getCrs: () => 'EPSG:3857',
+      getViewportBbox: () => [170, 70, -170, 80],
+    })
+    waterways.setClasses(['FAIRWY'])
+    waterways.keyword.value = 'Jinghang'
+    waterways.viewportOnly.value = true
+
+    const created = await waterways.createSnapshot({ name: '成果 A', maxFeatures: 500 })
+    expect(created?.snapshotId).toBe('snap-1')
+    expect(createWaterwaySnapshot).toHaveBeenCalledWith(
+      'project-1',
+      {
+        name: '成果 A',
+        keyword: 'Jinghang',
+        objectClasses: ['FAIRWY'],
+        includeAuxiliary: false,
+        bbox: [170, 70, -170, 80],
+        maxFeatures: 500,
+      },
+      expect.any(AbortSignal),
+    )
+    expect(waterways.snapshots.value).toHaveLength(1)
+
+    await waterways.loadSnapshots()
+    expect(listWaterwaySnapshots).toHaveBeenCalledWith('project-1', expect.any(AbortSignal))
+    expect(waterways.snapshots.value[0].stale).toBe(false)
   })
 })

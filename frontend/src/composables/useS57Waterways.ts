@@ -17,8 +17,11 @@ import type Geometry from 'ol/geom/Geometry'
 import type Style from 'ol/style/Style'
 import { apiErrorMessage } from '../api/client'
 import {
+  createWaterwaySnapshot,
+  downloadWaterwaySnapshot,
   fetchWaterwayCatalog,
   fetchWaterwayDetail,
+  listWaterwaySnapshots,
   searchWaterways,
 } from '../api/s57Waterways'
 import type {
@@ -26,6 +29,7 @@ import type {
   S57WaterwayDetail,
   S57WaterwaySearchItem,
   S57WaterwaySearchRequest,
+  S57WaterwaySnapshotManifest,
 } from '../types/s57Waterways'
 import {
   WATERWAY_OVERLAY_Z_INDEX,
@@ -68,12 +72,20 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   const selectedId = ref<string | null>(null)
   const displayed = shallowRef<Map<string, S57WaterwaySearchItem>>(new Map())
 
+  const snapshots = shallowRef<S57WaterwaySnapshotManifest[]>([])
+  const snapshotsLoading = ref(false)
+  const snapshotsError = ref('')
+  const snapshotCreating = ref(false)
+  const snapshotError = ref('')
+
   let layer: VectorLayer<VectorSource> | null = null
   let source: VectorSource | null = null
   let attached = false
   let catalogController: AbortController | null = null
   let searchController: AbortController | null = null
   let detailController: AbortController | null = null
+  let snapshotListController: AbortController | null = null
+  let snapshotCreateController: AbortController | null = null
   let searchGeneration = 0
   const styleCache = new Map<string, Style>()
 
@@ -245,6 +257,103 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     rebuildSource()
   }
 
+  async function loadSnapshots() {
+    snapshotListController?.abort()
+    snapshotListController = new AbortController()
+    snapshotsLoading.value = true
+    snapshotsError.value = ''
+    try {
+      const data = await listWaterwaySnapshots(
+        options.getProjectId(),
+        snapshotListController.signal,
+      )
+      snapshots.value = data.items
+    } catch (caught) {
+      if (!snapshotListController.signal.aborted) {
+        snapshotsError.value = apiErrorMessage(caught, '已保存航道数据加载失败')
+      }
+    } finally {
+      if (!snapshotListController.signal.aborted) {
+        snapshotsLoading.value = false
+      }
+    }
+  }
+
+  async function createSnapshot(optionsArg: {
+    name?: string | null
+    maxFeatures?: number | null
+  }): Promise<S57WaterwaySnapshotManifest | null> {
+    if (selectedClasses.value.size === 0) {
+      snapshotError.value = '请至少选择一个航道对象类别'
+      return null
+    }
+    let bbox: [number, number, number, number] | null = null
+    if (viewportOnly.value) {
+      bbox = options.getViewportBbox?.() ?? null
+      if (!bbox) {
+        snapshotError.value = '当前视口暂不可用，请关闭“当前视口”后保存'
+        return null
+      }
+    }
+    snapshotCreateController?.abort()
+    snapshotCreateController = new AbortController()
+    snapshotCreating.value = true
+    snapshotError.value = ''
+    try {
+      const manifest = await createWaterwaySnapshot(
+        options.getProjectId(),
+        {
+          name: optionsArg.name?.trim() || null,
+          keyword: keyword.value.trim() || null,
+          objectClasses: [...selectedClasses.value],
+          includeAuxiliary: includeAuxiliary.value,
+          bbox,
+          maxFeatures: optionsArg.maxFeatures ?? null,
+        },
+        snapshotCreateController.signal,
+      )
+      snapshots.value = [
+        manifest,
+        ...snapshots.value.filter((item) => item.snapshotId !== manifest.snapshotId),
+      ]
+      return manifest
+    } catch (caught) {
+      if (!snapshotCreateController.signal.aborted) {
+        snapshotError.value = apiErrorMessage(caught, '航道数据保存失败')
+      }
+      return null
+    } finally {
+      if (!snapshotCreateController.signal.aborted) {
+        snapshotCreating.value = false
+      }
+    }
+  }
+
+  function snapshotFileName(manifest: S57WaterwaySnapshotManifest): string {
+    const base = (manifest.name || manifest.snapshotId)
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .trim()
+    return `${base || 'waterways'}.geojson`
+  }
+
+  async function downloadSnapshot(manifest: S57WaterwaySnapshotManifest) {
+    snapshotsError.value = ''
+    try {
+      const blob = await downloadWaterwaySnapshot(
+        options.getProjectId(),
+        manifest.snapshotId,
+      )
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = snapshotFileName(manifest)
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (caught) {
+      snapshotsError.value = apiErrorMessage(caught, 'GeoJSON 下载失败')
+    }
+  }
+
   function selectFeature(id: string | null) {
     selectedId.value = id
     layer?.changed()
@@ -354,9 +463,13 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     catalogController?.abort()
     searchController?.abort()
     detailController?.abort()
+    snapshotListController?.abort()
+    snapshotCreateController?.abort()
     catalogController = null
     searchController = null
     detailController = null
+    snapshotListController = null
+    snapshotCreateController = null
     const map = options.getMap()
     if (layer) {
       if (map) map.removeLayer(layer)
@@ -393,6 +506,11 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     selectionMode,
     selectedId,
     displayed,
+    snapshots,
+    snapshotsLoading,
+    snapshotsError,
+    snapshotCreating,
+    snapshotError,
     hasWaterwayData,
     availableClassCount,
     canSearch,
@@ -408,6 +526,9 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     showItem,
     isItemShown,
     clearDisplay,
+    loadSnapshots,
+    createSnapshot,
+    downloadSnapshot,
     selectFeature,
     locate,
     pickAtPixel,

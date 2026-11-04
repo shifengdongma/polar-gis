@@ -422,6 +422,8 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .visibility-toggle.active span { left: 12px; }
 .layer-name strong { font-size: 12px; }
 .layer-name small { display: flex; align-items: center; gap: 5px; margin-top: 2px; color: #76909c; font-size: 9px; }
+.layer-legend-trigger { margin-left: auto; padding: 0 4px; color: #7fd8e6; border: 1px solid rgba(104, 193, 207, .28); border-radius: 3px; background: transparent; font-size: 8px; line-height: 15px; cursor: pointer; }
+.layer-legend-trigger:hover, .layer-legend-trigger.active { color: #eafafd; border-color: rgba(104, 193, 207, .6); background: rgba(104, 193, 207, .16); }
 .layer-state { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #5d7580; }
 .layer-state.loading { background: var(--warning); box-shadow: 0 0 0 3px rgba(200,132,31,.14); }
 .layer-state.loaded { background: var(--success); }
@@ -1678,4 +1680,33 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-detail-desc { font-size: 10px; }
 .waterway-detail-section-title { margin: 10px 0 5px; color: #234e5c; font-size: 11px; font-weight: 700; }
 .waterway-detail-table { font-size: 10px; }
-@media print { .waterway-panel, .waterway-detail-drawer { display: none !important; } }
+.waterway-snapshot-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; border-top: 1px dashed rgba(151, 190, 201, .22); border-bottom: 1px dashed rgba(151, 190, 201, .22); }
+.waterway-snapshot-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 9px; }
+.waterway-snapshot-form { display: flex; flex-direction: column; gap: 6px; color: #234e5c; font-size: 11px; }
+.waterway-snapshot-form label { color: #315d6b; font-size: 10px; font-weight: 700; }
+.waterway-snapshot-summary, .waterway-snapshot-filters { padding: 6px 8px; border: 1px solid #dce8ed; border-radius: 4px; background: #f7fafb; color: #315d6b; font-size: 10px; line-height: 1.5; }
+.waterway-snapshot-filters { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.waterway-snapshot-hint { margin: 0; color: #6a7f87; font-size: 9px; line-height: 1.5; }
+.waterway-snapshot-list { display: flex; flex-direction: column; gap: 8px; }
+.waterway-snapshot-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid #dce8ed; border-radius: 6px; background: #f8fbfc; }
+.waterway-snapshot-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; color: #1f4754; font-size: 11px; }
+.waterway-snapshot-head strong { font-size: 12px; }
+.waterway-snapshot-stale { padding: 1px 5px; color: #8a5300; border: 1px solid #e7c27a; border-radius: 999px; background: #fff1d8; font-size: 8px; font-weight: 600; }
+.waterway-snapshot-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: #5f7b85; font-size: 9px; }
+.waterway-snapshot-item > .el-button { align-self: flex-start; padding: 2px 4px; font-size: 9px; }
+
+/* ── S-57 inline layer legend ───────────────────────────────────────── */
+.s57-layer-legend { margin: 2px 0 4px 19px; padding: 7px 8px; border: 1px solid rgba(151, 190, 201, .18); border-left: 2px solid rgba(104, 193, 207, .45); border-radius: 0 4px 4px 0; background: rgba(4, 20, 29, .55); }
+.s57-layer-legend-head { display: flex; align-items: center; gap: 6px; color: #d9f4f8; font-size: 10px; }
+.s57-layer-legend-head code { color: #7fd8e6; font-size: 8px; }
+.s57-layer-legend-symbol { display: flex; align-items: center; min-height: 22px; margin: 5px 0; padding: 3px 5px; border-radius: 3px; background: rgba(255, 255, 255, .04); }
+.s57-layer-legend-symbol img { display: block; max-width: 100%; max-height: 48px; object-fit: contain; }
+.s57-legend-swatch { display: inline-block; }
+.s57-legend-swatch.is-line { width: 44px; height: 0; border-top: 3px solid var(--legend-color); }
+.s57-legend-swatch.is-point { width: 12px; height: 12px; border: 1px solid #102c3a; border-radius: 50%; background: var(--legend-color); }
+.s57-legend-swatch.is-polygon { width: 44px; height: 18px; border: 1.5px solid var(--legend-color); background: var(--legend-fill); opacity: var(--legend-opacity); }
+.s57-layer-legend-description { margin: 0 0 4px; color: #b5cfd8; font-size: 9px; line-height: 1.5; }
+.s57-layer-legend-note { margin: 2px 0 0; color: #7897a3; font-size: 8px; line-height: 1.45; }
+.s57-layer-legend-note button { padding: 0 3px; color: #9fe3ee; border: 0; background: none; font-size: 8px; cursor: pointer; text-decoration: underline; }
+.s57-layer-legend-empty { color: #7897a3; font-size: 9px; }
+@media print { .waterway-panel, .waterway-detail-drawer, .waterway-snapshot-drawer, .waterway-snapshot-dialog, .s57-layer-legend { display: none !important; } }

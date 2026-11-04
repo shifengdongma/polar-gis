@@ -364,6 +364,8 @@ docker compose down -v
 - **查看图例与元数据**
 - **打开属性表**
 
+**图层内联图例（S-57 图层）**：S-57 图层状态行右侧新增 **图例** 按钮。展开后显示该图层的中文名称、S-57 对象代码、GeoServer 实际图例符号和简短用途说明；图例仅在展开时请求并缓存，关闭后不会影响海图瓦片加载。GeoServer 图例不可用时，显示当前系统 S-57 预设样式的简化符号；无预设的类别只显示名称与代码，不伪造符号。图例为当前样式示意，同一类别可能随比例尺/属性变化，不代表实时航行状态或已验证的安全通道。
+
 **快速切换**：
 - 点击图层名称左侧的开关直接切换可见性
 
@@ -422,7 +424,7 @@ docker compose down -v
 **测量结果说明**：
 
 - 距离同时给出 **km 与海里（1 NM = 1852 m）**，不足 1 km 时兼显米；面积用 **m² / km²**（面积不换算为海里）。
-- 距离为按顶点顺序计算的**球面最短路径（大圆）分段之和**，属**近似地表距离**：球面模型比 WGS84 椭球测地线偏短约 0.3%–0.4%（高纬更明显），不具备航海认证精度。
+- 距离为按顶点顺序计算的 **WGS84 椭球测地线（GeographicLib / Karney 算法）分段之和**，结果会标注“WGS84 椭球测地线”；两点之间为椭球面最短测地线距离，多航点结果为相邻航点距离之和，不代表避障后的真实航行轨迹距离。结果不具备航海认证精度。
 - **切换投影不会改变测量数值**：测量结果按 WGS84 经纬度保存，切换 EPSG:3857 / EPSG:3413 后显示图形按新投影重建、数值保持不变。
 - **在测量过程中切换投影**会结束本次测量并提示「投影已切换，测量已取消，请重新测量」，需要重新绘制。
 - 多边形面积按**大圆边**计算，环绕极点的多边形与跨 180° 经线的多边形都能给出正确结果。点状态栏的 **[清除]** 可清空测量图形与结果。
@@ -1045,7 +1047,7 @@ curl -X POST http://localhost:8088/api/v1/auth/login \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/layers/{id}/metadata` | 图层元数据 |
-| `GET` | `/api/v1/layers/{id}/legend` | 图层图例 URL |
+| `GET` | `/api/v1/layers/{id}/legend` | 图层图例 URL（含 S-57 对象类别与预设降级信息） |
 | `POST` | `/api/v1/layers/{id}/identify` | 空间要素识别 |
 | `POST` | `/api/v1/layers/{id}/features/search` | 要素属性查询（分页、过滤、BBOX） |
 | `POST` | `/api/v1/layers/{id}/exports` | 导出数据（CSV / GeoJSON） |
@@ -1418,6 +1420,24 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 打开“地图点选”后，点击地图上的航道专题要素会选中并打开详情；该模式默认关闭，进入识别/气象/测量/绘制/风险点选时会自动关闭。关闭面板会卸载专题图层。
 
 说明：S-57 航道要素是**真实海图对象**，与手绘航路、智能规划生成的候选航线不是同一概念；系统不会把相邻 FAIRWY/NAVLNE 拼接成一条路径，也不会为无名称要素生成名称。CAT*/STATUS 等代码在缺少权威本地枚举字典时保留原始代码。
+
+**保存航道数据成果 / 下载 GeoJSON（新增）**：
+
+1. 在航道面板中勾选对象类别、设置关键词或“当前视口”筛选；
+2. 点击 **保存提取结果**，可填写成果名称与单次最大要素数（默认 20000，服务端分批读取全部匹配记录，不是当前页）；
+3. 点击 **已保存航道数据** 查看成果列表：名称/ID、保存时间、来源数据集与 S-57 版本、要素数量、是否达到上限、是否基于旧版海图数据；
+4. 点击 **下载 GeoJSON** 取得 `FeatureCollection` 文件。要素保留真实几何类型（Point/LineString/Polygon/Multi*）、EPSG:4326 坐标和原始属性 `originalAttributes`，可直接用 Python `json.load` 读取。
+
+每次保存生成独立 `snapshotId`，成果保存在服务器持久存储卷中，不会自动覆盖；导入新版本海图后旧成果仍可下载，并标记“基于旧版海图数据”。成果目录为 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/`，包含 `waterways.geojson` 与 `manifest.json`（来源 Dataset/Version/Layer、内容哈希、筛选条件、schemaVersion 等）。
+
+相关接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 提取并保存航道成果 |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 已保存成果列表 |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}` | 成果元数据 |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}/download` | 下载 GeoJSON |
 
 **冰情/底图恢复**：冰情面板瓦片失败时显示原因并可“重新加载当前冰情”；底图选择器旁的刷新按钮可重新加载当前底图，配置失败的底图会显示重试入口。投影切换到无可用底图时会明确提示，不会把 3857 瓦片强行当作 3413 底图。
 
