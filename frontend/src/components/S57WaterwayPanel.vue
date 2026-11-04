@@ -62,6 +62,7 @@ const snapshotCreating = computed(() => props.waterways.snapshotCreating.value)
 const snapshotError = computed(() => props.waterways.snapshotError.value)
 const snapshotDialogVisible = ref(false)
 const snapshotListVisible = ref(false)
+const helpVisible = ref(false)
 const snapshotName = ref('')
 const snapshotMaxFeatures = ref(20000)
 const snapshotClasses = computed(() =>
@@ -237,6 +238,22 @@ function closePanel() {
     <div class="waterway-snapshot-actions">
       <el-button size="small" text @click="openSnapshotDialog">保存提取结果</el-button>
       <el-button size="small" text @click="openSnapshotList">已保存航道数据</el-button>
+      <button
+        type="button"
+        class="waterway-help-toggle"
+        @click="helpVisible = !helpVisible"
+      >{{ helpVisible ? '收起说明' : '使用说明' }}</button>
+    </div>
+
+    <div v-if="helpVisible" class="waterway-help-body">
+      <ol>
+        <li>勾选需要的航道类别；计数为 0 的类别表示当前项目没有该类图层/要素。</li>
+        <li>点击“在地图显示选中类别”即可把要素叠加到当前底图/海图上并自动缩放，<b>不需要先搜索，也不要求先加载 S-57 WMS 海图图层</b>。</li>
+        <li>“搜索”只更新下方结果列表，不会自动上图；可在单条结果上点“定位/显示”。</li>
+        <li>“当前视口”是可选筛选：勾选后只查询当前地图范围；不勾选则查询整个项目当前版本。</li>
+        <li>“地图点选”只用于点击<b>已经显示</b>的专题要素查看详情，不影响搜索或上图；需先显示要素再开启。</li>
+        <li>图例颜色对应四个航道组；地图叠加受单次上限约束（默认 2000 条），达到上限会提示。</li>
+      </ol>
     </div>
 
     <div v-if="catalogLoading" class="waterway-panel-empty">正在读取项目航道图层…</div>
@@ -334,7 +351,7 @@ function closePanel() {
           </span>
         </div>
         <div class="waterway-map-legend-hint">
-          数字来自图层目录统计；按当前类别与筛选条件提取并叠加，受单次显示上限约束。开启“地图点选”后可点击要素查看详情。
+          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计，叠加受单次上限约束。
         </div>
         <div
           v-if="overviewMessage"

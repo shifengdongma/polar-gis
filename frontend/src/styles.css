@@ -1693,6 +1693,12 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-detail-table { font-size: 10px; }
 .waterway-snapshot-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; border-top: 1px dashed rgba(151, 190, 201, .22); border-bottom: 1px dashed rgba(151, 190, 201, .22); }
 .waterway-snapshot-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 9px; }
+.waterway-help-toggle { margin-left: auto; padding: 0 3px; color: #8fd7e2; border: 0; background: none; font-size: 9px; cursor: pointer; text-decoration: underline; }
+.waterway-help-toggle:hover { color: #eafafd; }
+.waterway-help-body { padding: 6px 8px; border: 1px solid rgba(104, 193, 207, .22); border-radius: 4px; background: rgba(4, 20, 29, .42); color: #a9c8d1; font-size: 9px; line-height: 1.55; }
+.waterway-help-body ol { margin: 0; padding-left: 16px; }
+.waterway-help-body li + li { margin-top: 2px; }
+.waterway-help-body b { color: #d9f4f8; font-weight: 600; }
 .waterway-snapshot-form { display: flex; flex-direction: column; gap: 6px; color: #234e5c; font-size: 11px; }
 .waterway-snapshot-form label { color: #315d6b; font-size: 10px; font-weight: 700; }
 .waterway-snapshot-summary, .waterway-snapshot-filters { padding: 6px 8px; border: 1px solid #dce8ed; border-radius: 4px; background: #f7fafb; color: #315d6b; font-size: 10px; line-height: 1.5; }

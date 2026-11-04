@@ -65,6 +65,14 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('append-to-body')
   })
 
+  it('explains the flow: no prior search or S-57 WMS load is required', () => {
+    expect(source).toContain('使用说明')
+    expect(source).toContain('不需要先搜索')
+    expect(source).toContain('不要求先加载 S-57 WMS 海图图层')
+    expect(source).toContain('地图点选')
+    expect(source).toContain('当前视口')
+  })
+
   it('does not write into route state', () => {
     expect(source).not.toContain('routesStore')
     expect(source).not.toContain('routeDrawing')
