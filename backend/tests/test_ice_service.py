@@ -614,3 +614,39 @@ def test_info_triggers_background_warm(tmp_path: Path, monkeypatch: pytest.Monke
     while not warmed and time.time() < deadline:
         time.sleep(0.01)
     assert warmed == [True]
+
+
+def test_cold_grid_load_concurrency_is_capped(tmp_path: Path, monkeypatch) -> None:
+    """Rapid timeline scrubbing must not load many 26M-cell grids at once."""
+    for index, day in enumerate(("20220101", "20220102", "20220103")):
+        write_nc(
+            tmp_path / f"sic_{day}.nc",
+            np.full((len(GRID_Y), len(GRID_X)), float(10 + index)),
+        )
+    service = IceService(tmp_path, max_concurrent_grid_loads=1)
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    original = service._normalize
+
+    def slow_normalize(*args, **kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return original(*args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(service, "_normalize", slow_normalize)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        list(
+            executor.map(
+                lambda day: service._grid(day, "concentration"),
+                ["20220101", "20220102", "20220103"],
+            )
+        )
+    assert max_active == 1

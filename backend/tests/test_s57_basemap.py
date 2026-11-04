@@ -1,22 +1,17 @@
 """Tests for S-57 basemap preflight and profile services."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.services.s57_basemap import (
     BasemapPreflightService,
-    BasemapProfile,
-    PreflightResult,
-    _compute_file_hash,
-    _compute_manifest_hash,
     _extract_dsid_metadata,
     _safe_int,
     list_available_profiles,
     load_profile,
 )
-
 
 # ── fixtures ──────────────────────────────────────────────────────────
 
@@ -207,3 +202,66 @@ class TestFileCount:
     def test_us1bs03m_max_update(self):
         profile = load_profile("global_overview_v1")
         assert profile.expected_cells["US1BS03M"] == 5
+
+
+def test_collect_basemap_layers_reads_nested_s57_object_class(db_session):
+    """Regression: objectClass lives under metadata_json["s57"], not top level."""
+    from sqlalchemy import select
+
+    from app.core.config import Settings
+    from app.models import (
+        Dataset,
+        DatasetVersion,
+        Layer,
+        S57ImportBatch,
+        S57ImportBatchItem,
+        User,
+    )
+    from app.services.s57_basemap import BasemapPostProcessor
+
+    user = db_session.scalar(select(User))
+    batch = S57ImportBatch(name="basemap-test", requested_by=user.id)
+    db_session.add(batch)
+    db_session.flush()
+    dataset = Dataset(
+        code="s57_basemap_test",
+        name="S-57 海图 BASEMAP",
+        data_type="s57",
+        created_by=user.id,
+    )
+    db_session.add(dataset)
+    db_session.flush()
+    version = DatasetVersion(
+        dataset_id=dataset.id,
+        version_no=1,
+        source_format="000",
+        status="valid",
+        content_hash="c" * 64,
+        metadata_json={"cellName": "BASEMAP"},
+    )
+    db_session.add(version)
+    db_session.flush()
+    dataset.current_version_id = version.id
+    layer = Layer(
+        dataset_version_id=version.id,
+        code="s57_basemap_test_1_depare",
+        name="DEPARE",
+        geometry_type="MultiPolygon",
+        source_table="geo.ds_basemap_v1_depare",
+        status="available",
+        geoserver_layer_name="s57_basemap_test_1_depare",
+        metadata_json={"s57": {"objectClass": "DEPARE", "styleMapped": True}},
+    )
+    db_session.add(layer)
+    item = S57ImportBatchItem(
+        batch_id=batch.id,
+        cell_name="BASEMAP",
+        status="succeeded",
+        dataset_id=dataset.id,
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    processor = BasemapPostProcessor(Settings())
+    collected = processor._collect_basemap_layers(db_session, batch)
+    assert [entry["object_class"] for entry in collected] == ["DEPARE"]

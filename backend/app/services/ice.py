@@ -118,10 +118,17 @@ class IceService:
         root: Path,
         tile_cache_entries: int = 256,
         max_zoom: int = 10,
+        max_concurrent_grid_loads: int = 2,
     ) -> None:
         self.root = Path(root)
         self._max_zoom = max(int(max_zoom), 0)
         self._tile_cache_entries = max(int(tile_cache_entries), 1)
+        # Cold dates load a full 26M-cell grid. Rapid timeline scrubbing can
+        # otherwise start many date loads at once and exhaust memory/CPU even
+        # after the browser aborts the HTTP requests.
+        self._grid_load_semaphore = threading.BoundedSemaphore(
+            max(1, int(max_concurrent_grid_loads))
+        )
         self._lock = threading.RLock()
         self._files = self._index_files()
         self._metadata: dict[str, dict[str, Any]] = {}
@@ -472,27 +479,38 @@ class IceService:
                     self._grids.pop(day)
                     self._grids[day] = day_grids
                     return day_grids[field]
-                entry = self._files.get(day)
-                meta = self._inspect(day)
-                field_meta = meta["fields"].get(field)
-                if entry is None or field_meta is None or not meta["x"] or not meta["y"]:
-                    raise AppError(ICE_FIELD_UNAVAILABLE, "该日期文件没有此变量", 404)
-                with Dataset(str(entry.path)) as dataset:
-                    x = np.asarray(dataset.variables[meta["x"]][:], dtype=np.float64)
-                    y = np.asarray(dataset.variables[meta["y"]][:], dtype=np.float64)
-                    raw = self._load_variable(dataset, field_meta["name"])
-                    units = str(
-                        getattr(dataset.variables[field_meta["name"]], "units", "") or ""
-                    ).lower()
-            grid = self._normalize(field, raw, units, x, y)  # 全局锁外(仅持该日期装载锁)
-            with self._lock:
-                grids = self._grids.get(day) or {}
-                grids[field] = grid
-                self._grids.pop(day, None)
-                self._grids[day] = grids  # 日期级 LRU
-                while len(self._grids) > 2:
-                    self._grids.pop(next(iter(self._grids)))
-                return grid
+            # Global cap: at most N cold dates may load a full 26M-cell grid at
+            # the same time. Per-date single-flight already serializes one date;
+            # this protects memory/CPU when an aborted client leaves several
+            # server-side date loads queued after rapid timeline scrubbing.
+            with self._grid_load_semaphore:
+                with self._lock:
+                    day_grids = self._grids.get(day)
+                    if day_grids is not None and field in day_grids:
+                        self._grids.pop(day)
+                        self._grids[day] = day_grids
+                        return day_grids[field]
+                    entry = self._files.get(day)
+                    meta = self._inspect(day)
+                    field_meta = meta["fields"].get(field)
+                    if entry is None or field_meta is None or not meta["x"] or not meta["y"]:
+                        raise AppError(ICE_FIELD_UNAVAILABLE, "该日期文件没有此变量", 404)
+                    with Dataset(str(entry.path)) as dataset:
+                        x = np.asarray(dataset.variables[meta["x"]][:], dtype=np.float64)
+                        y = np.asarray(dataset.variables[meta["y"]][:], dtype=np.float64)
+                        raw = self._load_variable(dataset, field_meta["name"])
+                        units = str(
+                            getattr(dataset.variables[field_meta["name"]], "units", "") or ""
+                        ).lower()
+                grid = self._normalize(field, raw, units, x, y)
+                with self._lock:
+                    grids = self._grids.get(day) or {}
+                    grids[field] = grid
+                    self._grids.pop(day, None)
+                    self._grids[day] = grids  # 日期级 LRU
+                    while len(self._grids) > 2:
+                        self._grids.pop(next(iter(self._grids)))
+                    return grid
 
     def warm_default_grid(self) -> None:
         """预载默认日期(最早日期)的密集度网格。
@@ -620,7 +638,7 @@ class IceService:
 # 否则首次进入项目会并发执行两遍全目录元数据扫描、两个预热线程、两份 26M
 # 单元网格缓存。共享后 /ice/info、环境 sources 与规划采样复用同一份索引。
 
-_SHARED_SERVICES: dict[tuple[str, int, int], IceService] = {}
+_SHARED_SERVICES: dict[tuple[str, int, int, int], IceService] = {}
 _SHARED_LOCK = threading.Lock()
 
 
@@ -628,12 +646,23 @@ def shared_ice_service(
     root: Path,
     tile_cache_entries: int = 256,
     max_zoom: int = 10,
+    max_concurrent_grid_loads: int = 2,
 ) -> IceService:
-    """Return one IceService per (data root, cache size, max zoom)."""
+    """Return one IceService per (data root, cache size, max zoom, load limit)."""
     try:
-        key = (str(Path(root).expanduser().resolve()), int(tile_cache_entries), int(max_zoom))
+        key = (
+            str(Path(root).expanduser().resolve()),
+            int(tile_cache_entries),
+            int(max_zoom),
+            int(max_concurrent_grid_loads),
+        )
     except OSError:
-        key = (str(root), int(tile_cache_entries), int(max_zoom))
+        key = (
+            str(root),
+            int(tile_cache_entries),
+            int(max_zoom),
+            int(max_concurrent_grid_loads),
+        )
     with _SHARED_LOCK:
         service = _SHARED_SERVICES.get(key)
         if service is None:
@@ -641,6 +670,7 @@ def shared_ice_service(
                 Path(root),
                 tile_cache_entries=tile_cache_entries,
                 max_zoom=max_zoom,
+                max_concurrent_grid_loads=max_concurrent_grid_loads,
             )
             _SHARED_SERVICES[key] = service
         return service

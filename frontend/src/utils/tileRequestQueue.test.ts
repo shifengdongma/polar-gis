@@ -117,6 +117,89 @@ describe('TileRequestQueue.abortAll', () => {
   })
 })
 
+describe('TileRequestQueue priority and timeout', () => {
+  it('serves high-priority requests first without starving normal requests', async () => {
+    const order: string[] = []
+    const deferreds: Deferred[] = []
+    const fetchMock = vi.fn((src: string) => {
+      order.push(src)
+      let resolve!: (r: Response) => void
+      let reject!: (e: unknown) => void
+      const promise = new Promise<Response>((res, rej) => {
+        resolve = res
+        reject = rej
+      })
+      deferreds.push({ resolve, reject })
+      return promise
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const q = new TileRequestQueue(1, 20)
+    const signal = () => new AbortController().signal
+
+    const high = ['/h1', '/h2', '/h3', '/h4'].map((src) =>
+      q.fetch(src, signal(), { priority: 'high' }),
+    )
+    const normal = q.fetch('/n1', signal())
+    await flushMicrotasks()
+    expect(order).toEqual(['/h1'])
+    expect(q.queuedHigh).toBe(3)
+    expect(q.queuedNormal).toBe(1)
+
+    for (let i = 0; i < 5; i += 1) {
+      deferreds[i]?.resolve(okResponse())
+      await flushMicrotasks()
+    }
+    await Promise.all([...high, normal])
+    // highStreak=3 then one normal, then remaining high — normal is not starved.
+    expect(order).toEqual(['/h1', '/h2', '/h3', '/n1', '/h4'])
+  })
+
+  it('times out a hung fetch, frees the slot, and starts the next request', async () => {
+    vi.useFakeTimers()
+    const deferreds: Deferred[] = []
+    const fetchMock = vi.fn(() => {
+      let resolve!: (r: Response) => void
+      let reject!: (e: unknown) => void
+      const promise = new Promise<Response>((res, rej) => {
+        resolve = res
+        reject = rej
+      })
+      deferreds.push({ resolve, reject })
+      return promise
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const q = new TileRequestQueue(1, 10)
+    const pA = q.fetch('/a', new AbortController().signal, { timeoutMs: 100 })
+    const aExpectation = expect(pA).rejects.toMatchObject({ name: 'TimeoutError' })
+    const pB = q.fetch('/b', new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(q.pending).toBe(1)
+    await vi.advanceTimersByTimeAsync(100)
+    await aExpectation
+    expect(q.pending).toBe(1) // B started after A timed out
+    deferreds[1].resolve(okResponse())
+    await expect(pB).resolves.toBeDefined()
+    expect(q.pending).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('releases the in-flight slot when fetch throws synchronously', async () => {
+    const fetchMock = vi.fn((): Promise<Response> => {
+      throw new Error('synchronous boom')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const q = new TileRequestQueue(1, 10)
+    await expect(q.fetch('/a', new AbortController().signal)).rejects.toThrow('synchronous boom')
+    await flushMicrotasks()
+    expect(q.pending).toBe(0)
+    fetchMock.mockImplementation(() => Promise.resolve(okResponse()))
+    const next = q.fetch('/b', new AbortController().signal)
+    await flushMicrotasks()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expect(next).resolves.toBeDefined()
+  })
+})
+
 describe('TileRequestQueue.reset', () => {
   it('keeps in-flight accounting accurate — no concurrency overshoot after reset', async () => {
     const { deferreds, fetchMock } = installFetchMock()

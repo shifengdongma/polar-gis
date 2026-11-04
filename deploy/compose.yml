@@ -60,6 +60,7 @@ services:
       # 冰情叠加(只读环境数据;worker 经锚点同样获得,但不读取数据)
       ICE_ENABLED: ${ICE_ENABLED:-true}
       ICE_DATA_ROOT: /data/ice
+      ICE_MAX_CONCURRENT_GRID_LOADS: ${ICE_MAX_CONCURRENT_GRID_LOADS:-2}
       # 导航环境/规划。数据目录只读；结果目录位于共享存储，backend/worker 均可读写。
       NAVIGATION_ENABLED: ${NAVIGATION_ENABLED:-true}
       NAVIGATION_DATA_ROOT: /data/navigation

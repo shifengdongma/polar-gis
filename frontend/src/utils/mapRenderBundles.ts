@@ -110,10 +110,19 @@ export function attachBundle(
   onWarmingComplete: (bundleId: string) => void,
   onError: (bundleId: string, error: string) => void,
 ): BundleRuntime {
-  // Already attached?
+  // Already attached? A failed runtime is re-created below; first remove its
+  // stale layer so a retry does not leave the old blank bundle on the map.
   const existing = bundleRegistry.get(config.bundleId)
   if (existing && existing.status !== 'failed') {
     return existing
+  }
+  if (existing) {
+    if (existing.layer) {
+      map.removeLayer(existing.layer)
+      existing.layer.dispose()
+    }
+    clearTimeout(existing.loadStateTimer)
+    bundleRegistry.delete(config.bundleId)
   }
 
   const source = createBundleTileSource(config, tileLoadFunction)

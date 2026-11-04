@@ -76,6 +76,7 @@ class EnvironmentService:
                 # Match /api/v1/ice so both paths share the same IceService.
                 tile_cache_entries=settings.ice_tile_cache_entries,
                 max_zoom=settings.ice_tile_max_zoom,
+                max_concurrent_grid_loads=settings.ice_max_concurrent_grid_loads,
             ),
             "wind": CARRA2WindProvider(self.root, self.manifest),
             "current": TOPAZ5CurrentProvider(self.root, self.manifest),

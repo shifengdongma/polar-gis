@@ -3,18 +3,18 @@
  *
  * 与 S-57 渲染体系彻底解耦:两个独立 TileLayer(密集度/厚度)+ 一个调试
  * VectorLayer,直接挂到既有地图;绝不进入 runtimeLayers / selectedLayerIds /
- * Render Bundle / mapRenderScheduler / TileRequestQueue —— 冰情 XYZ 由
- * OpenLayers 自行管理请求。
+ * Render Bundle / mapRenderScheduler。
  *
- * 硬性约束:
- * - attach() 幂等;dispose() 必须彻底(removeLayer + dispose + 中止在飞请求);
- * - 日期/可用性/投影变化一律只替换 XYZ Source(setSource),绝不重建 Layer
- *   (连续切换日期后地图上永远只有 1 个密集度 + 1 个厚度 TileLayer);
- * - 瓦片 URL 携带日期;transition:0(时间轴切换无淡入残影);
- *   crossOrigin:'anonymous'(截图 canvas 合成需要);
- * - hover:100ms debounce + AbortController + 请求代次号,旧响应绝不覆盖新位置;
- *   值与瓦片同源于后端原始网格(绝不从 PNG 颜色反推);
- * - 不自行注册 map 事件:由 MapWorkspaceView 唯一的 pointermove 分发进来。
+ * 瓦片请求复用通用 TileRequestQueue + LRUTileCache，并由
+ * utils/tileLoader.ts 的 per-source TileLoadLifecycle 管理:
+ * - 日期/投影/可见性变化只替换**发生变化字段**的 Source；
+ * - 取消/源替换使用 TileState.EMPTY，绝不把瓦片留在 LOADING；
+ * - 有界重试、超时、Content-Type/解码校验、objectURL revoke、错误诊断；
+ * - 快速拖动时间轴有 120ms debounce，避免每个 input 事件触发一次冷加载。
+ *
+ * hover:100ms debounce + AbortController + 请求代次号,旧响应绝不覆盖新位置;
+ * 值与瓦片同源于后端原始网格(绝不从 PNG 颜色反推);
+ * 不自行注册 map 事件:由 MapWorkspaceView 唯一的 pointermove 分发进来。
  */
 import { computed, ref, shallowRef, watch } from 'vue'
 import type OlMap from 'ol/Map'
@@ -24,13 +24,18 @@ import VectorLayer from 'ol/layer/Vector'
 import XYZ from 'ol/source/XYZ'
 import VectorSource from 'ol/source/Vector'
 import { Circle as CircleStyle, Fill, Style, Stroke } from 'ol/style'
-import TileState from 'ol/TileState'
 import { apiErrorMessage } from '../api/client'
 import { fetchIceAlignment, fetchIceInfo, fetchIceValue } from '../api/ice'
 import type { IceFieldId, IceInfo } from '../types'
-import { TILE_RETRY_BASE_DELAY_MS, TILE_RETRY_MAX_ATTEMPTS } from '../utils/mapLayerBatch'
 import type { LRUTileCache } from '../utils/tileCache'
 import type { TileRequestQueue } from '../utils/tileRequestQueue'
+import { tileDiagnostics } from '../utils/tileDiagnostics'
+import {
+  createQueuedTileLoadFunction,
+  createTileLoadLifecycle,
+  deactivateTileLoadLifecycle,
+  type TileLoadLifecycle,
+} from '../utils/tileLoader'
 import {
   ICE_ALIGNMENT_Z_INDEX,
   ICE_LAYER_Z_INDEX,
@@ -49,7 +54,7 @@ export interface IceOverlayOptions {
   getCrs: () => string
   /** 与海图瓦片共享的 LRU 瓦片缓存(开关切换/回pan/重复日期零请求) */
   tileCache: LRUTileCache
-  /** 与海图瓦片共享的限流请求队列(全局限并发,丢弃即中止) */
+  /** 与海图瓦片共享的限流请求队列(冰情使用 high 优先级) */
   tileRequestQueue: TileRequestQueue
   /** 其他地图交互(测量/识别/气象/航路绘制编辑/航路浮窗)进行中 → 暂停冰情 hover */
   canQueryValue: () => boolean
@@ -74,8 +79,17 @@ interface IcePointerEvent {
   dragging: boolean
 }
 
+interface IceSourceState {
+  key: string
+  lifecycle: TileLoadLifecycle
+  source: XYZ
+  field: IceFieldId
+}
+
 /** 悬停查询 debounce(毫秒) */
 const ICE_HOVER_DEBOUNCE_MS = 100
+/** 时间轴快速拖动时合并源替换，避免每个 input 事件触发一次冷加载 */
+const ICE_DATE_DEBOUNCE_MS = 120
 /** hover 浮窗翻转阈值(与既有坐标提示同一思路,按地图视口尺寸推导) */
 const HOVER_FLIP_X_RATIO = 0.62
 const HOVER_FLIP_Y_RATIO = 0.6
@@ -93,6 +107,9 @@ export function useIceOverlay(options: IceOverlayOptions) {
   const thicknessOpacity = ref(0.72)
   const hover = ref<IceHoverState | null>(null)
   const debugAlignment = ref(false)
+  /** Final tile failures since the last source rebuild (not retries). */
+  const tileErrorCount = ref(0)
+  const lastTileError = ref('')
 
   let concentrationLayer: TileLayer<XYZ> | null = null
   let thicknessLayer: TileLayer<XYZ> | null = null
@@ -102,110 +119,127 @@ export function useIceOverlay(options: IceOverlayOptions) {
   let hoverRequestId = 0
   let hoverController: AbortController | null = null
   let alignmentController: AbortController | null = null
+  let alignmentRequestId = 0
   let lastHoverPixel: number[] | null = null
+  let refreshTimer = 0
+  let infoController: AbortController | null = null
+  let infoRequestId = 0
+  let generationSeq = 0
 
-  // ── 瓦片请求管线(限流队列 + 共享 LRU 缓存 + 代次中止) ──────────────
-  // 会话 #26.1:此前用 OL 默认 <img> 加载器 —— 无并发上限、丢弃不中止,
-  // 打开"海冰密集度"时视口瓦片同时发射、时间轴切换后旧请求仍占用连接与
-  // 后端线程(实测后端惊群每张 6.6s),表现为请求堆积、地图空白与
-  // "日期切换无法重新加载"。现复用海图同款做法并加代次中止。
-  let tileGeneration = 0
-  const tileControllers = new Set<AbortController>()
+  /** Per-field current source lifecycle. */
+  const sourceStates: Partial<Record<IceFieldId, IceSourceState>> = {}
 
-  /** 使上一代瓦片请求全部失效并中止(日期/投影/开关切换前调用)。 */
-  function abortStaleTileLoads() {
-    tileGeneration += 1
-    for (const controller of tileControllers) controller.abort()
-    tileControllers.clear()
+  function layerForField(field: IceFieldId): TileLayer<XYZ> | null {
+    return field === 'concentration' ? concentrationLayer : thicknessLayer
   }
 
-  /**
-   * 冰情瓦片加载器 —— 复用 S-57 已验证的做法(参照 MapWorkspaceView 的
-   * createRetryTileLoadFunction):共享 LRU 缓存 → 全局限流队列 fetch → blob;
-   * 瓦片被 OpenLayers 释放时(ol10 中 release()/dispose() 置 TileState.EMPTY)
-   * 或所属代次过期 → 立即中止在飞请求;可恢复错误指数退避重试。
-   */
-  function createIceTileLoadFunction(
-    tileCache: LRUTileCache,
-    tileRequestQueue: TileRequestQueue,
-  ): (tile: any, src: string) => void {
-    return (tile, src) => {
-      const generation = tileGeneration
-      const image = tile.getImage() as HTMLImageElement
-      const controller = new AbortController()
-      tileControllers.add(controller)
-      const release = () => tileControllers.delete(controller)
-      let attempts = 0
+  function fieldVisible(field: IceFieldId): boolean {
+    return field === 'concentration' ? concentrationVisible.value : thicknessVisible.value
+  }
 
-      const isAborted = () => controller.signal.aborted || generation !== tileGeneration
+  function fieldAvailable(field: IceFieldId): boolean {
+    return iceFieldAvailable(info.value, field, selectedDate.value)
+  }
 
-      // 瓦片被 OL 释放/销毁(平移缩放、投影切换、渲染缓存过期)→ 中止在飞请求
-      tile.addEventListener('change', () => {
-        if ((tile as any).getState?.() === TileState.EMPTY) {
-          controller.abort()
-        }
-      })
+  function fieldOpacity(field: IceFieldId): number {
+    return field === 'concentration' ? concentrationOpacity.value : thicknessOpacity.value
+  }
 
-      const tryLoad = () => {
-        if (isAborted()) {
-          release()
-          return
-        }
-        attempts++
-        // 1. LRU 缓存优先(开关切换、回 pan、重复日期零网络请求)
-        const cached = tileCache.get(src)
-        if (cached) {
-          release()
-          const objectUrl = URL.createObjectURL(cached)
-          image.onload = () => URL.revokeObjectURL(objectUrl)
-          image.src = objectUrl
-          return
-        }
-        // 2. 走全局限流队列(与海图瓦片共享并发上限,防止请求堆积)
-        tileRequestQueue.fetch(src, controller.signal)
-          .then((response) => {
-            if (response.ok) return response.blob()
-            // 可恢复错误(429/502/503/504)指数退避重试;其余标记错误
-            if (
-              [429, 502, 503, 504].includes(response.status) &&
-              attempts < TILE_RETRY_MAX_ATTEMPTS
-            ) {
-              window.setTimeout(tryLoad, TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1))
-              return null
-            }
-            release()
-            tile.setState(TileState.ERROR)
-            return null
-          })
-          .then((blob) => {
-            if (!blob || isAborted()) {
-              release()
-              return
-            }
-            tileCache.set(src, blob)
-            release()
-            const objectUrl = URL.createObjectURL(blob)
-            image.onload = () => URL.revokeObjectURL(objectUrl)
-            image.src = objectUrl
-          })
-          .catch((error) => {
-            if (isAborted()) {
-              release()
-              return
-            }
-            if (error instanceof TypeError && attempts < TILE_RETRY_MAX_ATTEMPTS) {
-              window.setTimeout(tryLoad, TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1))
-            } else {
-              release()
-              tile.setState(TileState.ERROR)
-            }
-          })
-      }
-      tryLoad()
+  function sourceKeyFor(field: IceFieldId, date: string, crs: string, visible: boolean): string {
+    return `${field}|${date}|${crs}|${visible ? 'on' : 'off'}`
+  }
+
+  function deactivateSource(field: IceFieldId) {
+    const state = sourceStates[field]
+    if (!state) return
+    deactivateTileLoadLifecycle(state.lifecycle)
+    delete sourceStates[field]
+  }
+
+  function deactivateAllSources() {
+    deactivateSource('concentration')
+    deactivateSource('thickness')
+  }
+
+  /** 当前字段的 XYZ 源；key 不变时复用，绝不 abort 另一字段。 */
+  function ensureSource(field: IceFieldId): XYZ | null {
+    const date = selectedDate.value
+    const visible = fieldVisible(field)
+    const available = fieldAvailable(field)
+    if (!date || !visible || !available) {
+      deactivateSource(field)
+      return null
+    }
+    const crs = options.getCrs()
+    const key = sourceKeyFor(field, date, crs, visible)
+    const existing = sourceStates[field]
+    if (existing && existing.key === key) return existing.source
+
+    deactivateSource(field)
+    tileErrorCount.value = 0
+    lastTileError.value = ''
+    const lifecycle = createTileLoadLifecycle(
+      `ice:${field}:${date}:${crs}`,
+      ++generationSeq,
+    )
+    const load = createQueuedTileLoadFunction({
+      cache: options.tileCache,
+      queue: options.tileRequestQueue,
+      lifecycle,
+      layer: `ice:${field}`,
+      date,
+      projection: crs,
+      priority: 'high',
+      retry: {
+        maxAttempts: 4,
+        classifyStatus: (status) => (status === 404 || status === 204 ? 'empty' : 'retry'),
+      },
+      diagnostics: tileDiagnostics,
+      onRetry: () => {
+        lastTileError.value = `${field} 瓦片重试中`
+      },
+      onFailure: (caught) => {
+        tileErrorCount.value += 1
+        lastTileError.value = caught instanceof Error ? caught.message : '冰情瓦片加载失败'
+      },
+    })
+    const source = new XYZ({
+      url: buildIceTileUrl(field, crs, date),
+      projection: crs,
+      tileGrid: createIceTileGrid(crs),
+      maxZoom: ICE_MAX_ZOOM,
+      crossOrigin: 'anonymous',
+      transition: 0,
+      tileLoadFunction: load as never,
+    })
+    sourceStates[field] = { key, lifecycle, source, field }
+    return source
+  }
+
+  /** 只替换发生变化的 Source 与可见性,绝不重建 Layer(时间轴连切不累积图层)。 */
+  function refreshLayers() {
+    if (refreshTimer) {
+      window.clearTimeout(refreshTimer)
+      refreshTimer = 0
+    }
+    for (const field of ['concentration', 'thickness'] as IceFieldId[]) {
+      const layer = layerForField(field)
+      if (!layer) continue
+      const source = ensureSource(field)
+      layer.setSource(source)
+      layer.setVisible(Boolean(source))
+      layer.setOpacity(fieldOpacity(field))
     }
   }
 
-  const loadIceTile = createIceTileLoadFunction(options.tileCache, options.tileRequestQueue)
+  function scheduleRefresh() {
+    if (refreshTimer) window.clearTimeout(refreshTimer)
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = 0
+      refreshLayers()
+      void loadAlignment()
+    }, ICE_DATE_DEBOUNCE_MS)
+  }
 
   const dates = computed(() => info.value?.dates ?? [])
   const currentIndex = computed(() => iceTimelineIndex(dates.value, selectedDate.value))
@@ -223,13 +257,16 @@ export function useIceOverlay(options: IceOverlayOptions) {
   // ── 数据加载 ────────────────────────────────────────────────────────
 
   async function loadInfo() {
-    // The first metadata scan may legitimately take a while on a cold data
-    // directory; never let a panel-open event start a second concurrent scan.
     if (loading.value) return
+    infoController?.abort()
+    const controller = new AbortController()
+    infoController = controller
+    const requestId = ++infoRequestId
     loading.value = true
     error.value = ''
     try {
-      const data = await fetchIceInfo()
+      const data = await fetchIceInfo(controller.signal)
+      if (controller.signal.aborted || requestId !== infoRequestId) return
       info.value = data
       if (!selectedDate.value || !data.dates.includes(selectedDate.value)) {
         selectedDate.value = data.defaultDate ?? data.dates[0] ?? null
@@ -239,14 +276,26 @@ export function useIceOverlay(options: IceOverlayOptions) {
         thicknessVisible.value = false
       }
     } catch (caught) {
-      // 降级原则:冰情失败 != 地图失败
-      info.value = null
+      if (controller.signal.aborted) return
+      // 降级原则:冰情失败 != 地图失败；保留上一次可用元数据，避免瞬时失败
+      // 把正在工作的图层隐藏。
       error.value = apiErrorMessage(caught, '冰情数据加载失败')
     } finally {
-      loading.value = false
-      infoLoaded.value = true
-      refreshLayers()
+      if (requestId === infoRequestId) {
+        loading.value = false
+        infoLoaded.value = true
+        refreshLayers()
+      }
     }
+  }
+
+  /** Explicit retry exposed by the panel: metadata first when absent/failed. */
+  async function retry() {
+    if (!info.value || error.value) {
+      await loadInfo()
+      return
+    }
+    retryVisibleLayers()
   }
 
   // ── 图层生命周期 ────────────────────────────────────────────────────
@@ -285,8 +334,14 @@ export function useIceOverlay(options: IceOverlayOptions) {
   }
 
   function dispose() {
+    if (refreshTimer) {
+      window.clearTimeout(refreshTimer)
+      refreshTimer = 0
+    }
     clearHover()
-    abortStaleTileLoads()
+    infoController?.abort()
+    infoController = null
+    deactivateAllSources()
     alignmentController?.abort()
     alignmentController = null
     const map = options.getMap()
@@ -301,47 +356,22 @@ export function useIceOverlay(options: IceOverlayOptions) {
     attached = false
   }
 
-  /** 当前字段的 XYZ 源(日期/投影/可用性任一变化都会生成新源)。 */
-  function tileSourceFor(field: IceFieldId): XYZ | null {
-    const date = selectedDate.value
-    if (!date || !iceFieldAvailable(info.value, field, date)) return null
-    const crs = options.getCrs()
-    return new XYZ({
-      url: buildIceTileUrl(field, crs, date),
-      projection: crs,
-      tileGrid: createIceTileGrid(crs),
-      maxZoom: ICE_MAX_ZOOM,
-      crossOrigin: 'anonymous',
-      transition: 0,
-      // 复用海图同款瓦片请求管线:限流队列 + 共享 LRU 缓存 + 丢弃即中止
-      tileLoadFunction: loadIceTile,
-    })
-  }
-
-  /** 只替换 Source 与可见性,绝不重建 Layer(时间轴连切不累积图层)。 */
-  function refreshLayers() {
-    // 先使上一代瓦片请求全部失效并中止:日期/投影/开关切换后,旧请求
-    // 立即让出队列名额与后端线程,新瓦片可即时进入加载(修复切换堆积)
-    abortStaleTileLoads()
-    if (concentrationLayer) {
-      const usable = concentrationVisible.value && concentrationAvailable.value
-      concentrationLayer.setSource(usable ? tileSourceFor('concentration') : null)
-      concentrationLayer.setVisible(usable)
-      concentrationLayer.setOpacity(concentrationOpacity.value)
-    }
-    if (thicknessLayer) {
-      const usable = thicknessVisible.value && thicknessAvailable.value
-      thicknessLayer.setSource(usable ? tileSourceFor('thickness') : null)
-      thicknessLayer.setVisible(usable)
-      thicknessLayer.setOpacity(thicknessOpacity.value)
-    }
-  }
-
   /** 投影切换:保留日期/可见性/透明度,只重建 Source 与 TileGrid。 */
   function reloadForProjection() {
     clearHover()
+    deactivateAllSources()
     refreshLayers()
     void loadAlignment()
+  }
+
+  /** Rebuild the current visible field sources without touching the map/view. */
+  function retryVisibleLayers() {
+    tileErrorCount.value = 0
+    lastTileError.value = ''
+    for (const field of ['concentration', 'thickness'] as IceFieldId[]) {
+      deactivateSource(field)
+    }
+    refreshLayers()
   }
 
   // ── 日期与开关 ──────────────────────────────────────────────────────
@@ -383,8 +413,12 @@ export function useIceOverlay(options: IceOverlayOptions) {
 
   watch(selectedDate, () => {
     clearHover()
-    refreshLayers()
-    void loadAlignment()
+    // Abort the previous date's in-flight tile requests immediately. The old
+    // source stays attached for the 120 ms debounce window (already-loaded
+    // tiles remain visible), then is replaced by the new date source.
+    deactivateSource('concentration')
+    deactivateSource('thickness')
+    scheduleRefresh()
   })
 
   // ── 定位与调试对齐 ──────────────────────────────────────────────────
@@ -404,13 +438,16 @@ export function useIceOverlay(options: IceOverlayOptions) {
       layer.setVisible(false)
       return
     }
+    const requestId = ++alignmentRequestId
     alignmentController?.abort()
-    alignmentController = new AbortController()
+    const controller = new AbortController()
+    alignmentController = controller
     try {
       const geojson = await fetchIceAlignment(
         { date: selectedDate.value, projection: options.getCrs() },
-        alignmentController.signal,
+        controller.signal,
       )
+      if (controller.signal.aborted || requestId !== alignmentRequestId) return
       const crs = options.getCrs()
       const features = new GeoJSON().readFeatures(geojson, {
         dataProjection: crs,
@@ -420,6 +457,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
       layer.getSource()?.addFeatures(features)
       layer.setVisible(true)
     } catch {
+      if (controller.signal.aborted || requestId !== alignmentRequestId) return
       layer.getSource()?.clear()
       layer.setVisible(false)
     }
@@ -462,11 +500,17 @@ export function useIceOverlay(options: IceOverlayOptions) {
     hover.value = null
   }
 
+  function activeHoverField(): IceFieldId | null {
+    if (concentrationVisible.value && concentrationAvailable.value) return 'concentration'
+    if (thicknessVisible.value && thicknessAvailable.value) return 'thickness'
+    return null
+  }
+
   function handlePointerMove(event: IcePointerEvent) {
+    const field = activeHoverField()
     if (
       event.dragging ||
-      !concentrationVisible.value ||
-      !concentrationAvailable.value ||
+      !field ||
       !selectedDate.value ||
       !options.canQueryValue() ||
       !pointerInIceExtent(event.coordinate)
@@ -485,18 +529,24 @@ export function useIceOverlay(options: IceOverlayOptions) {
     const requestId = ++hoverRequestId
     hoverTimer = window.setTimeout(() => {
       hoverTimer = 0
-      void queryValue(coordinate, requestId)
+      void queryValue(coordinate, requestId, field)
     }, ICE_HOVER_DEBOUNCE_MS)
   }
 
-  async function queryValue(coordinate: number[], requestId: number) {
+  async function queryValue(coordinate: number[], requestId: number, field: IceFieldId) {
     const date = selectedDate.value
     if (!date) return
     hoverController?.abort()
     hoverController = new AbortController()
     try {
       const result = await fetchIceValue(
-        { date, x: coordinate[0] ?? 0, y: coordinate[1] ?? 0, projection: options.getCrs() },
+        {
+          date,
+          x: coordinate[0] ?? 0,
+          y: coordinate[1] ?? 0,
+          projection: options.getCrs(),
+          field,
+        },
         hoverController.signal,
       )
       if (requestId !== hoverRequestId) return // 旧响应绝不覆盖新位置
@@ -509,7 +559,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
         value: result.value,
         units: result.units ?? '%',
         date: result.date ?? date,
-        field: result.field ?? 'concentration',
+        field: result.field ?? field,
         longitude: result.longitude ?? Number.NaN,
         latitude: result.latitude ?? Number.NaN,
       }
@@ -532,10 +582,13 @@ export function useIceOverlay(options: IceOverlayOptions) {
     thicknessOpacity,
     concentrationAvailable,
     thicknessAvailable,
+    tileErrorCount,
+    lastTileError,
     hover,
     debugAlignment,
     timelineVisible,
     loadInfo,
+    retry,
     attach,
     dispose,
     setDate,
@@ -546,6 +599,7 @@ export function useIceOverlay(options: IceOverlayOptions) {
     setThicknessOpacity,
     refreshLayers,
     reloadForProjection,
+    retryVisibleLayers,
     fitIceExtent,
     loadAlignment,
     setDebugAlignment,

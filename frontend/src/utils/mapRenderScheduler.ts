@@ -521,8 +521,7 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
           (l) =>
             attachedLayerIds.has(l.id) &&
             !activeLayerIds.has(l.id) &&
-            !manuallyForcedLayerIds.has(l.id) &&
-            !selectedLayerIds.has(l.id),
+            !manuallyForcedLayerIds.has(l.id),
         )
         .sort((a, b) => (a.displayPriority ?? 900) - (b.displayPriority ?? 900))
       for (let i = 0; i < Math.min(excess, evictable.length); i++) {
@@ -685,14 +684,15 @@ export function buildRenderPlan(input: RenderPlanInput): RenderPlan {
   const totalAttached = attachedLayerIds.size + toAttach.length - 0 // snapshot
   if (totalAttached > SMART_MAX_ATTACHED_WMS_LAYERS) {
     const excess = totalAttached - SMART_MAX_ATTACHED_WMS_LAYERS
-    // Find suspended layers that are not forced and not recently selected
+    // Find suspended layers that are not forced. Selected-but-suspended
+    // layers remain selected; detaching only frees their WMS/tile caches and
+    // the scheduler re-attaches them when they re-enter the viewport.
     const evictable = layers
       .filter(
         (l) =>
           attachedLayerIds.has(l.id) &&
           !activeLayerIds.has(l.id) &&
-          !manuallyForcedLayerIds.has(l.id) &&
-          !selectedLayerIds.has(l.id),
+          !manuallyForcedLayerIds.has(l.id),
       )
       .sort((a, b) => (a.displayPriority ?? 900) - (b.displayPriority ?? 900))
 

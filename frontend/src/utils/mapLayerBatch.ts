@@ -39,8 +39,8 @@ export const SMART_RECONCILE_DEBOUNCE_MS = 150
 /** Zoom threshold below which the overview WMTS is preferred in smart mode. */
 export const SMART_OVERVIEW_ZOOM_THRESHOLD = 6
 
-/** Maximum tile retry attempts for recoverable errors (429, 502, 503, 504, network). */
-export const TILE_RETRY_MAX_ATTEMPTS = 2
+/** Maximum tile attempts for recoverable errors (initial + two retries). */
+export const TILE_RETRY_MAX_ATTEMPTS = 3
 
 /** Base backoff delay for tile retries (exponential: 300ms, 600ms). */
 export const TILE_RETRY_BASE_DELAY_MS = 300

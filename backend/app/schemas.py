@@ -1,8 +1,9 @@
+import math
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.models import DatasetType, ProjectStatus, Role
@@ -518,6 +519,144 @@ class FeatureSearchRequest(ApiModel):
     filters: list[FeatureFilter] = Field(default_factory=list)
     bbox: tuple[float, float, float, float] | None = None
     bbox_crs: str = "EPSG:4326"
+
+
+class S57WaterwayLayerRead(ApiModel):
+    id: str
+    name: str
+    code: str
+    dataset_code: str
+    dataset_name: str
+    version_no: int
+    source_cell: str | None = None
+    feature_count: int | None = None
+    queryable: bool
+    renderable: bool
+    available: bool
+    reason: str | None = None
+
+
+class S57WaterwayClassRead(ApiModel):
+    code: str
+    name_zh: str
+    group: str
+    group_name_zh: str
+    auxiliary: bool
+    default_selected: bool
+    description: str
+    count: int
+    layer_count: int
+    queryable: bool
+    renderable: bool
+    layers: list[S57WaterwayLayerRead] = Field(default_factory=list)
+
+
+class S57WaterwayCatalogRead(ApiModel):
+    classes: list[S57WaterwayClassRead]
+    total: int
+    count_complete: bool
+    truncated: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class S57WaterwaySearchRequest(ApiModel):
+    keyword: str | None = Field(default=None, max_length=200)
+    object_classes: list[str] = Field(default_factory=list, max_length=50)
+    include_auxiliary: bool = False
+    bbox: tuple[float, float, float, float] | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=50)
+
+    @field_validator("keyword")
+    @classmethod
+    def strip_keyword(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("bbox")
+    @classmethod
+    def validate_bbox(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        if value is None:
+            return None
+        xmin, ymin, xmax, ymax = value
+        if not all(math.isfinite(item) for item in value):
+            raise ValueError("bbox 必须是有限数值")
+        if not (-180 <= xmin <= 180 and -180 <= xmax <= 180):
+            raise ValueError("bbox 经度必须在 -180..180")
+        if not (-90 <= ymin < ymax <= 90):
+            raise ValueError("bbox 纬度必须满足 -90 <= ymin < ymax <= 90")
+        # xmin > xmax is allowed and interpreted as crossing the antimeridian.
+        return value
+
+
+class S57WaterwaySearchItem(ApiModel):
+    id: str
+    layer_id: str
+    layer_name: str
+    layer_code: str
+    dataset_code: str
+    dataset_name: str
+    version_no: int
+    source_cell: str | None = None
+    object_class: str
+    object_name_zh: str
+    group: str
+    group_name_zh: str
+    auxiliary: bool
+    name: str | None = None
+    name_field: str | None = None
+    inform: str | None = None
+    status: str | None = None
+    geometry_type: str | None = None
+    renderable: bool
+    geometry: dict[str, Any] | None = None
+    bbox: list[float] | None = None
+
+
+class S57WaterwaySearchResponse(ApiModel):
+    items: list[S57WaterwaySearchItem]
+    page: int
+    page_size: int
+    total: int
+    truncated_layers: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class S57WaterwayPropertyRead(ApiModel):
+    field: str
+    label_zh: str
+    raw: Any = None
+    provided: bool
+    description: str | None = None
+    source: str | None = None
+
+
+class S57WaterwayDetailRead(ApiModel):
+    id: str
+    layer_id: str
+    layer_name: str
+    layer_code: str
+    dataset_code: str
+    dataset_name: str
+    version_no: int
+    source_cell: str | None = None
+    object_class: str
+    object_name_zh: str
+    group: str
+    group_name_zh: str
+    auxiliary: bool
+    name: str | None = None
+    name_field: str | None = None
+    geometry_type: str | None = None
+    geometry: dict[str, Any] | None = None
+    bbox: list[float] | None = None
+    updated_at: str | None = None
+    properties: list[S57WaterwayPropertyRead] = Field(default_factory=list)
+    raw_properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExportRequest(ApiModel):

@@ -13,7 +13,6 @@ import TileLayer from 'ol/layer/Tile'
 import VectorLayer from 'ol/layer/Vector'
 import XYZ from 'ol/source/XYZ'
 import VectorSource from 'ol/source/Vector'
-import TileState from 'ol/TileState'
 import { toLonLat } from 'ol/proj'
 import { apiErrorMessage } from '../api/client'
 import {
@@ -30,7 +29,13 @@ import type {
 } from '../types/navigation'
 import type { LRUTileCache } from '../utils/tileCache'
 import type { TileRequestQueue } from '../utils/tileRequestQueue'
-import { TILE_RETRY_BASE_DELAY_MS, TILE_RETRY_MAX_ATTEMPTS } from '../utils/mapLayerBatch'
+import { tileDiagnostics } from '../utils/tileDiagnostics'
+import {
+  createQueuedTileLoadFunction,
+  createTileLoadLifecycle,
+  deactivateTileLoadLifecycle,
+  type TileLoadLifecycle,
+} from '../utils/tileLoader'
 import {
   BATHY_MAX_ZOOM,
   ENVIRONMENT_Z_INDEX,
@@ -107,7 +112,7 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
   let vectorLayers: Record<(typeof VECTOR_FIELDS)[number], VectorLayer<VectorSource>> | null = null
   let attached = false
   let tileGeneration = 0
-  const tileControllers = new Set<AbortController>()
+  let bathyLifecycle: TileLoadLifecycle | null = null
   let vectorTimer = 0
   let hoverTimer = 0
   let hoverRequestId = 0
@@ -122,86 +127,12 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
 
   function abortStaleTiles() {
     tileGeneration += 1
-    for (const controller of tileControllers) controller.abort()
-    tileControllers.clear()
-  }
-
-  function createTileLoader() {
-    return (tile: any, src: string) => {
-      const generation = tileGeneration
-      const image = tile.getImage() as HTMLImageElement
-      const controller = new AbortController()
-      tileControllers.add(controller)
-      const release = () => tileControllers.delete(controller)
-      let attempts = 0
-      const aborted = () => controller.signal.aborted || generation !== tileGeneration
-      tile.addEventListener('change', () => {
-        if ((tile as any).getState?.() === TileState.EMPTY) controller.abort()
-      })
-      const tryLoad = () => {
-        if (aborted()) {
-          release()
-          return
-        }
-        attempts += 1
-        const cached = options.tileCache.get(src)
-        if (cached) {
-          release()
-          const objectUrl = URL.createObjectURL(cached)
-          image.onload = () => URL.revokeObjectURL(objectUrl)
-          image.src = objectUrl
-          return
-        }
-        options.tileRequestQueue
-          .fetch(src, controller.signal)
-          .then((response) => {
-            if (response.ok) return response.blob()
-            if (
-              [429, 502, 503, 504].includes(response.status) &&
-              attempts < TILE_RETRY_MAX_ATTEMPTS
-            ) {
-              window.setTimeout(
-                tryLoad,
-                TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1),
-              )
-              return null
-            }
-            release()
-            tile.setState(TileState.ERROR)
-            return null
-          })
-          .then((blob) => {
-            if (!blob || aborted()) {
-              release()
-              return
-            }
-            options.tileCache.set(src, blob)
-            release()
-            const objectUrl = URL.createObjectURL(blob)
-            image.onload = () => URL.revokeObjectURL(objectUrl)
-            image.src = objectUrl
-          })
-          .catch((error) => {
-            if (aborted()) {
-              release()
-              return
-            }
-            if (error instanceof TypeError && attempts < TILE_RETRY_MAX_ATTEMPTS) {
-              window.setTimeout(
-                tryLoad,
-                TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1),
-              )
-            } else {
-              release()
-              tile.setState(TileState.ERROR)
-            }
-          })
-      }
-      tryLoad()
+    if (bathyLifecycle) {
+      deactivateTileLoadLifecycle(bathyLifecycle)
+      bathyLifecycle = null
     }
+    layers.bathymetry.loading = false
   }
-
-  const loadTile = createTileLoader()
 
   function attach() {
     const map = options.getMap()
@@ -297,6 +228,32 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
   function bathySource(): XYZ | null {
     if (!layers.bathymetry.visible) return null
     const crs = options.getCrs()
+    const lifecycle = createTileLoadLifecycle(
+      `env:bathymetry:${crs}`,
+      ++tileGeneration,
+    )
+    bathyLifecycle = lifecycle
+    const load = createQueuedTileLoadFunction({
+      cache: options.tileCache,
+      queue: options.tileRequestQueue,
+      lifecycle,
+      layer: 'env:bathymetry',
+      projection: crs,
+      priority: 'normal',
+      retry: {
+        maxAttempts: 3,
+        classifyStatus: (status) => (status === 404 || status === 204 ? 'empty' : 'retry'),
+      },
+      diagnostics: tileDiagnostics,
+      onSuccess: () => {
+        layers.bathymetry.error = ''
+        layers.bathymetry.loading = false
+      },
+      onFailure: (caught) => {
+        layers.bathymetry.loading = false
+        layers.bathymetry.error = caught instanceof Error ? caught.message : '水深瓦片加载失败'
+      },
+    })
     return new XYZ({
       url: bathyTileUrl(crs),
       projection: crs,
@@ -304,7 +261,7 @@ export function useEnvironmentOverlays(options: EnvironmentOverlaysOptions) {
       maxZoom: BATHY_MAX_ZOOM,
       crossOrigin: 'anonymous',
       transition: 0,
-      tileLoadFunction: loadTile,
+      tileLoadFunction: load as never,
     })
   }
 

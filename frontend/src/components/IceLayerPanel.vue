@@ -24,11 +24,13 @@ const thicknessAvailable = computed(() => props.ice.thicknessAvailable.value)
 const selectedDate = computed(() => props.ice.selectedDate.value)
 const error = computed(() => props.ice.error.value)
 const loading = computed(() => props.ice.loading.value)
+const info = computed(() => props.ice.info.value)
+const tileErrorCount = computed(() => props.ice.tileErrorCount.value)
+const lastTileError = computed(() => props.ice.lastTileError.value)
 const empty = computed(
   () =>
     !loading.value &&
-    ((!props.ice.info.value && !error.value) ||
-      (props.ice.info.value?.dates.length ?? 0) === 0),
+    ((!info.value && !error.value) || (info.value?.dates.length ?? 0) === 0),
 )
 const debugAlignment = computed(() => props.ice.debugAlignment.value)
 
@@ -65,11 +67,22 @@ function onDebugAlignment(value: string | number | boolean) {
       <span class="ice-panel-badge">环境叠加</span>
     </div>
 
-    <div v-if="loading" class="ice-panel-empty">正在扫描冰情数据…</div>
-    <div v-else-if="error" class="ice-panel-empty">{{ error }}</div>
+    <div v-if="loading && !info" class="ice-panel-empty">正在扫描冰情数据…</div>
+    <div v-else-if="error && !info" class="ice-panel-empty">
+      {{ error }}
+      <el-button size="small" text @click="ice.retry()">重新加载冰情</el-button>
+    </div>
     <div v-else-if="empty" class="ice-panel-empty">无可用冰情数据</div>
 
     <template v-else>
+      <div v-if="error" class="ice-panel-error">
+        <span>{{ error }}</span>
+        <el-button size="small" text @click="ice.retry()">重试</el-button>
+      </div>
+      <div v-if="tileErrorCount > 0" class="ice-panel-error">
+        <span>{{ lastTileError || '部分冰情瓦片加载失败' }}（{{ tileErrorCount }}）</span>
+        <el-button size="small" text @click="ice.retryVisibleLayers()">重新加载当前冰情</el-button>
+      </div>
       <div class="ice-field">
         <div class="ice-field-row">
           <el-switch

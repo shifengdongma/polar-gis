@@ -1,6 +1,6 @@
 /** 冰情叠加 API —— info / 原始值 / 对齐调试(全部只读)。 */
 import { api } from './client'
-import type { IceInfo, IceValue } from '../types'
+import type { IceFieldId, IceInfo, IceValue } from '../types'
 
 /** 扫描后端数据目录:实际日期、字段并集与各字段可用日期、源网格范围。 */
 export async function fetchIceInfo(signal?: AbortSignal): Promise<IceInfo> {
@@ -13,7 +13,7 @@ export async function fetchIceInfo(signal?: AbortSignal): Promise<IceInfo> {
 
 /** 地图坐标处的原始网格值;miss 时后端返回 {"value": null}(键可能缺席)。 */
 export async function fetchIceValue(
-  params: { date: string; x: number; y: number; projection: string },
+  params: { date: string; x: number; y: number; projection: string; field?: IceFieldId },
   signal?: AbortSignal,
 ): Promise<IceValue> {
   const response = await api.get<IceValue>('/ice/value', { params, signal })

@@ -21,6 +21,7 @@ from app.api import (
     navigation_vessels,
     projects,
     s57_basemaps,
+    s57_waterways,
     styles,
     system,
     users,
@@ -96,6 +97,7 @@ def _spawn_ice_prewarm() -> None:
                 settings.ice_data_root,
                 tile_cache_entries=settings.ice_tile_cache_entries,
                 max_zoom=settings.ice_tile_max_zoom,
+                max_concurrent_grid_loads=settings.ice_max_concurrent_grid_loads,
             )
             info = service.info()
             logger.info("冰情索引预热完成: %d 个日期", len(info.get("dates", [])))
@@ -146,6 +148,7 @@ app.include_router(navigation_vessels.router, prefix=api)
 app.include_router(navigation_plans.router, prefix=api)
 app.include_router(navigation_risk.router, prefix=api)
 app.include_router(s57_basemaps.router, prefix=api)
+app.include_router(s57_waterways.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)
 app.include_router(system.admin_router, prefix=api)

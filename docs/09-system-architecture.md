@@ -1090,3 +1090,61 @@ backend/app/navigation/
 **验证**
 - 后端新增 coverage 不重算、`/info` 缓存、共享实例 3 个回归测试；全套后端通过。
 - 前端 29 files / 389 tests passed；`vue-tsc` 零错误；`npm run build` 通过；合成 E2E（含 real_only 422 负例）通过。
+
+### 8.11 会话 #31：瓦片生命周期、底图恢复与 S-57 航道专题
+
+#### 8.11.1 统一瓦片生命周期（任务 A/B 共同根因）
+
+- 根因：OpenLayers 的 `ImageTile.load()` 先置 `LOADING` 再调用自定义 `tileLoadFunction`；全局 `TileQueue` 仅在 `LOADED/ERROR/EMPTY` 时释放 loading 槽位，且 Map 全局上限 16。旧的海冰、S-57、环境水深 loader 在代次/来源切换时 abort 后直接 return，从不设置终态，槽位逐步泄漏；累计到 16 后**所有瓦片（包括原生加载的底图）停止加载**，只有投影切换（清 renderer tile cache）或刷新页面才能恢复。
+- 新增 `frontend/src/utils/tileLoader.ts`：
+  - `TileLoadLifecycle` 统一持有 controllers/timers/tiles/cleanups；`deactivateTileLoadLifecycle` 中止请求、清定时器、移除 image 监听/objectURL，并对未终态瓦片调用 `cancelTile`。
+  - `cancelTile` 仅在 `IDLE/LOADING` 时置 `TileState.EMPTY`（主动取消/源替换，释放全局槽位且不触发 `tileloaderror`）；`failTile` 置 `ERROR`（真实失败）。绝不覆盖 `LOADED/ERROR`。
+  - `createQueuedTileLoadFunction`：LRU 缓存校验（size/type）、Content-Type 校验、429/408/500/502/503/504/Timeout/Queue overflow 有界重试、404 可按来源配置为 EMPTY/ERROR、204 EMPTY、objectURL revoke、decode 超时、deactivate 时立即释放退避中的瓦片。
+  - `createNativeRetryTileLoadFunction`：底图原生图片加载，失败通过 `tile.load()` 有限重试，最终失败保持 ERROR；超时/失活取消。
+- `TileRequestQueue` 增加 high/normal 双通道、公平调度（高优先连续 3 个后插入 1 个 normal）、可选超时、同步 fetch 抛异常时的 inFlight 释放；海冰瓦片使用 high 优先级。
+- `tileDiagnostics.ts` 记录有上限的诊断事件/计数（started/settled/cancelled/failed/retries/stuck、队列与缓存统计）；URL 只保留 path+date；DEV 或 `VITE_TILE_DIAGNOSTICS=true` 开启，开发环境暴露 `window.__polarTileDiagnostics` 与 `__polarMapTileQueueStats()`。生产关闭。
+- S-57/环境水深 loader 最小修补：所有 abort 路径调用 `cancelTile`、失败调用 `failTile`，追踪/清理重试定时器，缓存毒化删除、image error revoke、decode 超时；`EMPTY` 不触发 tile 事件，因此 detach/suspend/bundle 失败路径同步复位 pendingTiles/loadStateTimer/warming 状态，避免卡在“加载中”。
+
+#### 8.11.2 海冰时间轴
+
+- `useIceOverlay` 改为 per-field + per-source lifecycle：源 key = `field|date|projection|visible`；只有 key 变化的字段替换 Source，切换厚度不再 abort 密集度。
+- 时间轴输入 120ms debounce；日期变化立即 deactivate 旧 lifecycle（旧源已加载瓦片仍短暂显示），防抖结束后替换新源；`loadInfo` 的 finally 与 watcher 通过 key 去重。
+- `/ice/info` 失败保留上一次可用元数据，不再清空工作图层；面板提供“重新加载冰情”；瓦片最终失败计数 + 独立重试。
+- 修正 alignment 旧请求清除新结果、厚度-only hover 不查询的问题。
+- 后端 `IceService` 增加全局冷网格加载信号量 `ICE_MAX_CONCURRENT_GRID_LOADS`（默认 2）：per-date single-flight 仍保证同一日期只装载一次；不同日期并发冷加载受上限保护，避免快速切换在服务端堆积多个 26M 单元网格（实测可把容器推到 4.6GB/100% CPU）。共享实例 key 包含该参数，API/导航 Provider 复用同一实例。
+
+#### 8.11.3 底图稳定性
+
+- WMTS 按 `baseMap.crs` 选择匹配的 `TileMatrixSet`，优先 overview 标识；`SupportedCRS` 归一化并校验 `options.projection`；无法唯一确定时明确失败并允许手动重试，不再盲取 `Layer[0]/TileMatrixSetLink[0]`。
+- Capabilities 获取 3 次重试（500ms/1500ms、15s 超时）；失败记录 `baseMapConfigErrors`，可“重试”重建图层。
+- 底图使用 native retry loader；健康统计由 loader 的**最终**成功/失败回调驱动，`source.refresh()` 仅在当前可见底图错误率达到阈值时触发，冷却 30s、最多 3 次；手动“重新加载当前底图”重置统计并 refresh。
+- 按 CRS 记忆底图选择（`activeBaseMapByCrs`）；3413 无可用底图时显示提示，不强行使用 3857 瓦片；`setOverviewVisible` 不再覆盖用户选择。
+- 网络恢复 `online` 事件（1s debounce）重试冰情/失败底图。
+- 卸载清理：`disposeAllBundles`、map 事件 `unByKey`、reconcile/evict/layerSearch/online/bundle retry 定时器、底图 lifecycle/source/图层；`map.dispose()`。修复 bundle registry 跨会话泄漏与重挂载污染。
+- S-57 suspended 选中图层可被 LRU 驱逐/“清理休眠”（保留 selected 状态，重新入视口再 attach），使 `SMART_MAX_ATTACHED_WMS_LAYERS` 生效。
+- 附带修复 `s57_basemap._collect_basemap_layers` 从 `metadata_json["s57"]["objectClass"]` 读取对象类（兼容旧顶层键），避免概览底图收集不到图层。
+
+#### 8.11.4 S-57 航道专题
+
+- 新增独立 taxonomy `backend/app/services/s57_waterway_catalog.py`，不改动既有 `CORE_CHART/NAVIGATION_RECOMMENDED/OPTIONAL_THEMATIC`：
+  - 主类别：FAIRWY/RECTRC/NAVLNE/TWRTPT/CANALS（航道与推荐路线）、TSSLPT/TSSBND/TSEZNE/TSSRON（交通分隔制）、CTNARE（限制/管制）、DRGARE（航道环境）；辅助类别 RESARE/ACHARE/BERTHS/PILPNT/DEPARE/DEPCNT/SOUNDG 单独标记，不当作航道。
+- `s57_waterways.py` 通过 `ProjectLayer→Layer→DatasetVersion→Dataset` 解析项目当前有效版本，强制 available/queryable；批量内省实际列/主键/几何列；跨图层 `UNION ALL` 搜索，关键字/bbox 全部绑定参数，bbox 支持跨 180° 经线拆分，稳定排序 + LIMIT/OFFSET，PostgreSQL statement_timeout；opaque 复合 ID=layer_id+feature_key；详情返回原始属性与中文标签（CAT*/STATUS 等保留原始代码，不臆造枚举翻译；DRVAL 注明不是保证水深）。
+- API：`GET /projects/{id}/s57-waterways/catalog`、`POST .../search`、`GET .../{featureId}`；`project_or_404(include_unpublished=False)` + 当前版本约束；不新增迁移。
+- 前端 `useS57Waterways` + `S57WaterwayPanel` + 独立 VectorLayer（zIndex 78）：搜索/类别/当前视口/分页/显示/定位/详情；只叠加有限结果，点选并入既有唯一 `singleclick`，仅“地图点选”模式且面板展开时优先；不进入 routesStore、Draw/Modify/Select、runtimeLayers/bundle。
+- 真实样本未见 FAIRWY/RECTRC/NAVLNE/DRGARE；已实查 CANALS/TSSLPT/TSSBND/TSEZNE/TWRTPT/TSSRON，真实 C110408A 的 CANALS `OBJNAM=Jinghang Yunhe`、`NOBJNM=京杭运河` 可检索/详情/定位；US1AK90M 基础+`.001` 更新链导入为 v2，TWRTPT=6 可检索。
+
+#### 8.11.5 真实 S-57 导入修复（验证中发现）
+
+真实 ENC 导入暴露并修复了三处既有导入问题：
+1. `LAUNDER=YES` 后 PostgreSQL 表名为小写，旧代码按原对象类大写 `"DSID"` 移动表，报 relation 不存在；改为 `source_name.lower()`。
+2. 非空间对象类（DSID/C_ASSO/C_AGGR）没有 `geom` 列，旧代码对所有表建 GIST 索引导致整个 cell 导入失败；仅 `has_valid_geometry` 时建索引。
+3. 多 cell/对象类移动进 `geo` schema 时，主键约束/索引/序列名（如 `dsid_pkey`、`buaare_geom_geom_idx`、`dsid_ogc_fid_seq`）跨表冲突；导入时先重命名为 `<table>_pkey/_src_idx_N/_seq_N`，序列脱离 ownership→迁移→恢复 ownership，再移动/重命名表。
+
+#### 8.11.6 验证与限制
+
+- 前端 `typecheck/build` 通过；39 文件 / 459 tests passed。
+- 后端 304 tests collected（303 passed + 1 需 `S57_WATERWAY_TEST_DATABASE_URL` 的 PostGIS 集成测试；配置后通过）；ruff 新增/修改文件通过。
+- 真实 S-57：C110408A（CANALS/CTNARE 等）、GB1DD000（TSSLPT/TSSBND/TSEZNE）与 US1AK90M 基础+`.001` 更新链（TWRTPT=6，v2）导入成功；catalog 计数 CANALS=2、TSSLPT=8、TSSBND=6、TSEZNE=4、CTNARE=3；名称/属性/几何/bbox/详情均来自真实表。
+- 隔离项目浏览器：连续 100 次日期切换后 `q.loading=0、stuck=0`；3857/3413 来回切换后仍为 0；抖动底图 503 自动重试恢复；无 pageerror。
+- 30 分钟 soak 已完成：1804s，结束时 q.loading=0、stuck=0、pageerrors=[]（`output/soak-30min.log`）。
+- 未验证：真实 GWC WMTS 3413 matrix set 未在本次环境配置成功（GWC capabilities 仅 EPSG:4326），作为残留；公共第三方底图限流仅以本地 503 mock 验证。

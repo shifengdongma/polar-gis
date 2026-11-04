@@ -6,10 +6,10 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -24,7 +24,6 @@ from app.models import (
     Layer,
     LayerStatus,
     S57ImportBatch,
-    S57ImportBatchFile,
     S57ImportBatchItem,
 )
 from app.services.s57 import GdalInspector, identify_s57_file
@@ -313,7 +312,7 @@ class BasemapPreflightService:
     ) -> list[str]:
         errors: list[str] = []
         if 0 not in chain:
-            errors.append(f"缺少 .000 基础文件")
+            errors.append("缺少 .000 基础文件")
             return errors
 
         updates = sorted(chain)
@@ -500,8 +499,6 @@ class BasemapPostProcessor:
         geoserver_client,
     ) -> None:
         """Run after a basemap batch completes — creates layer group, GWC, base maps."""
-        from app.services.s57_layer_catalog import classify_s57_layer
-        from app.services.s57_styles import preset_for_object_class
 
         meta = dict(batch.metadata_json.get("basemap", {})) if batch.metadata_json else {}
         meta["postProcessStatus"] = "running"
@@ -591,7 +588,16 @@ class BasemapPostProcessor:
             ).all()
 
             for lyr in db_layers:
-                obj_class = (lyr.metadata_json or {}).get("objectClass", "")
+                metadata = lyr.metadata_json or {}
+                s57_meta = metadata.get("s57") if isinstance(metadata.get("s57"), dict) else {}
+                # Current imports store objectClass under metadata["s57"];
+                # keep the legacy top-level fallback for older rows.
+                obj_class = (
+                    s57_meta.get("objectClass")
+                    or metadata.get("objectClass")
+                    or metadata.get("sourceLayer")
+                    or ""
+                )
                 if not obj_class:
                     continue
                 rule = classify_s57_layer(obj_class, lyr.geometry_type, preset_for_object_class(obj_class) is not None)
@@ -608,10 +614,10 @@ class BasemapPostProcessor:
 
         # stable sort
         order_map = {cls: i for i, cls in enumerate(STABLE_LAYER_ORDER)}
-        layers.sort(key=lambda l: (
-            order_map.get(l["object_class"], 99),
-            l.get("compilation_scale", 0),
-            l["code"],
+        layers.sort(key=lambda entry: (
+            order_map.get(entry["object_class"], 99),
+            entry.get("compilation_scale", 0),
+            entry["code"],
         ))
         return layers
 

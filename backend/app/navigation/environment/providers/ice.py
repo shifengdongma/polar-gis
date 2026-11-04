@@ -37,6 +37,7 @@ class IceProvider(BaseEnvironmentProvider):
         backend: str = "auto",
         tile_cache_entries: int = 64,
         max_zoom: int = 10,
+        max_concurrent_grid_loads: int = 2,
     ) -> None:
         self.navigation_ice_root = Path(navigation_ice_root)
         self.polar_gis_ice_root = Path(polar_gis_ice_root)
@@ -56,6 +57,7 @@ class IceProvider(BaseEnvironmentProvider):
                 self.polar_gis_ice_root,
                 tile_cache_entries=tile_cache_entries,
                 max_zoom=max_zoom,
+                max_concurrent_grid_loads=max_concurrent_grid_loads,
             )
         elif self._backend == "nextsim":
             self._nextsim = _NextsimBackend(self.navigation_ice_root)

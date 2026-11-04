@@ -1869,3 +1869,71 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - 真实 Provider 仍为逐点 Python 采样；若数据网格显著大于 1200×1200，风场仍可能成为瓶颈，
   后续可做 Provider 级向量化 `sample_many`。
 - 冰情冷日期仍会整读一次网格；已通过共享实例、单飞、预热与 info 缓存降低首载影响。
+
+---
+
+## 会话 #31 — 瓦片生命周期、底图恢复与 S-57 航道专题（2026-11-04）
+
+### 基线
+
+- 分支 `master`，HEAD `9e9eff0c7a05669af15cc93a27d069e8f266016e`。
+- 工作区起始唯一未跟踪文件：任务书 `docs/plans/Polar-GIS 地图瓦片加载稳定性修复与 S-57 航道专题信息开发任务书.md`。
+- 安装版 OpenLayers 实际为 10.11.0（`package.json` 声明 ^10.6.1）；所有状态判断使用 `TileState` 具名枚举。
+
+### 问题定位（证据）
+
+1. **统一 P0**：`ImageTile.load()` 先置 `LOADING` 再调用自定义 loader；`TileQueue` 只在 `LOADED/ERROR/EMPTY` 递减全局计数，Map 上限 16。旧海冰/S-57/环境 loader 在 abort 路径直接 return，不设置终态 → 每次日期切换/图层开关泄漏 loading 槽位；累计 16 后包括底图在内所有瓦片停止加载，只有投影切换（renderer 清 cache 置 EMPTY）或 F5 恢复。
+2. **海冰**：`refreshLayers` 每次重建两个字段源并 abort 两个字段；时间轴每个 input 事件刷新、无 debounce；重试 timer 未追踪、HTTP 重试提前 release controller；200 HTML/截断 PNG 在解码前入缓存且无 delete/onerror revoke；`/ice/info` 失败清空 info；共享队列无优先级、fetch 无超时、同步抛异常泄漏 inFlight；后端快速切换可并发装载多个 26M 网格（实测容器 4.6GB/100% CPU 且健康检查超时）。
+3. **底图**：XYZ/WMTS 使用默认图片加载器，ERROR 永不重试；WMTS 盲取 `Layer[0]`/`TileMatrixSetLink[0]`、忽略 baseMap.crs，Capabilities 失败仅 warning；投影切换丢失选择；bundleRegistry/事件/timer 未清；`setOverviewVisible` 可覆盖用户底图。
+4. **S-57 航道**：现有 search 单层、无项目/当前版本约束；catalog 未覆盖 FAIRWY/RECTRC/NAVLNE/TWRTPT/DRGARE；无项目级跨图层 API/专题 UI。
+5. **真实导入**：真实 ENC 导入失败三处——`LAUNDER=YES` 下表名小写而代码按大写移动；非空间对象无 geom 却建 GIST 索引；多 cell 的 pkey/index/sequence 名称跨表冲突。
+
+### 修改
+
+**前端**
+- 新增 `utils/tileLoader.ts`、`tileDiagnostics.ts`；`tileCache.delete`。
+- `TileRequestQueue` 双优先级公平调度、可选超时、同步 fetch 异常释放 inFlight；冰情使用 high。
+- `useIceOverlay` per-field lifecycle + 120ms debounce + source key 去重 + info 保留 + retryVisibleLayers + alignment/hover 修复。
+- S-57/环境 loader 最小修补：abort→EMPTY、失败→ERROR、timer/objectURL/缓存毒化/Content-Type/decode 超时；EMPTY 取消同步复位 S-57 pending/warming/bundle 状态。
+- 新增 `basemapLayers.ts`、`basemapHealth.ts`；底图按 CRS 选 WMTS matrix set、Capabilities 重试、native retry、错误率驱动的有界 `source.refresh()`、手动重载、按 CRS 记忆、3413 提示、overview 冲突修复、online 恢复、卸载清理。
+- S-57 suspended 选中层可驱逐；bundle failed 重试（最多 2 次）并清理旧 failed layer。
+- 新增 `types/s57Waterways.ts`、`api/s57Waterways.ts`、`utils/mapS57Waterway.ts`、`composables/useS57Waterways.ts`、`components/S57WaterwayPanel.vue`；MapWorkspace 菜单/面板/唯一 singleclick 优先级/互斥/投影 reload/卸载。
+- `s57ObjectNames` 补 TSSRON/CANALS；`styles.css` 增加 waterway/basemap 状态样式。
+- `s57_basemap._collect_basemap_layers` 元数据路径修复。
+
+**后端**
+- 新增 `services/s57_waterway_catalog.py`、`services/s57_waterways.py`、`api/s57_waterways.py`；`schemas.py` 增加请求/响应模型；`main.py` 注册；`config.py` 增加 waterway 限额与 ICE 网格并发配置。
+- 新增 `ICE_MAX_CONCURRENT_GRID_LOADS`（默认 2）信号量；共享 IceService key 包含该参数，API/导航 Provider/预热复用。
+- `s57_layer_catalog._OBJECT_NAMES` 仅补中文名，不改既有分类集合。
+- 真实导入修复：小写表名、非空间跳过 GIST、pkey/index/sequence 重命名与安全移动。
+- `core/errors.py` 的 validation handler 清理不可 JSON 序列化的 ctx/input（自定义 bbox 校验需要）。
+- 不新增数据库迁移。
+
+### 真实数据证据
+
+- GDAL 实查样本：C110408A `CANALS` 1（OBJNAM=Jinghang Yunhe，NOBJNM=京杭运河）；GB1DD000 `TSSLPT` 8、`TSSBND` 6、`TSEZNE` 4、`CTNARE` 3、`CANALS` 1；US1AK90M `TWRTPT` 6（CATTRK）；NO1A3000 `TSSRON` 1；样本未见 FAIRWY/RECTRC/NAVLNE/DRGARE。
+- 真实 API：catalog 返回上述类别；关键字 Jinghang/京杭均命中 1 条；bbox `[115,35,120,40]` 命中 1 条；详情返回 OBJNAM/NOBJNM/RCID/CATCAN、MultiLineString、bbox；TSSLPT 返回 name=null（前端显示“未命名航道要素”）。
+- 真实冰情：`sample-data` 149 日期；冷瓦片 ~0.7s/张，热缓存 0ms；10 个冷日期顺序请求 ~6.36s（修复前快速切换会并发堆积）。
+
+### 验证
+
+- 前端 39 文件 / 459 tests passed；`npm run typecheck`、`npm run build` 通过。
+- 后端 304 tests collected（303 passed + 1 环境变量启用的 PostGIS 集成测试；配置后通过）；ruff 新增/修改文件通过。
+- Docker compose（独立项目 `polar-gis-verify`）：postgres/geoserver/backend/worker/web 健康；真实导入 C110408A/GB1DD000 成功；waterway catalog/search/detail 真实返回。
+- 浏览器隔离项目：100 次日期切换后 `q.loading=0、stuck=0`；3857/3413 来回切换后仍为 0；抖动底图（前 2 次 503）自动重试并恢复，无 pageerror。
+- 30 分钟 soak 已完成：`durationSec=1804`，`q.loading=0、stuck=0、pageerrors=[]`，日志 `output/soak-30min.log`，截图 `output/soak-30min-final.png`。
+
+### 决策
+
+- 主动取消使用 `EMPTY`（不触发 tile 事件、释放全局槽位），真实失败使用 `ERROR`；取消后不覆盖 `LOADED/ERROR`。
+- 不伪造 S-57 名称/要素；CAT*/STATUS 等无权威本地枚举字典时保留原始代码；不拼接相邻航道。
+- 水航道分类独立于既有 catalog，避免改变批量加载/GWC/Render Bundle 语义。
+- 不 commit/push（任务书明确要求）。
+
+### 已知限制/残留
+
+- 真实样本没有 FAIRWY/RECTRC/NAVLNE/DRGARE；这些类的真实数据验证未完成，仅合成/单元测试覆盖。
+- 当前 GWC WMTS capabilities 仅暴露 EPSG:4326（本验证环境未生成 3413/3857 matrix set），因此真实 GWC WMTS 3413 底图未验证；前端选择/失败提示已实现。
+- 公共第三方底图限流使用本地 503 mock；未对公共提供商做压力测试。
+- 30 分钟 soak 已完成：1804s，结束时 q.loading=0、stuck=0、pageerrors=[]。
+- importer 的 schema/sequence/index 修复以真实 C110408A/GB1DD000 导入验证，缺少专门单元测试；后续可补容器化集成测试。

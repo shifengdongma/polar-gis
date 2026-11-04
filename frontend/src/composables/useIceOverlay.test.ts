@@ -41,6 +41,8 @@ describe('useIceOverlay 图层生命周期', () => {
     expect(body).toContain('map.removeLayer(')
     expect(body).toContain('.dispose()')
     expect(body).toContain('attached = false')
+    expect(body).toContain('deactivateAllSources()')
+    expect(body).toContain('infoController?.abort()')
     expect(functionBody('clearHover')).toContain('abort()')
   })
 
@@ -82,29 +84,37 @@ describe('useIceOverlay 与 S-57 / 现有体系隔离', () => {
     }
   })
 
-  it('冰情瓦片复用统一请求管线:限流队列 + 共享 LRU 缓存(参照 S-57 做法)', () => {
-    // 决策更新(会话 #26.1):自管 <img> 请求实测导致堆积累攒,改为接入
-    // 与 S-57 相同的通用队列/缓存(限并发 + 复用 + 丢弃即中止)。
-    expect(source).toContain('tileRequestQueue.fetch(')
-    expect(source).toContain('tileCache.get(')
-    expect(source).toContain('tileCache.set(')
+  it('冰情瓦片复用统一请求管线:限流队列 + 共享 LRU 缓存 + 生命周期 loader', () => {
+    expect(source).toContain('useIceOverlay')
+    expect(source).toContain('createQueuedTileLoadFunction')
+    expect(source).toContain('options.tileCache')
+    expect(source).toContain('options.tileRequestQueue')
+    expect(source).toContain("priority: 'high'")
   })
 
-  it('自定义 tileLoadFunction:丢弃即中止在飞请求,可恢复错误重试', () => {
-    expect(source).toContain('tileLoadFunction')
-    // ol10 的"瓦片被释放"状态是 TileState.EMPTY(release()/dispose() 时置位)
-    expect(source).toContain('TileState.EMPTY')
-    expect(source).toContain('TILE_RETRY_MAX_ATTEMPTS')
-    expect(source).toContain('tile.setState(TileState.ERROR')
+  it('自定义 tileLoadFunction:取消即 tile 终态,可恢复错误有限重试', () => {
+    expect(source).toContain('createTileLoadLifecycle')
+    expect(source).toContain('deactivateTileLoadLifecycle')
+    expect(source).toContain('tileErrorCount')
+    expect(source).toContain('retryVisibleLayers')
+    expect(source).toContain("classifyStatus")
   })
 
-  it('代次中止:日期/投影/开关切换即中止上一代全部在飞瓦片请求', () => {
-    expect(source).toContain('abortStaleTileLoads')
-    expect(source).toContain('tileGeneration')
-    expect(source).toContain('generation !== tileGeneration')
-    // refreshLayers(所有源替换路径)必须先中止旧代次
+  it('per-source 生命周期:日期/投影/开关切换只重建发生变化的字段源', () => {
+    expect(source).toContain('sourceStates')
+    expect(source).toContain('sourceKeyFor')
+    expect(source).toContain('ensureSource')
+    expect(source).toContain('deactivateSource(field)')
     const body = functionBody('refreshLayers')
-    expect(body).toContain('abortStaleTileLoads()')
+    expect(body).toContain('ensureSource(field)')
+    // refreshLayers 不再全局 abort 两个字段
+    expect(body).not.toContain('abortStaleTileLoads')
+  })
+
+  it('快速拖动时间轴有 debounce,避免每个 input 事件触发冷加载', () => {
+    expect(source).toContain('ICE_DATE_DEBOUNCE_MS')
+    expect(source).toContain('scheduleRefresh')
+    expect(source).toContain('window.setTimeout')
   })
 
   it('不自行注册 map 事件(唯一 pointermove 在视图中分发)', () => {
@@ -129,10 +139,17 @@ describe('useIceOverlay hover 契约', () => {
   it('拖图 / 图层关闭 / 无日期 / 其他地图交互进行中 → 一律停止查询', () => {
     const body = functionBody('handlePointerMove')
     expect(body).toContain('event.dragging')
-    expect(body).toContain('concentrationVisible.value')
+    expect(body).toContain('activeHoverField()')
     expect(body).toContain('selectedDate.value')
     expect(body).toContain('canQueryValue()')
     expect(body).toContain('clearHover()')
+  })
+
+  it('hover 字段跟随当前可见字段(厚度-only 也能查询)', () => {
+    expect(source).toContain('activeHoverField')
+    expect(source).toContain("return 'concentration'")
+    expect(source).toContain("return 'thickness'")
+    expect(source).toContain('field,')
   })
 
   it('数据范围之外不发请求(客户端预筛)', () => {

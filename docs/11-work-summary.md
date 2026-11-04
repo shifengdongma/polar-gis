@@ -1377,3 +1377,34 @@ docker compose up -d         # 启动服务
 
 - 本机无真实环境 NetCDF，真实数据规划仍需在部署环境验证。
 - 真实 Provider 逐点采样未向量化；超大网格风场仍可能是主要耗时项。
+
+---
+
+## 会话 #31 — 瓦片生命周期、底图恢复与 S-57 航道专题（2026-11-04）
+
+### 修改内容
+
+- **统一瓦片生命周期**：新增 `tileLoader`/`tileDiagnostics`，所有自定义 loader 的取消路径把瓦片置 `EMPTY`、失败置 `ERROR`，释放 OpenLayers 全局 TileQueue 的 16 个 loading 槽；新增队列 high/normal 公平优先级、超时、同步异常释放、缓存毒化删除、Content-Type/解码校验。
+- **海冰**：按字段/源独立 lifecycle、120ms 日期 debounce、只重建变化字段、info 失败保留旧数据、独立重试按钮、hover 字段修复；后端增加 ICE 冷网格并发信号量（默认 2），避免快速切换并发装载多个 26M 网格。
+- **底图**：WMTS 按 CRS/matrix set 选择并校验、Capabilities 重试、原生图片有界重试、错误率驱动有界 source.refresh、手动重载、按 CRS 记忆、3413 无底图提示、overview 不覆盖用户选择、网络恢复重试、卸载清理 bundle/事件/timer/图层。
+- **S-57 航道专题**：新增独立 taxonomy、项目当前版本跨图层搜索/目录/详情 API、opaque 复合 ID、原始属性+中文标签；前端航道面板、独立 VectorLayer、搜索/类别/视口/分页/定位/显示/点选详情，严格与手绘航路/智能规划分离。
+- **真实导入修复**：LAUNDER 小写表名、非空间对象跳过 GIST、pkey/index/sequence 跨 cell 冲突，均已用真实 C110408A/GB1DD000 验证。
+
+### 效果
+
+- 100 次冰情日期快速切换后：`stuck=0`、OL `q.loading=0`，当前日期真实瓦片加载成功；3857/3413 来回切换后仍为 0；无需 F5。
+- 底图临时 503（本地 mock 前两次失败）自动重试恢复；有界 source.refresh + 手动重载可用。
+- 真实 S-57：CANALS（京杭运河）、TSSLPT/TSSBND/TSEZNE/CTNARE、TWRTPT（US1AK90M 更新链）可检索、详情、定位；未命名 TSSLPT 显示“未命名航道要素”，不生成假名称。
+- 后端快速切换不再出现 4.6GB/100% CPU 的冷网格堆积（实测 626MB / 正常 CPU）。
+
+### 验证
+
+- 前端 39 files / 459 tests passed；typecheck/build 通过。
+- 后端 304 tests collected（303 passed + 1 PostGIS 集成；配置后通过）；ruff 新增/修改文件通过。
+- Docker compose 独立项目健康；真实导入/真实 waterway API/真实浏览器 UI 通过。
+- 30 分钟 soak 完成：1804s，q.loading=0、stuck=0、pageerrors=[]，日志 `output/soak-30min.log`。
+
+### 已知限制
+
+- 样本无 FAIRWY/RECTRC/NAVLNE/DRGARE，仅合成/单元测试覆盖；GWC WMTS 3413 matrix set 在本验证环境不可用，真实 3413 WMTS 底图未验证；公共提供商限流用本地 503 mock 验证。
+- 未 commit/push（任务书要求）。

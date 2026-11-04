@@ -40,6 +40,7 @@ def get_ice_service() -> IceService:
                     settings.ice_data_root,
                     tile_cache_entries=settings.ice_tile_cache_entries,
                     max_zoom=settings.ice_tile_max_zoom,
+                    max_concurrent_grid_loads=settings.ice_max_concurrent_grid_loads,
                 )
     return _service
 

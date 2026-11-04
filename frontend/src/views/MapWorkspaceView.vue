@@ -19,6 +19,7 @@ import {
   MoreFilled,
   Operation,
   Printer,
+  Refresh,
   Search,
   WarningFilled,
 } from '@element-plus/icons-vue'
@@ -48,6 +49,7 @@ import proj4 from 'proj4'
 import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
 import EnvironmentLayerPanel from '../components/EnvironmentLayerPanel.vue'
+import S57WaterwayPanel from '../components/S57WaterwayPanel.vue'
 import EnvironmentValueTooltip from '../components/EnvironmentValueTooltip.vue'
 import IceLayerPanel from '../components/IceLayerPanel.vue'
 import IceTimeline from '../components/IceTimeline.vue'
@@ -59,6 +61,7 @@ import { useEnvironmentOverlays } from '../composables/useEnvironmentOverlays'
 import { useIceOverlay } from '../composables/useIceOverlay'
 import { usePlanningRouteLayer } from '../composables/usePlanningRouteLayer'
 import { useRiskGridLayer } from '../composables/useRiskGridLayer'
+import { useS57Waterways } from '../composables/useS57Waterways'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useNavigationStore } from '../stores/navigation'
 import { useProjectsStore } from '../stores/projects'
@@ -107,6 +110,23 @@ import {
 } from '../utils/mapLayerBatch'
 import { LRUTileCache } from '../utils/tileCache'
 import { TileRequestQueue } from '../utils/tileRequestQueue'
+import {
+  cancelTile,
+  createNativeRetryTileLoadFunction,
+  createTileLoadLifecycle,
+  deactivateTileLoadLifecycle,
+  failTile,
+  type TileLoadLifecycle,
+} from '../utils/tileLoader'
+import { tileDiagnostics } from '../utils/tileDiagnostics'
+import { BaseMapHealthMonitor } from '../utils/basemapHealth'
+import {
+  fetchWmtsCapabilitiesWithRetry,
+  normalizeCapabilitiesCrs,
+  normalizeCrsName,
+  resolveActiveBaseMapId,
+  selectWmtsLayerAndMatrix,
+} from '../utils/basemapLayers'
 import {
   groupResolvedLayers,
   createMergedTileSource,
@@ -295,6 +315,7 @@ function stopMeasureInteraction() {
 
 /** 航路绘制/编辑与要素识别/气象/测量互斥:进入航路交互前关闭其余地图交互 */
 function deactivateOtherMapInteractions() {
+  s57Waterways.setSelectionMode(false)
   queryMode.value = false
   weatherMode.value = false
   navigationStore.setPickMode('idle')
@@ -303,6 +324,7 @@ function deactivateOtherMapInteractions() {
 }
 
 function toggleQueryMode() {
+  s57Waterways.setSelectionMode(false)
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
   navigationStore.setPickMode('idle')
   navigationStore.setRiskInspect(false)
@@ -313,6 +335,7 @@ function toggleQueryMode() {
 }
 
 function toggleWeatherMode() {
+  s57Waterways.setSelectionMode(false)
   routesStore.setInteractionMode('idle')
   navigationStore.setPickMode('idle')
   navigationStore.setRiskInspect(false)
@@ -490,6 +513,8 @@ const lastLoadProfile = ref<S57LoadProfile>('core_chart')
 let lastBundlePlanCacheKey = ''
 type BundlePlanInput = { bundles: RenderBundleConfig[]; standaloneLayerIds: string[] }
 let lastBundlePlanCache: BundlePlanInput | undefined
+const bundleRetryAttempts = new globalThis.Map<string, number>()
+let bundleRetryTimer = 0
 let bulkAbortController: AbortController | null = null
 let reconcileTimer: number | undefined
 let evictTimer: number | undefined
@@ -561,10 +586,12 @@ getProjection('EPSG:3413')?.setExtent([-4194304, -4194304, 4194304, 4194304])
 
 let map: OlMap | null = null
 let fallbackBaseLayer: TileLayer<OSM> | null = null
+let fallbackLifecycle: TileLoadLifecycle | null = null
 let measureInteraction: Draw | null = null
 const wmsLayers = new globalThis.Map<string, TileLayer<TileWMS>>()
 const tileCache = new LRUTileCache(TILE_CACHE_MAX_ENTRIES, TILE_CACHE_MAX_BYTES)
 const tileRequestQueue = new TileRequestQueue(TILE_MAX_CONCURRENT_FETCH, TILE_MAX_QUEUED_FETCH)
+tileDiagnostics.registerPipeline({ queue: tileRequestQueue, cache: tileCache })
 
 // ── Merged group state (standard-mode TileWMS source sharing) ─────────
 // When ENABLE_TILE_MERGING is on, layers are grouped by (serviceUrl,
@@ -581,6 +608,18 @@ const mergedGroupMembers = new Map<string, string>()  // layerId → groupId
 const dirtyMergedGroups = new Set<string>()
 
 const configuredBaseLayers = new globalThis.Map<string, TileLayer<XYZ | WMTS>>()
+/** Reactive version counter: configuredBaseLayers is a plain Map. */
+const baseMapLayerVersion = ref(0)
+const activeBaseMapByCrs = ref<Record<string, string>>({})
+const baseMapConfigErrors = ref<Record<string, string>>({})
+const baseMapHealthVersion = ref(0)
+const baseMapHealth = new globalThis.Map<string, BaseMapHealthMonitor>()
+const baseMapLifecycles = new globalThis.Map<string, TileLoadLifecycle>()
+const baseMapRecoveryTimers = new globalThis.Map<string, number>()
+let baseMapGeneration = 0
+const mapEventKeys: unknown[] = []
+const onlineHandlers: Array<() => void> = []
+let onlineTimer = 0
 const measureSource = new VectorSource()
 const aisSource = new VectorSource()
 const measureLayer = new VectorLayer({
@@ -654,6 +693,61 @@ const riskGridLayer = useRiskGridLayer({
   getCrs: () => currentCrs.value,
 })
 
+// ── S-57 航道专题（独立矢量叠加，不进入 runtimeLayers/bundle/route） ──
+const waterwayPanelOpen = ref(false)
+const waterwayFitPadding = (): [number, number, number, number] => [
+  90,
+  routePanelVisible.value ? 550 : 40,
+  90,
+  layerPanelCollapsed.value ? 40 : 420,
+]
+function waterwayViewportBbox(): [number, number, number, number] | null {
+  if (!map) return null
+  const size = map.getSize()
+  if (!size) return null
+  const extent = map.getView().calculateExtent(size)
+  const [minLon, minLat, maxLon, maxLat] = transformExtent(
+    extent,
+    currentCrs.value,
+    'EPSG:4326',
+  )
+  const clamp = (value: number, min: number, max: number) =>
+    Math.min(max, Math.max(min, value))
+  const bbox: [number, number, number, number] = [
+    clamp(minLon, -180, 180),
+    clamp(minLat, -90, 90),
+    clamp(maxLon, -180, 180),
+    clamp(maxLat, -90, 90),
+  ]
+  if (!bbox.every((value) => Number.isFinite(value)) || bbox[1] >= bbox[3]) {
+    return null
+  }
+  return bbox
+}
+const s57Waterways = useS57Waterways({
+  getProjectId: () => String(route.params.id),
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  getViewportBbox: waterwayViewportBbox,
+  getFitPadding: waterwayFitPadding,
+})
+const waterwayCatalogCount = computed(
+  () => s57Waterways.catalog.value?.total ?? 0,
+)
+function toggleWaterwayPanel() {
+  waterwayPanelOpen.value = !waterwayPanelOpen.value
+  if (waterwayPanelOpen.value) {
+    layerPanelCollapsed.value = false
+    void s57Waterways.loadCatalog()
+  } else {
+    s57Waterways.deactivate()
+  }
+}
+function closeWaterwayPanel() {
+  waterwayPanelOpen.value = false
+  s57Waterways.deactivate()
+}
+
 watch(
   () => navigationStore.routes,
   (routes) => planningRouteLayer.setRoutes(routes, navigationStore.selectedRouteId),
@@ -678,6 +772,7 @@ watch(
   (mode) => {
     if (mode === 'idle') return
     routesStore.setInteractionMode('idle')
+    s57Waterways.setSelectionMode(false)
     queryMode.value = false
     weatherMode.value = false
     stopMeasureInteraction()
@@ -689,6 +784,7 @@ watch(
   (active) => {
     if (!active) return
     routesStore.setInteractionMode('idle')
+    s57Waterways.setSelectionMode(false)
     queryMode.value = false
     weatherMode.value = false
     stopMeasureInteraction()
@@ -796,9 +892,28 @@ const attributeColumns = computed(() => {
   return first ? Object.keys(first).filter((key) => key !== 'geometry') : []
 })
 
-const availableBaseMaps = computed(() =>
-  baseMaps.value.filter((baseMap) => baseMap.crs === currentCrs.value),
+const availableBaseMaps = computed(() => {
+  void baseMapLayerVersion.value
+  return baseMaps.value.filter(
+    (baseMap) => baseMap.crs === currentCrs.value && configuredBaseLayers.has(baseMap.id),
+  )
+})
+const baseMapConfigErrorCount = computed(() => Object.keys(baseMapConfigErrors.value).length)
+const activeBaseMapHealth = computed(() => {
+  void baseMapHealthVersion.value
+  const id = activeBaseMapId.value
+  if (!id) return null
+  return baseMapHealth.get(id) ?? null
+})
+const baseMapUnavailable = computed(
+  () =>
+    baseMaps.value.some((baseMap) => baseMap.crs === currentCrs.value) &&
+    availableBaseMaps.value.length === 0,
 )
+const fallbackBaseMapHealth = computed(() => {
+  void baseMapHealthVersion.value
+  return baseMapHealth.get('fallback') ?? null
+})
 
 function createView(crs: string) {
   return new View({
@@ -829,54 +944,191 @@ function browserGeoServerUrl(serviceUrl: string) {
   }
 }
 
-async function createConfiguredBaseLayers() {
-  const layers: BaseLayer[] = []
-  for (const baseMap of baseMaps.value) {
-    try {
-      let tileLayer: TileLayer<XYZ | WMTS>
-      if (baseMap.mapType === 'WMTS') {
-        const response = await fetch(baseMap.urlTemplate)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const capabilities = new WMTSCapabilities().read(await response.text())
-        const capabilityLayer = capabilities.Contents?.Layer?.[0]
-        const matrixSet = capabilityLayer?.TileMatrixSetLink?.[0]?.TileMatrixSet
-        if (!capabilityLayer?.Identifier || !matrixSet) throw new Error('Capabilities缺少图层或矩阵集')
-        const options = optionsFromCapabilities(capabilities, {
-          layer: capabilityLayer.Identifier,
-          matrixSet,
-        })
-        if (!options) throw new Error('无法生成WMTS配置')
-        tileLayer = new TileLayer({
-          className: 'map-base-layer',
-          opacity: 0.88,
-          source: new WMTS({ ...options, crossOrigin: 'anonymous' }),
-        })
-      } else {
-        tileLayer = new TileLayer({
-          className: 'map-base-layer',
-          opacity: 0.88,
-          source: new XYZ({
-            url: baseMap.urlTemplate,
-            projection: baseMap.crs,
-            crossOrigin: 'anonymous',
-            attributions: baseMap.attribution || undefined,
-          }),
-        })
-      }
-      tileLayer.setVisible(false)
-      configuredBaseLayers.set(baseMap.id, tileLayer)
-      layers.push(tileLayer)
-    } catch {
-      ElMessage.warning(`底图“${baseMap.name}”加载失败，已与业务图层隔离`)
+function baseMapHealthFor(id: string): BaseMapHealthMonitor {
+  let health = baseMapHealth.get(id)
+  if (!health) {
+    health = new BaseMapHealthMonitor()
+    baseMapHealth.set(id, health)
+  }
+  return health
+}
+
+function recordBaseMapHealth(id: string, ok: boolean, _error?: unknown): void {
+  const health = baseMapHealthFor(id)
+  health.record(ok)
+  if (!ok) {
+    baseMapHealthVersion.value += 1
+    // The native tile loader already records the final tile outcome; health
+    // only schedules bounded source recovery here.
+    scheduleBaseMapRecovery(id)
+  }
+}
+
+function scheduleBaseMapRecovery(id: string): void {
+  if (baseMapRecoveryTimers.has(id)) return
+  const timer = window.setTimeout(() => {
+    baseMapRecoveryTimers.delete(id)
+    if (!map) return
+    if (id === 'fallback') {
+      if (activeBaseMapId.value || !fallbackBaseLayer?.getVisible()) return
+    } else if (activeBaseMapId.value !== id) {
+      return
     }
+    const layer = id === 'fallback' ? fallbackBaseLayer : configuredBaseLayers.get(id)
+    const health = baseMapHealth.get(id)
+    if (!layer || !health || !health.canRecover()) return
+    health.markRecovered()
+    baseMapHealthVersion.value += 1
+    // Refresh only the active basemap source: this clears its errored tiles
+    // and re-requests the visible ones without rebuilding the map or touching
+    // any business layer/view state.
+    layer.getSource()?.refresh()
+    tileDiagnostics.record({
+      layer: `basemap:${id}`,
+      sourceKey: `basemap:${id}`,
+      url: '',
+      status: 'recovery',
+      attempts: health.recoveryCount,
+    })
+  }, 750)
+  baseMapRecoveryTimers.set(id, timer)
+}
+
+async function createBaseMapTileLayer(baseMap: BaseMapRecord): Promise<TileLayer<XYZ | WMTS>> {
+  const previous = baseMapLifecycles.get(baseMap.id)
+  if (previous) deactivateTileLoadLifecycle(previous)
+  const lifecycle = createTileLoadLifecycle(`basemap:${baseMap.id}`, ++baseMapGeneration)
+  baseMapLifecycles.set(baseMap.id, lifecycle)
+  const load = createNativeRetryTileLoadFunction({
+    lifecycle,
+    layer: `basemap:${baseMap.id}`,
+    retry: { maxAttempts: 4, baseDelayMs: 800, decodeTimeoutMs: 20000 },
+    diagnostics: tileDiagnostics,
+    onSuccess: () => recordBaseMapHealth(baseMap.id, true),
+    onFailure: (caught) => recordBaseMapHealth(baseMap.id, false, caught),
+  })
+  let tileLayer: TileLayer<XYZ | WMTS>
+  if (baseMap.mapType === 'WMTS') {
+    const text = await fetchWmtsCapabilitiesWithRetry(baseMap.urlTemplate)
+    const capabilities = new WMTSCapabilities().read(text)
+    normalizeCapabilitiesCrs(capabilities)
+    const preferred = baseMap.name.includes('概览') ? 'overview' : undefined
+    const selection = selectWmtsLayerAndMatrix(capabilities, baseMap.crs, preferred)
+    if (!selection) {
+      throw new Error(
+        `无法在 WMTS Capabilities 中确定 ${baseMap.crs} 的图层/矩阵集`,
+      )
+    }
+    const options = optionsFromCapabilities(capabilities, {
+      layer: selection.layer,
+      matrixSet: selection.matrixSet,
+    })
+    if (!options) throw new Error('无法生成 WMTS 配置')
+    const projectionCode = normalizeCrsName(
+      (options.projection as { getCode?: () => string } | undefined)?.getCode?.() ?? '',
+    )
+    if (projectionCode && projectionCode !== normalizeCrsName(baseMap.crs)) {
+      throw new Error(
+        `WMTS 矩阵集投影 ${projectionCode} 与底图投影 ${baseMap.crs} 不一致`,
+      )
+    }
+    tileLayer = new TileLayer({
+      className: 'map-base-layer',
+      opacity: 0.88,
+      zIndex: 0,
+      preload: 0,
+      source: new WMTS({
+        ...options,
+        crossOrigin: 'anonymous',
+        attributions: baseMap.attribution || undefined,
+        transition: 0,
+        tileLoadFunction: load as never,
+      }),
+    })
+  } else {
+    tileLayer = new TileLayer({
+      className: 'map-base-layer',
+      opacity: 0.88,
+      zIndex: 0,
+      preload: 0,
+      source: new XYZ({
+        url: baseMap.urlTemplate,
+        projection: baseMap.crs,
+        crossOrigin: 'anonymous',
+        attributions: baseMap.attribution || undefined,
+        transition: 0,
+        tileLoadFunction: load as never,
+      }),
+    })
+  }
+  tileLayer.setVisible(false)
+  return tileLayer
+}
+
+async function createConfiguredBaseLayers() {
+  const results = await Promise.all(
+    baseMaps.value.map(async (baseMap) => {
+      try {
+        const tileLayer = await createBaseMapTileLayer(baseMap)
+        configuredBaseLayers.set(baseMap.id, tileLayer)
+        baseMapLayerVersion.value += 1
+        const nextErrors = { ...baseMapConfigErrors.value }
+        delete nextErrors[baseMap.id]
+        baseMapConfigErrors.value = nextErrors
+        return tileLayer
+      } catch (caught) {
+        baseMapConfigErrors.value = {
+          ...baseMapConfigErrors.value,
+          [baseMap.id]:
+            caught instanceof Error ? caught.message : `底图“${baseMap.name}”配置加载失败`,
+        }
+        return null
+      }
+    }),
+  )
+  const layers = results.filter((layer): layer is TileLayer<XYZ | WMTS> => Boolean(layer))
+  const failed = baseMapConfigErrorCount.value
+  if (failed > 0) {
+    ElMessage.warning(`${failed} 个底图配置加载失败，可选择后手动重试`)
   }
   return layers
 }
 
+async function retryBaseMapConfigs() {
+  const failed = baseMaps.value.filter((baseMap) => baseMapConfigErrors.value[baseMap.id])
+  if (failed.length === 0) return
+  for (const baseMap of failed) {
+    try {
+      const tileLayer = await createBaseMapTileLayer(baseMap)
+      configuredBaseLayers.set(baseMap.id, tileLayer)
+      baseMapLayerVersion.value += 1
+      map?.addLayer(tileLayer)
+      const nextErrors = { ...baseMapConfigErrors.value }
+      delete nextErrors[baseMap.id]
+      baseMapConfigErrors.value = nextErrors
+    } catch (caught) {
+      baseMapConfigErrors.value = {
+        ...baseMapConfigErrors.value,
+        [baseMap.id]:
+          caught instanceof Error ? caught.message : `底图“${baseMap.name}”配置加载失败`,
+      }
+    }
+  }
+  applyBaseMapVisibility()
+}
+
 function applyBaseMapVisibility() {
-  const choices = availableBaseMaps.value.filter((item) => configuredBaseLayers.has(item.id))
-  if (!choices.some((item) => item.id === activeBaseMapId.value)) {
-    activeBaseMapId.value = choices[0]?.id || ''
+  const choices = availableBaseMaps.value
+  const remembered = activeBaseMapByCrs.value[currentCrs.value]
+  activeBaseMapId.value = resolveActiveBaseMapId(
+    choices.map((item) => item.id),
+    remembered || activeBaseMapId.value,
+  )
+  if (activeBaseMapId.value) {
+    activeBaseMapByCrs.value = {
+      ...activeBaseMapByCrs.value,
+      [currentCrs.value]: activeBaseMapId.value,
+    }
   }
   for (const [id, layer] of configuredBaseLayers) {
     layer.setVisible(id === activeBaseMapId.value)
@@ -885,19 +1137,75 @@ function applyBaseMapVisibility() {
 }
 
 function selectBaseMap() {
+  activeBaseMapByCrs.value = {
+    ...activeBaseMapByCrs.value,
+    [currentCrs.value]: activeBaseMapId.value,
+  }
   applyBaseMapVisibility()
+}
+
+function reloadActiveBaseMap() {
+  const id = activeBaseMapId.value
+  if (!id) {
+    if (fallbackBaseLayer?.getVisible()) {
+      baseMapHealthFor('fallback').reset()
+      baseMapHealthVersion.value += 1
+      fallbackBaseLayer.getSource()?.refresh()
+      ElMessage.success('正在重新加载备用底图')
+    } else if (baseMapConfigErrorCount.value > 0) {
+      void retryBaseMapConfigs()
+    } else {
+      ElMessage.info('当前投影暂无可用底图')
+    }
+    return
+  }
+  const layer = configuredBaseLayers.get(id)
+  if (!layer) {
+    void retryBaseMapConfigs()
+    return
+  }
+  baseMapHealthFor(id).reset()
+  baseMapHealthVersion.value += 1
+  layer.getSource()?.refresh()
+  ElMessage.success('正在重新加载当前底图')
 }
 
 async function buildMap() {
   if (!mapTarget.value || !config.value) return
+  fallbackLifecycle = createTileLoadLifecycle('basemap:fallback', ++baseMapGeneration)
+  const fallbackLoad = createNativeRetryTileLoadFunction({
+    lifecycle: fallbackLifecycle,
+    layer: 'basemap:fallback',
+    retry: { maxAttempts: 4, baseDelayMs: 800, decodeTimeoutMs: 20000 },
+    onSuccess: () => recordBaseMapHealth('fallback', true),
+    onFailure: () => recordBaseMapHealth('fallback', false),
+  })
   fallbackBaseLayer = new TileLayer({
     className: 'map-base-layer',
     opacity: 0.88,
-    source: new OSM({ crossOrigin: 'anonymous' }),
+    zIndex: 0,
+    preload: 0,
+    source: new OSM({
+      crossOrigin: 'anonymous',
+      transition: 0,
+      tileLoadFunction: fallbackLoad as never,
+    }),
     visible: false,
   })
   const layers: BaseLayer[] = [fallbackBaseLayer, ...(await createConfiguredBaseLayers())]
   map = new OlMap({ target: mapTarget.value, layers, view: createView(currentCrs.value) })
+  if (import.meta.env.DEV) {
+    ;(window as unknown as { __polarMapTileQueueStats?: () => unknown }).__polarMapTileQueueStats =
+      () => {
+        const tileQueue = (map as unknown as {
+          tileQueue_?: { getTilesLoading?: () => number; getCount?: () => number }
+        } | null)?.tileQueue_
+        return {
+          loading: tileQueue?.getTilesLoading?.() ?? -1,
+          queued: tileQueue?.getCount?.() ?? -1,
+        }
+      }
+  }
   const visibleRuntimes = runtimeLayers.value.filter((rt) => rt.visible)
   attachRuntimeGroups(visibleRuntimes, undefined, true)
   for (const runtime of visibleRuntimes) {
@@ -912,6 +1220,7 @@ async function buildMap() {
   environmentOverlays.attach()
   planningRouteLayer.attach()
   riskGridLayer.attach()
+  s57Waterways.attach()
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
@@ -919,7 +1228,7 @@ async function buildMap() {
   hoverViewport = viewport ?? null
   viewport?.addEventListener('pointerleave', hideHover)
   viewport?.addEventListener('pointerleave', iceOverlay.clearHover)
-  map.on('pointermove', (event) => {
+  mapEventKeys.push(map.on('pointermove', (event) => {
     const [longitude, latitude] = toLonLat(event.coordinate, currentCrs.value)
     coordinateText.value = `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`
     // 拖动期间不显示(平移时提示会跟着乱跑);非鼠标指针(触控)没有悬停语义
@@ -944,8 +1253,8 @@ async function buildMap() {
     hoverCoordinate = event.coordinate
     hoverPixel = event.pixel
     scheduleHover()
-  })
-  map.on('singleclick', async (event) => {
+  }))
+  mapEventKeys.push(map.on('singleclick', async (event) => {
     const lonLat = toLonLat(event.coordinate, currentCrs.value) as [number, number]
     if (navigationStore.pickMode !== 'idle') {
       navigationStore.setPickedPoint({ longitude: lonLat[0], latitude: lonLat[1] })
@@ -957,6 +1266,14 @@ async function buildMap() {
       const cellId = riskGridLayer.pickCellAtPixel(event.pixel)
       if (cellId) void navigationStore.loadRiskCell(cellId)
       else riskGridLayer.setSelected(null)
+      return
+    }
+    if (
+      waterwayPanelOpen.value &&
+      !layerPanelCollapsed.value &&
+      s57Waterways.selectionMode.value &&
+      s57Waterways.pickAtPixel(event.pixel)
+    ) {
       return
     }
     environmentOverlays.clearHover()
@@ -973,14 +1290,31 @@ async function buildMap() {
         closeRouteFlyout()
       }
     }
-  })
-  map.on('moveend', () => {
+  }))
+  mapEventKeys.push(map.on('moveend', () => {
     window.clearTimeout(reconcileTimer)
     reconcileTimer = window.setTimeout(reconcileRenderPlan, SMART_RECONCILE_DEBOUNCE_MS)
     environmentOverlays.scheduleRefreshVectors()
     // 滚轮缩放后指针没动,提示里的坐标/小数位需要按新分辨率自校正
     if (hoverCoordinate) scheduleHover()
-  })
+  }))
+  const handleOnline = () => {
+    window.clearTimeout(onlineTimer)
+    onlineTimer = window.setTimeout(() => {
+      if (iceOverlay.concentrationVisible.value || iceOverlay.thicknessVisible.value) {
+        iceOverlay.retryVisibleLayers()
+      }
+      const id = activeBaseMapId.value
+      const health = id ? baseMapHealth.get(id) : null
+      if (id && health?.hasRecentFailures) {
+        health.reset()
+        baseMapHealthVersion.value += 1
+        configuredBaseLayers.get(id)?.getSource()?.refresh()
+      }
+    }, 1000)
+  }
+  window.addEventListener('online', handleOnline)
+  onlineHandlers.push(handleOnline)
   // Initial reconcile
   reconcileRenderPlan()
 }
@@ -1012,77 +1346,194 @@ function layerZIndex(objectClass: string | null | undefined): number {
  * (429, 502, 503, 504) and network failures with exponential backoff.
  * Uses the existing TILE_RETRY_MAX_ATTEMPTS / TILE_RETRY_BASE_DELAY_MS constants.
  */
+function cancelTileResponseBody(response: Response): void {
+  try {
+    const promise = response.body?.cancel()
+    if (promise) void promise.catch(() => undefined)
+  } catch {
+    // A mocked/closed body must not break tile retries.
+  }
+}
+
 function createRetryTileLoadFunction(stats: PerLayerStatsManager): (tile: any, src: string) => void {
   return (tile, src) => {
     const img = tile.getImage() as HTMLImageElement
     const controller = new AbortController()
+    const timers = new Set<number>()
     let attempts = 0
+    let settled = false
+    let objectUrl: string | null = null
+    let decodeTimer: number | undefined
 
-    // Abort in-flight fetch when OpenLayers discards the tile (pan/zoom).
-    tile.addEventListener('change', () => {
-      // OpenLayers TileState: 0=IDLE, 1=LOADING, 2=LOADED, 3=ERROR, 4=ABORT
-      if ((tile as any).getState?.() === 4) {
-        controller.abort()
+    const clearTimers = () => {
+      for (const timer of timers) window.clearTimeout(timer)
+      timers.clear()
+      if (decodeTimer !== undefined) {
+        window.clearTimeout(decodeTimer)
+        decodeTimer = undefined
       }
-    })
+    }
+    const revokeObjectUrl = () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+    }
+    const cleanup = () => {
+      tile.removeEventListener('change', onTileChange)
+      img.onload = null
+      img.onerror = null
+    }
+    const finishSuccess = () => {
+      if (settled) return
+      settled = true
+      clearTimers()
+      revokeObjectUrl()
+      cleanup()
+    }
+    const finishError = (error?: unknown) => {
+      if (settled) return
+      settled = true
+      clearTimers()
+      revokeObjectUrl()
+      cleanup()
+      failTile(tile)
+      void error
+    }
+    const cancel = () => {
+      if (settled) return
+      settled = true
+      clearTimers()
+      revokeObjectUrl()
+      cleanup()
+      // EMPTY releases the map-wide OL TileQueue loading slot without
+      // reporting a tile error for an intentional source replacement.
+      cancelTile(tile)
+    }
+    const onTileChange = () => {
+      if ((tile as any).getState?.() === TileState.EMPTY) {
+        controller.abort()
+        cancel()
+      }
+    }
+    // Abort in-flight fetch when OpenLayers discards the tile (pan/zoom).
+    tile.addEventListener('change', onTileChange)
+
+    const scheduleRetry = () => {
+      stats.recordRetry()
+      const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
+      const timer = window.setTimeout(() => {
+        timers.delete(timer)
+        tryLoad()
+      }, delay)
+      timers.add(timer)
+    }
+
+    const useBlob = (blob: Blob) => {
+      objectUrl = URL.createObjectURL(blob)
+      img.onload = () => {
+        revokeObjectUrl()
+        finishSuccess()
+      }
+      img.onerror = () => {
+        tileCache.delete(src)
+        revokeObjectUrl()
+        finishError(new Error('image decode failed'))
+      }
+      if (decodeTimer !== undefined) window.clearTimeout(decodeTimer)
+      decodeTimer = window.setTimeout(() => {
+        decodeTimer = undefined
+        if (!settled) {
+          revokeObjectUrl()
+          finishError(new Error('image decode timeout'))
+        }
+      }, 15000)
+      img.src = objectUrl
+    }
 
     const tryLoad = () => {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted || settled) {
+        cancel()
+        return
+      }
       attempts++
 
       // 1. Check LRU tile cache first — avoid redundant fetches for
       //    previously loaded tiles (pan-back, layer toggle, etc.).
       const cached = tileCache.get(src)
       if (cached) {
-        const objectUrl = URL.createObjectURL(cached)
-        img.onload = () => URL.revokeObjectURL(objectUrl)
-        img.src = objectUrl
-        return
+        if (cached.size > 0 && (!cached.type || cached.type.startsWith('image/'))) {
+          useBlob(cached)
+          return
+        }
+        tileCache.delete(src)
       }
 
       // 2. Fetch tile from GeoServer via the concurrency-limited queue.
-      tileRequestQueue.fetch(src, controller.signal)
-        .then((response) => {
-          if (response.ok) {
-            return response.blob()
+      tileRequestQueue.fetch(src, controller.signal, {
+        priority: 'normal',
+        timeoutMs: 30000,
+      })
+        .then(async (response) => {
+          if (settled) return
+          if (response.status === 204) {
+            cancelTileResponseBody(response)
+            cancel()
+            return
           }
-          // Only retry recoverable HTTP errors: 429, 502, 503, 504
-          if (
-            [429, 502, 503, 504].includes(response.status) &&
-            attempts < TILE_RETRY_MAX_ATTEMPTS
-          ) {
-            stats.recordRetry()
-            const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
-            setTimeout(tryLoad, delay)
-            return null
+          if (!response.ok) {
+            cancelTileResponseBody(response)
+            if (
+              [408, 425, 429, 500, 502, 503, 504].includes(response.status) &&
+              attempts < TILE_RETRY_MAX_ATTEMPTS
+            ) {
+              scheduleRetry()
+              return
+            }
+            finishError(new Error(`HTTP ${response.status}`))
+            return
           }
-          // Non-recoverable (400, 404, 500, etc.) or retries exhausted:
-          // mark the tile errored so OpenLayers fires tileloaderror (drains
-          // warming, marks the layer errored) and re-requests the tile on
-          // the next render. Without this the tile stays LOADING forever.
-          tile.setState(TileState.ERROR)
-          return null
-        })
-        .then((blob) => {
-          if (blob) {
-            // Cache successful responses for future pan-back / toggle scenarios.
-            tileCache.set(src, blob)
-            const objectUrl = URL.createObjectURL(blob)
-            img.onload = () => URL.revokeObjectURL(objectUrl)
-            img.src = objectUrl
+          const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+          if (contentType && !contentType.startsWith('image/')) {
+            cancelTileResponseBody(response)
+            if (attempts < TILE_RETRY_MAX_ATTEMPTS) scheduleRetry()
+            else finishError(new Error(`unexpected content-type ${contentType}`))
+            return
           }
+          const blob = await response.blob()
+          if (settled || controller.signal.aborted) {
+            cancel()
+            return
+          }
+          if (!blob || blob.size <= 0 || (blob.type && !blob.type.startsWith('image/'))) {
+            if (attempts < TILE_RETRY_MAX_ATTEMPTS) scheduleRetry()
+            else finishError(new Error('response is not an image'))
+            return
+          }
+          // Cache successful responses for future pan-back / toggle scenarios.
+          tileCache.set(src, blob)
+          useBlob(blob)
         })
         .catch((err) => {
-          if (controller.signal.aborted) return
-          // Only retry on network failures (TypeError), not HTTP errors
-          if (err instanceof TypeError && attempts < TILE_RETRY_MAX_ATTEMPTS) {
-            stats.recordRetry()
-            const delay = TILE_RETRY_BASE_DELAY_MS * Math.pow(2, attempts - 1)
-            setTimeout(tryLoad, delay)
-          } else if (!controller.signal.aborted) {
-            // Retries exhausted or unrecoverable rejection (queue overflow
-            // QuotaExceededError etc.) — mark errored so OL retries later.
-            tile.setState(TileState.ERROR)
+          if (settled) return
+          if (controller.signal.aborted) {
+            cancel()
+            return
+          }
+          const name = (err as { name?: string } | null)?.name
+          if (name === 'AbortError') {
+            cancel()
+            return
+          }
+          if (
+            (err instanceof TypeError ||
+              name === 'TimeoutError' ||
+              name === 'QuotaExceededError') &&
+            attempts < TILE_RETRY_MAX_ATTEMPTS
+          ) {
+            scheduleRetry()
+          } else {
+            finishError(err)
           }
         })
     }
@@ -1513,6 +1964,7 @@ function switchProjection(crs: string) {
   environmentOverlays.reloadForProjection()
   planningRouteLayer.reloadForProjection()
   riskGridLayer.reloadForProjection()
+  s57Waterways.reloadForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -1780,11 +2232,20 @@ function executeBundlePlan(
       config,
       map,
       createRetryTileLoadFunction(perfStats) as any,
-      (_bundleId) => {
-        // Bundle warming complete — no per-layer state to update
+      (bundleId) => {
+        bundleRetryAttempts.delete(bundleId)
       },
-      (_bundleId, _error) => {
-        // Bundle failed — error is tracked in bundle runtime
+      (bundleId, _error) => {
+        const attempts = (bundleRetryAttempts.get(bundleId) ?? 0) + 1
+        bundleRetryAttempts.set(bundleId, attempts)
+        if (attempts <= 2 && map) {
+          detachBundle(bundleId, map)
+          window.clearTimeout(bundleRetryTimer)
+          bundleRetryTimer = window.setTimeout(
+            () => reconcileRenderPlan(),
+            1000 * attempts,
+          )
+        }
       },
     )
   }
@@ -1807,26 +2268,24 @@ function executeBundlePlan(
 }
 
 function setOverviewVisible(visible: boolean) {
-  // Toggle the polar_global_enc_overview basemap visibility.
-  // The overview WMTS is registered as a configured basemap; locate its OL layer.
   if (!map) return
-  const layers = map.getLayers().getArray()
-  for (const bm of baseMaps.value) {
-    if (bm.name.includes('全球海图概览') && bm.crs === currentCrs.value) {
-      for (const l of layers) {
-        if (l instanceof TileLayer && l.getClassName() === 'map-base-layer') {
-          const src = l.getSource()
-          if (src instanceof WMTS) {
-            const urls = src.getUrls?.() ?? []
-            if (urls.some((u) => u.includes('polar_global_enc_overview'))) {
-              l.setVisible(visible)
-              return
-            }
-          }
-        }
-      }
-    }
+  const overview = baseMaps.value.find(
+    (baseMap) => baseMap.name.includes('全球海图概览') && baseMap.crs === currentCrs.value,
+  )
+  if (!overview) return
+  const layer = configuredBaseLayers.get(overview.id)
+  if (!layer) return
+  // A user-selected basemap always wins. Never hide the selected overview at
+  // high zoom, and never overlay the overview on a different selected base.
+  if (activeBaseMapId.value === overview.id) {
+    layer.setVisible(true)
+    return
   }
+  if (activeBaseMapId.value) {
+    layer.setVisible(false)
+    return
+  }
+  layer.setVisible(visible)
 }
 
 function runLruEviction() {
@@ -1840,7 +2299,6 @@ function runLruEviction() {
   const evictable = [...suspendedLayerIds.value]
     .filter((id) => !protectedIds.has(id))
     .filter((id) => attachedLayerIds.value.has(id))
-    .filter((id) => !selectedLayerIds.value.has(id))
     .filter((id) => (now - (layerLastInViewportTime.get(id) ?? 0)) > SMART_SUSPEND_EVICT_DELAY_MS)
     .sort(
       (a, b) => (layerLastInViewportTime.get(a) ?? 0) - (layerLastInViewportTime.get(b) ?? 0),
@@ -1856,11 +2314,11 @@ function runLruEviction() {
 }
 
 function clearSuspendedCache() {
+  // Selected-but-suspended layers may be detached to bound memory; selection
+  // is preserved and the scheduler re-attaches them when they re-enter view.
   for (const id of suspendedLayerIds.value) {
-    if (!selectedLayerIds.value.has(id)) {
-      const runtime = runtimeLayers.value.find((r) => r.config.id === id)
-      if (runtime) detachWmsLayer(runtime)
-    }
+    const runtime = runtimeLayers.value.find((r) => r.config.id === id)
+    if (runtime) detachWmsLayer(runtime)
   }
 }
 
@@ -2384,6 +2842,7 @@ function rebuildMeasureGeometry() {
 }
 
 function activateMeasure(type: 'LineString' | 'Polygon') {
+  s57Waterways.setSelectionMode(false)
   if (!map) return
   routesStore.setInteractionMode('idle') // 互斥:结束航路绘制/编辑
   navigationStore.setPickMode('idle')
@@ -2674,13 +3133,43 @@ onBeforeUnmount(() => {
   environmentOverlays.dispose()
   planningRouteLayer.dispose()
   riskGridLayer.dispose()
+  s57Waterways.dispose()
   navigationStore.reset()
   stopPerfPoll()
   bulkAbortController?.abort()
   for (const runtime of runtimeLayers.value) detachWmsLayer(runtime)
+  if (map) disposeAllBundles(map)
+  for (const key of mapEventKeys) unByKey(key as never)
+  mapEventKeys.length = 0
+  window.clearTimeout(reconcileTimer)
+  window.clearTimeout(evictTimer)
+  window.clearTimeout(layerSearchTimer)
+  window.clearTimeout(onlineTimer)
+  window.clearTimeout(bundleRetryTimer)
+  bundleRetryAttempts.clear()
+  for (const handler of onlineHandlers) window.removeEventListener('online', handler)
+  onlineHandlers.length = 0
+  for (const timer of baseMapRecoveryTimers.values()) window.clearTimeout(timer)
+  baseMapRecoveryTimers.clear()
+  for (const lifecycle of baseMapLifecycles.values()) deactivateTileLoadLifecycle(lifecycle)
+  baseMapLifecycles.clear()
+  if (fallbackLifecycle) deactivateTileLoadLifecycle(fallbackLifecycle)
+  fallbackLifecycle = null
+  for (const layer of configuredBaseLayers.values()) layer.dispose()
+  configuredBaseLayers.clear()
+  fallbackBaseLayer?.dispose()
+  fallbackBaseLayer = null
   tileRequestQueue.reset()
   tileCache.clear()
   map?.setTarget(undefined)
+  try {
+    map?.dispose()
+  } catch {
+    // Map may already be disposed by OL during target teardown.
+  }
+  if (import.meta.env.DEV) {
+    delete (window as unknown as { __polarMapTileQueueStats?: unknown }).__polarMapTileQueueStats
+  }
   map = null
 })
 </script>
@@ -2706,9 +3195,31 @@ onBeforeUnmount(() => {
     <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed }]">
       <div class="panel-heading"><div><span class="eyebrow">LAYERS</span><h2>图层目录</h2></div><span class="layer-count">{{ runtimeDatasets.length }}</span></div>
       <div class="layer-filters">
-        <el-select v-model="activeBaseMapId" class="full-width" placeholder="当前投影暂无配置底图" clearable @change="selectBaseMap">
-          <el-option v-for="baseMap in availableBaseMaps" :key="baseMap.id" :label="`${baseMap.name} · ${baseMap.mapType}`" :value="baseMap.id" />
-        </el-select>
+        <div class="basemap-row">
+          <el-select v-model="activeBaseMapId" class="full-width" placeholder="当前投影暂无配置底图" clearable @change="selectBaseMap">
+            <el-option v-for="baseMap in availableBaseMaps" :key="baseMap.id" :label="`${baseMap.name} · ${baseMap.mapType}`" :value="baseMap.id" />
+          </el-select>
+          <el-tooltip content="重新加载当前底图" placement="top">
+            <button class="basemap-reload" type="button" aria-label="重新加载当前底图" @click="reloadActiveBaseMap">
+              <el-icon><Refresh /></el-icon>
+            </button>
+          </el-tooltip>
+        </div>
+        <div v-if="baseMapUnavailable" class="basemap-hint">
+          当前投影暂无可用配置底图，请切换投影或在管理端配置底图。
+        </div>
+        <div v-else-if="baseMapConfigErrorCount > 0" class="basemap-hint is-error">
+          <span>{{ baseMapConfigErrorCount }} 个底图配置加载失败</span>
+          <el-button size="small" text @click="retryBaseMapConfigs">重试</el-button>
+        </div>
+        <div v-else-if="activeBaseMapHealth && activeBaseMapHealth.failureCount > 0" class="basemap-hint is-warn">
+          <span>底图瓦片近期加载失败（{{ activeBaseMapHealth.failureCount }}）</span>
+          <el-button size="small" text @click="reloadActiveBaseMap">重新加载</el-button>
+        </div>
+        <div v-else-if="!activeBaseMapId && fallbackBaseMapHealth && fallbackBaseMapHealth.failureCount > 0" class="basemap-hint is-warn">
+          <span>备用底图瓦片近期加载失败（{{ fallbackBaseMapHealth.failureCount }}）</span>
+          <el-button size="small" text @click="reloadActiveBaseMap">重新加载</el-button>
+        </div>
         <el-input v-model="layerSearch" :prefix-icon="Search" clearable placeholder="搜索图层、代码或分组" />
         <div class="batch-toolbar" v-if="runtimeDatasets.some(ds => isS57Dataset(ds))">
           <div class="batch-select-row">
@@ -2838,7 +3349,17 @@ onBeforeUnmount(() => {
       <!-- 冰情信息(独立环境叠加层,不进入海图图层体系) -->
       <IceLayerPanel v-if="icePanelOpen" :ice="iceOverlay" />
       <EnvironmentLayerPanel v-if="environmentPanelOpen" :env="environmentOverlays" />
+      <S57WaterwayPanel v-if="waterwayPanelOpen" :waterways="s57Waterways" @close="closeWaterwayPanel" />
       <div class="layer-panel-footer">
+        <button
+          class="overlay-menu-trigger waterway-menu-trigger"
+          :class="{ active: waterwayPanelOpen }"
+          type="button"
+          aria-label="航道专题"
+          @click="toggleWaterwayPanel"
+        >
+          <el-icon><Compass /></el-icon><span>航道专题</span><span class="overlay-menu-count">{{ waterwayCatalogCount }}</span>
+        </button>
         <el-dropdown trigger="click" placement="top-start" @command="handleOverlayCommand">
           <button class="overlay-menu-trigger" type="button" aria-label="环境叠加">
             <el-icon><Operation /></el-icon><span>环境叠加</span><span class="overlay-menu-count">7</span>

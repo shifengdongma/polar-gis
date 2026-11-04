@@ -423,12 +423,107 @@ class ImportProcessor:
                     f"ds_{short_id}_v{version.version_no}_{source_name}",
                     60,
                 )
-                escaped_source = source_name.replace('"', '""')
+                # PostgreSQL + LAUNDER=YES creates lowercase table names even
+                # when the OGR layer/object class name is uppercase (e.g. DSID).
+                imported_table_name = source_name.lower()
+                escaped_source = imported_table_name.replace('"', '""')
+                # GDAL/PostgreSQL names the primary key "<source>_pkey" in the
+                # temp schema. Moving two cells/classes into geo would then
+                # collide (e.g. dsid_pkey). Rename it to a table-unique name
+                # before the schema move.
+                pk_rows = db.execute(
+                    text(
+                        "SELECT c.conname FROM pg_constraint c "
+                        "JOIN pg_class t ON t.oid = c.conrelid "
+                        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                        "WHERE n.nspname = :schema AND t.relname = :table "
+                        "AND c.contype = 'p'"
+                    ),
+                    {"schema": temp_schema, "table": imported_table_name},
+                ).scalars().all()
+                for pk_name in pk_rows:
+                    unique_pk = safe_identifier(f"{table_name}_pkey", 63)
+                    db.execute(
+                        text(
+                            f'ALTER TABLE {temp_schema}."{escaped_source}" '
+                            f'RENAME CONSTRAINT "{str(pk_name).replace(chr(34), chr(34)*2)}" '
+                            f'TO "{unique_pk}"'
+                        )
+                    )
+                # GDAL may create a spatial index named "<source>_geom_geom_idx"
+                # in the temp schema; index names are schema-scoped and collide
+                # when two cells contain the same object class. Rename
+                # non-primary indexes before moving the table.
+                index_rows = db.execute(
+                    text(
+                        "SELECT ic.relname FROM pg_class ic "
+                        "JOIN pg_index i ON i.indexrelid = ic.oid "
+                        "JOIN pg_class t ON t.oid = i.indrelid "
+                        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                        "WHERE n.nspname = :schema AND t.relname = :table "
+                        "AND NOT i.indisprimary"
+                    ),
+                    {"schema": temp_schema, "table": imported_table_name},
+                ).scalars().all()
+                for index, index_name in enumerate(index_rows):
+                    unique_index = safe_identifier(f"{table_name}_src_idx_{index}", 63)
+                    db.execute(
+                        text(
+                            f'ALTER INDEX {temp_schema}."{str(index_name).replace(chr(34), chr(34)*2)}" '
+                            f'RENAME TO "{unique_index}"'
+                        )
+                    )
+                # Serial sequences are schema-scoped too. Rename and move them
+                # with the table, otherwise the second cell hits e.g.
+                # dsid_ogc_fid_seq already exists in geo.
+                sequence_rows = db.execute(
+                    text(
+                        "SELECT c.relname AS seq_name, a.attname AS column_name "
+                        "FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "JOIN pg_depend d ON d.objid = c.oid AND d.deptype = 'a' "
+                        "JOIN pg_class t ON t.oid = d.refobjid "
+                        "JOIN pg_attribute a "
+                        "  ON a.attrelid = t.oid AND a.attnum = d.refobjsubid "
+                        "WHERE n.nspname = :schema AND c.relkind = 'S' "
+                        "AND t.relname = :table"
+                    ),
+                    {"schema": temp_schema, "table": imported_table_name},
+                ).all()
+                moved_sequences: list[tuple[str, str]] = []
+                for index, (sequence_name, column_name) in enumerate(sequence_rows):
+                    unique_sequence = safe_identifier(f"{table_name}_seq_{index}", 63)
+                    db.execute(
+                        text(
+                            f'ALTER SEQUENCE {temp_schema}."{str(sequence_name).replace(chr(34), chr(34)*2)}" '
+                            f'RENAME TO "{unique_sequence}"'
+                        )
+                    )
+                    # Owned sequences cannot be moved across schemas. Detach
+                    # ownership, move both table and sequence, then restore it.
+                    db.execute(
+                        text(
+                            f'ALTER SEQUENCE {temp_schema}."{unique_sequence}" OWNED BY NONE'
+                        )
+                    )
+                    db.execute(
+                        text(
+                            f'ALTER SEQUENCE {temp_schema}."{unique_sequence}" SET SCHEMA geo'
+                        )
+                    )
+                    moved_sequences.append((unique_sequence, str(column_name)))
                 db.execute(
                     text(
                         f'ALTER TABLE {temp_schema}."{escaped_source}" SET SCHEMA geo'
                     )
                 )
+                for unique_sequence, column_name in moved_sequences:
+                    db.execute(
+                        text(
+                            f'ALTER SEQUENCE geo."{unique_sequence}" '
+                            f'OWNED BY geo."{escaped_source}"."{column_name.replace(chr(34), chr(34)*2)}"'
+                        )
+                    )
                 db.execute(
                     text(
                         f'ALTER TABLE geo."{escaped_source}" RENAME TO "{table_name}"'
@@ -464,14 +559,18 @@ class ImportProcessor:
                 )
                 db.add(layer)
                 imported.append(layer)
-                # Create spatial index for efficient WMS tile rendering
-                idx_name = safe_identifier(f"idx_{table_name}_geom", 63)
-                db.execute(
-                    text(
-                        f'CREATE INDEX IF NOT EXISTS {idx_name} '
-                        f'ON geo."{table_name}" USING GIST (geom)'
+                # Create a spatial index only for layers that actually have a
+                # geometry column. Non-spatial S-57 classes (DSID, C_ASSO,
+                # C_AGGR, ...) have no "geom" column and previously aborted the
+                # whole cell import here.
+                if has_valid_geometry(geometry_type):
+                    idx_name = safe_identifier(f"idx_{table_name}_geom", 63)
+                    db.execute(
+                        text(
+                            f'CREATE INDEX IF NOT EXISTS {idx_name} '
+                            f'ON geo."{table_name}" USING GIST (geom)'
+                        )
                     )
-                )
                 db.execute(text(f'ANALYZE geo."{table_name}"'))
             db.execute(text(f"DROP SCHEMA IF EXISTS {temp_schema} CASCADE"))
             db.flush()

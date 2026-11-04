@@ -358,6 +358,14 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .panel-heading h2 { margin: 0; font-size: 15px; }
 .layer-count { width: 25px; height: 25px; border-radius: 4px; font-size: 10px; }
 .layer-filters { display: grid; gap: 6px; margin-bottom: 7px; padding: 6px; border: 1px solid rgba(151, 190, 201, .14); border-radius: 5px; background: rgba(2, 14, 22, .28); }
+.basemap-row { display: flex; align-items: center; gap: 4px; }
+.basemap-row .full-width { flex: 1 1 auto; min-width: 0; }
+.basemap-reload { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid rgba(151, 190, 201, .24); border-radius: 4px; background: rgba(18, 44, 56, .92); color: #9fc5cf; cursor: pointer; }
+.basemap-reload:hover { border-color: rgba(104, 193, 207, .55); color: #d9f4f8; }
+.basemap-hint { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 6px; border-radius: 4px; color: #9fbcc6; font-size: 10px; line-height: 1.4; background: rgba(18, 44, 56, .55); }
+.basemap-hint.is-error { border: 1px solid rgba(239, 139, 96, .35); background: rgba(120, 45, 30, .28); color: #ffd7c7; }
+.basemap-hint.is-warn { border: 1px solid rgba(233, 190, 96, .3); background: rgba(90, 68, 25, .25); color: #f4dfae; }
+.basemap-hint .el-button { flex: 0 0 auto; font-size: 10px; }
 .layer-panel .el-input__wrapper, .layer-panel .el-select__wrapper { min-height: 29px; border-radius: 4px; background: rgba(18, 44, 56, .92); box-shadow: 0 0 0 1px rgba(151,190,201,.18) inset; font-size: 11px; transition: background-color .15s ease, box-shadow .15s ease; }
 .layer-panel .el-input__wrapper:hover, .layer-panel .el-select__wrapper:hover { background: rgba(22, 52, 65, .96); box-shadow: 0 0 0 1px rgba(104,193,207,.34) inset; }
 .layer-panel .el-input__wrapper.is-focus, .layer-panel .el-select__wrapper.is-focused { background: #173642; box-shadow: 0 0 0 1px var(--ice-500) inset; }
@@ -420,9 +428,11 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .layer-state.error { background: var(--danger); box-shadow: 0 0 0 3px rgba(199,70,70,.14); }
 .more-button { display: grid; width: 24px; height: 24px; min-height: 24px; padding: 0; place-items: center; border-radius: 3px; }
 .more-button:hover { color: #eafafd; background: rgba(255,255,255,.08); }
-.layer-panel-footer { display: flex; align-items: center; min-height: 31px; margin-top: 5px; padding-top: 6px; border-top: 1px solid rgba(178, 211, 220, .14); }
+.layer-panel-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 31px; margin-top: 5px; padding-top: 6px; border-top: 1px solid rgba(178, 211, 220, .14); }
 .overlay-menu-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 4px 6px; color: #b9d0d9; border: 1px solid rgba(178, 211, 220, .16); border-radius: 4px; background: rgba(2, 14, 22, .24); font-size: 10px; }
 .overlay-menu-trigger:hover { color: #e7f7fb; border-color: rgba(53, 195, 214, .48); background: rgba(17, 54, 66, .72); }
+.waterway-menu-trigger { margin-right: 2px; }
+.waterway-menu-trigger.active { color: #d9f4f8; border-color: rgba(104, 193, 207, .65); background: rgba(17, 54, 66, .82); }
 .overlay-menu-count { display: grid; width: 15px; height: 15px; place-items: center; color: #8daab5; font-size: 9px; border-radius: 3px; background: rgba(255, 255, 255, .07); }
 .overlay-menu .el-dropdown-menu__item { display: flex; align-items: center; gap: 7px; min-width: 182px; }
 .overlay-state { margin-left: auto; color: #66818d; font-size: 10px; }
@@ -1497,6 +1507,8 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .ice-panel-title { color: #d7e8ed; font-size: 11px; font-weight: 700; }
 .ice-panel-badge { padding: 1px 6px; color: #07202a; background: var(--ice-500); border-radius: 8px; font-size: 9px; }
 .ice-panel-empty { padding: 8px 0; color: #7897a3; font-size: 10px; }
+.ice-panel-error { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 4px 0; padding: 6px 8px; border: 1px solid rgba(239, 139, 96, .35); border-radius: 4px; background: rgba(120, 45, 30, .28); color: #ffd7c7; font-size: 10px; line-height: 1.5; }
+.ice-panel-error .el-button { flex: 0 0 auto; color: #ffd7c7; }
 .ice-field { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
 .ice-field-row { display: flex; align-items: center; gap: 6px; color: #d7e8ed; font-size: 11px; }
 .ice-field-name { font-weight: 600; }
@@ -1629,3 +1641,41 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .route-planner-drawer .quality-badge.quality-missing, .route-planner-drawer .quality-badge.quality-unknown { color: #5f6b72; background: #eef2f5; }
 
 
+
+/* ── S-57 waterway thematic ─────────────────────────────────────────── */
+.waterway-panel { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; padding-top: 7px; border-top: 1px solid rgba(178, 211, 220, .18); }
+.waterway-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.waterway-panel-heading > div { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.waterway-panel-title { color: #d9f4f8; font-size: 12px; font-weight: 700; }
+.waterway-panel-badge { padding: 1px 5px; color: #7fd8e6; border: 1px solid rgba(104, 193, 207, .35); border-radius: 999px; font-size: 8px; }
+.waterway-panel-close { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 0; border-radius: 4px; background: transparent; color: #8fb1bb; cursor: pointer; }
+.waterway-panel-close:hover { color: #e8f7fa; background: rgba(104, 193, 207, .14); }
+.waterway-panel-empty { padding: 8px 0; color: #7897a3; font-size: 10px; line-height: 1.5; }
+.waterway-panel-error { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; padding: 6px 8px; border: 1px solid rgba(239, 139, 96, .35); border-radius: 4px; background: rgba(120, 45, 30, .28); color: #ffd7c7; font-size: 10px; line-height: 1.5; }
+.waterway-search-box { display: flex; flex-direction: column; gap: 5px; }
+.waterway-search-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.waterway-search-row .el-checkbox { margin-right: 0; }
+.waterway-class-groups { display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid rgba(151, 190, 201, .14); border-radius: 4px; background: rgba(2, 14, 22, .22); }
+.waterway-class-group { display: flex; flex-direction: column; gap: 2px; }
+.waterway-class-group-title { color: #90b6c1; font-size: 9px; font-weight: 600; }
+.waterway-class-checkbox { display: flex; align-items: center; margin-right: 0 !important; font-size: 9px; }
+.waterway-class-code { margin-left: 4px; color: #6f929d; font-size: 8px; }
+.waterway-class-count { margin-left: auto; padding-left: 8px; color: #8fd7e2; font-size: 8px; }
+.waterway-auxiliary { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; border: 1px dashed rgba(151, 190, 201, .22); border-radius: 4px; }
+.waterway-auxiliary-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #9fbcc6; font-size: 9px; }
+.waterway-warnings { display: flex; flex-direction: column; gap: 1px; color: #d8bd7b; font-size: 8px; line-height: 1.4; }
+.waterway-results-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #a9c8d1; font-size: 9px; }
+.waterway-result-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; padding-right: 2px; }
+.waterway-result-item { display: flex; flex-direction: column; gap: 3px; padding: 6px; border: 1px solid rgba(151, 190, 201, .14); border-radius: 4px; background: rgba(8, 30, 40, .55); }
+.waterway-result-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.waterway-result-main strong { overflow: hidden; color: #e2f3f6; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.waterway-result-meta { display: flex; flex-wrap: wrap; gap: 5px; color: #82a6b1; font-size: 8px; }
+.waterway-result-inform { overflow: hidden; color: #9dbac3; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.waterway-aux-tag { padding: 0 4px; color: #c4b5fd; border: 1px solid rgba(167, 139, 250, .35); border-radius: 999px; }
+.waterway-result-actions { display: flex; flex-wrap: wrap; gap: 2px; }
+.waterway-result-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 8px; }
+.waterway-pagination { justify-content: center; margin-top: 2px; }
+.waterway-detail-desc { font-size: 10px; }
+.waterway-detail-section-title { margin: 10px 0 5px; color: #234e5c; font-size: 11px; font-weight: 700; }
+.waterway-detail-table { font-size: 10px; }
+@media print { .waterway-panel, .waterway-detail-drawer { display: none !important; } }

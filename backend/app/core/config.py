@@ -37,9 +37,16 @@ class Settings(BaseSettings):
     ice_data_root: Path = Path("/data/ice")
     ice_tile_cache_entries: int = 256
     ice_tile_max_zoom: int = 10
+    ice_max_concurrent_grid_loads: int = 2
     s57_basemap_source_root: str = "/data/s57-basemaps"
     s57_basemap_profile: str = "global_overview_v1"
     s57_basemap_allow_local_source: bool = True
+
+    # S-57 waterway thematic (read-only federated query over imported layers)
+    s57_waterway_max_layers: int = 200
+    s57_waterway_query_timeout_ms: int = 10000
+    s57_waterway_max_page_size: int = 50
+    s57_waterway_max_offset: int = 10000
 
     # Navigation / environment
     navigation_enabled: bool = True

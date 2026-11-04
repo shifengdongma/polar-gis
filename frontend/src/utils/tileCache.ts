@@ -58,6 +58,18 @@ export class LRUTileCache {
     }
   }
 
+  /**
+   * Remove a single cached entry (e.g. a blob that failed image decoding).
+   * Returns true when an entry existed.
+   */
+  delete(url: string): boolean {
+    const blob = this.cache.get(url)
+    if (!blob) return false
+    this.totalBytes -= blob.size
+    this.cache.delete(url)
+    return true
+  }
+
   /** Remove all cached entries. */
   clear(): void {
     this.cache.clear()
