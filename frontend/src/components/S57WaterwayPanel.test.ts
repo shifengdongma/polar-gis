@@ -73,6 +73,14 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('当前视口')
   })
 
+  it('keeps the map legend above the category list so it remains reachable', () => {
+    const legend = source.indexOf('waterway-map-legend')
+    const groups = source.indexOf('waterway-class-groups')
+    expect(legend).toBeGreaterThan(0)
+    expect(groups).toBeGreaterThan(0)
+    expect(legend).toBeLessThan(groups)
+  })
+
   it('does not write into route state', () => {
     expect(source).not.toContain('routesStore')
     expect(source).not.toContain('routeDrawing')

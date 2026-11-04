@@ -29,6 +29,12 @@ describe('S-57 waterway integration', () => {
     )
   })
 
+  it('reserves space for side panels so the waterway footer is not clipped', () => {
+    expect(source).toContain(
+      "'has-side-panel': waterwayPanelOpen || icePanelOpen || environmentPanelOpen",
+    )
+  })
+
   it('keeps the thematic overlay out of S-57 runtime/bundle/route state', () => {
     expect(source).toContain('s57Waterways.attach()')
     expect(source).toContain('s57Waterways.reloadForProjection()')

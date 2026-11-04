@@ -3207,7 +3207,7 @@ onBeforeUnmount(() => {
         <div class="projection-switch"><button :class="{ active: currentCrs === 'EPSG:3857' }" @click="switchProjection('EPSG:3857')">常规地图</button><button :class="{ active: currentCrs === 'EPSG:3413' }" @click="switchProjection('EPSG:3413')">北极投影</button></div>
       </div>
     </header>
-    <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed }]">
+    <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed, 'has-side-panel': waterwayPanelOpen || icePanelOpen || environmentPanelOpen }]">
       <div class="panel-heading"><div><span class="eyebrow">LAYERS</span><h2>图层目录</h2></div><span class="layer-count">{{ runtimeDatasets.length }}</span></div>
       <div class="layer-filters">
         <div class="basemap-row">

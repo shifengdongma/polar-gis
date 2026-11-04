@@ -287,6 +287,42 @@ function closePanel() {
         </div>
       </div>
 
+      <div class="waterway-map-legend">
+        <div class="waterway-map-legend-head">
+          <span>地图专题图例</span>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :loading="overviewLoading"
+            :disabled="selectedClasses.size === 0"
+            @click="showOverviewOnMap"
+          >在地图显示选中类别</el-button>
+        </div>
+        <div class="waterway-map-legend-items">
+          <span
+            v-for="entry in groupSummary"
+            :key="entry.key"
+            class="waterway-map-legend-item"
+          >
+            <i :style="{ background: entry.color }"></i>{{ entry.label }}
+            <b>{{ entry.count }}</b>
+          </span>
+        </div>
+        <div class="waterway-map-legend-hint">
+          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计，叠加受单次上限约束。
+        </div>
+        <div
+          v-if="overviewMessage"
+          :class="['waterway-overview-note', { error: overviewError }]"
+        >{{ overviewMessage }}</div>
+        <div
+          v-for="warning in overviewWarnings"
+          :key="warning"
+          class="waterway-overview-note"
+        >{{ warning }}</div>
+      </div>
+
       <div class="waterway-class-groups">
         <div v-for="group in primaryGroups" :key="group.name" class="waterway-class-group">
           <div class="waterway-class-group-title">{{ group.name }}</div>
@@ -326,42 +362,6 @@ function closePanel() {
             <span class="waterway-class-count">{{ item.count }}</span>
           </el-checkbox>
         </div>
-      </div>
-
-      <div class="waterway-map-legend">
-        <div class="waterway-map-legend-head">
-          <span>地图专题图例</span>
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            :loading="overviewLoading"
-            :disabled="selectedClasses.size === 0"
-            @click="showOverviewOnMap"
-          >在地图显示选中类别</el-button>
-        </div>
-        <div class="waterway-map-legend-items">
-          <span
-            v-for="entry in groupSummary"
-            :key="entry.key"
-            class="waterway-map-legend-item"
-          >
-            <i :style="{ background: entry.color }"></i>{{ entry.label }}
-            <b>{{ entry.count }}</b>
-          </span>
-        </div>
-        <div class="waterway-map-legend-hint">
-          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计，叠加受单次上限约束。
-        </div>
-        <div
-          v-if="overviewMessage"
-          :class="['waterway-overview-note', { error: overviewError }]"
-        >{{ overviewMessage }}</div>
-        <div
-          v-for="warning in overviewWarnings"
-          :key="warning"
-          class="waterway-overview-note"
-        >{{ warning }}</div>
       </div>
 
       <div v-if="searchError" class="waterway-panel-error">

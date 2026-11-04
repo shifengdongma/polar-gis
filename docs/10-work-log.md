@@ -1990,4 +1990,8 @@ curl -s -o /dev/null -D - "http://localhost:8080/geoserver/gwc/service/wms?LAYER
 - **地图专题总览**：后端新增 `POST /projects/{projectId}/s57-waterways/preview`，复用快照提取的 `_resolve_usable_layers()/_extract_features()` 键集逻辑，返回与搜索结果同形状的要素及 `groupCounts/objectClassCounts/truncated/warnings`，不写文件；默认上限 `S57_WATERWAY_PREVIEW_MAX_FEATURES=2000`。前端面板新增“地图专题图例”（按四组颜色汇总目录计数）与“在地图显示选中类别”按钮；`useS57Waterways.showOverview()` 将结果写入独立矢量图层、按组颜色渲染并自动 fit，支持“地图点选”查看详情、“清除显示”移除。
 - **保存窗布局**：`el-dialog` 与详情/成果 `el-drawer` 增加 `append-to-body`，改为挂载到 `body`，不再被左侧窄图层面板裁剪；保存对话框保持 520px 宽度居中显示。
 - **使用说明**：面板内新增可展开“使用说明”，明确最快流程是“勾选类别 → 在地图显示选中类别”，不需要先搜索、也不要求先加载 S-57 WMS 海图图层；说明“当前视口”只是可选范围筛选，“地图点选”只用于点击已显示要素查看详情。用户手册同步补充。
-- 验证：后端 `pytest` 312 passed + 1 skipped（新增 preview service/route tests）；前端 `npm test` 41 files / 477 tests passed；`typecheck`、`build` 通过。未启动完整 Compose/浏览器验证地图总览与弹窗视觉效果，需重建 backend/frontend 镜像后补验。
+- **面板遮挡修复**：Playwright 在 1440×900 复现：`.layer-panel` 高 838px，但 `.waterway-panel` 高 770px、底部到 1038px、footer 到 1074px，且无内部滚动，必须缩小浏览器才能看到下方按钮。修复：
+  - 展开侧边专题时给 `.layer-panel` 加 `has-side-panel`，图层列表限制为 22vh，航道面板 `flex:1 1 0 + min-height:0 + overflow-y:auto` 内部滚动，footer 保持可见；
+  - `.layer-panel` 增加 `overflow:hidden`，防止内容溢出；“地图专题图例/在地图显示选中类别”移到类别列表之前并 `position:sticky; top:0`，滚动时始终可见。
+  - 1440×900、1280×720、1024×768 实测：航道面板可滚动，按钮在可视区内，footer 不再被裁剪。
+- 验证：后端 `pytest` 312 passed + 1 skipped（新增 preview service/route tests）；前端 `npm test` 41 files / 477 tests passed；`typecheck`、`build` 通过；Playwright 浏览器实测布局通过。完整 Compose 业务流程仍建议在部署环境补验。

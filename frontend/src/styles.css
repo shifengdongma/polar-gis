@@ -350,7 +350,7 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .map-canvas { inset: 0; }
 .map-base-layer { filter: saturate(.68) brightness(.95) contrast(.97); }
 .glass-panel { border-color: rgba(178, 211, 220, .22); background: rgba(8, 27, 38, .9); box-shadow: 0 12px 32px rgba(7,17,29,.2); backdrop-filter: blur(12px); }
-.layer-panel { display: flex; flex-direction: column; top: 46px; bottom: 16px; left: 8px; width: 270px; padding: 11px; border-radius: 6px; transition: transform .2s ease, opacity .2s ease; }
+.layer-panel { display: flex; flex-direction: column; top: 46px; bottom: 16px; left: 8px; width: 270px; padding: 11px; border-radius: 6px; overflow: hidden; transition: transform .2s ease, opacity .2s ease; }
 .layer-panel.is-collapsed { pointer-events: none; opacity: 0; transform: translateX(calc(-100% - 20px)); }
 .panel-heading { min-height: 27px; margin-bottom: 7px; }
 .panel-heading > div { display: flex; min-width: 0; align-items: baseline; gap: 6px; }
@@ -400,6 +400,8 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .dataset-summary:has(.dataset-checkbox) { grid-template-columns: 16px 20px minmax(0, 1fr) auto; }
 
 .layer-groups { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0 -4px; padding: 0 4px; scrollbar-color: #587985 transparent; scrollbar-width: thin; }
+/* 侧边专题面板展开时，为它保留高度；图层列表只占一小块并独立滚动。 */
+.layer-panel.has-side-panel .layer-groups { flex: 0 1 auto; min-height: 48px; max-height: 22vh; }
 .layer-groups::-webkit-scrollbar { width: 6px; }
 .layer-groups::-webkit-scrollbar-track { background: transparent; }
 .layer-groups::-webkit-scrollbar-thumb { border-radius: 3px; background: #587985; }
@@ -1646,7 +1648,12 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 
 
 /* ── S-57 waterway thematic ─────────────────────────────────────────── */
-.waterway-panel { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; padding-top: 7px; border-top: 1px solid rgba(178, 211, 220, .18); }
+.waterway-panel { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; gap: 7px; margin-top: 6px; padding: 7px 3px 2px 0; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid rgba(178, 211, 220, .18); scrollbar-color: #587985 transparent; scrollbar-width: thin; }
+.waterway-panel::-webkit-scrollbar { width: 6px; }
+.waterway-panel::-webkit-scrollbar-track { background: transparent; }
+.waterway-panel::-webkit-scrollbar-thumb { border-radius: 3px; background: #587985; }
+.layer-panel.has-side-panel .ice-panel,
+.layer-panel.has-side-panel .environment-layer-panel { flex: 1 1 0; min-height: 0; }
 .waterway-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .waterway-panel-heading > div { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .waterway-panel-title { color: #d9f4f8; font-size: 12px; font-weight: 700; }
@@ -1667,7 +1674,7 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-auxiliary { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; border: 1px dashed rgba(151, 190, 201, .22); border-radius: 4px; }
 .waterway-auxiliary-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #9fbcc6; font-size: 9px; }
 .waterway-warnings { display: flex; flex-direction: column; gap: 1px; color: #d8bd7b; font-size: 8px; line-height: 1.4; }
-.waterway-map-legend { display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid rgba(104, 193, 207, .22); border-radius: 4px; background: rgba(4, 20, 29, .42); }
+.waterway-map-legend { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid rgba(104, 193, 207, .28); border-radius: 4px; background: rgba(8, 27, 38, .97); backdrop-filter: blur(6px); }
 .waterway-map-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #b9dce4; font-size: 9px; font-weight: 600; }
 .waterway-map-legend-head .el-button { margin-left: 0; padding: 2px 5px; font-size: 8px; }
 .waterway-map-legend-items { display: flex; flex-wrap: wrap; gap: 3px 9px; }

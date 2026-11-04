@@ -1175,6 +1175,7 @@ backend/app/navigation/
 - 地图专题总览：新增 `POST .../preview`（`S57WaterwayPreviewRequest/Response`），复用同一套 `_resolve_usable_layers()/_extract_features()` 键集提取，返回与搜索结果同形状的要素、`groupCounts/objectClassCounts`、`truncated`、`warnings`；不写文件。默认上限 `S57_WATERWAY_PREVIEW_MAX_FEATURES=2000`。
 - 前端：`useS57Waterways` 增加 `loadSnapshots/createSnapshot/downloadSnapshot` 与 `showOverview`；`S57WaterwayPanel` 增加“地图专题图例”+“在地图显示选中类别”按钮、保存对话框与已保存抽屉。总览把返回要素写入独立航道矢量图层，按组颜色渲染并自动 fit；图例颜色与 `mapS57Waterway` 的 `waterwayGroupColor()` 同源。
 - 成果入口位于目录状态判断之前、始终显示，确保当前项目没有可查询航道图层时仍能访问历史快照；不进入航路 store。保存对话框与详情/成果抽屉均 `append-to-body`，避免被左侧窄面板裁剪。
+- 布局：侧边专题展开时 `.layer-panel` 加 `has-side-panel`，图层列表限制为 22vh；`.waterway-panel` 使用 `flex:1 1 0/min-height:0/overflow-y:auto` 内部滚动，footer 固定可见；地图图例与“在地图显示选中类别”前置并 `position:sticky`，解决小屏/低分辨率下必须缩小浏览器才能看到下方控件的问题。Playwright 已在 1440×900、1280×720、1024×768 验证。
 
 #### 8.12.3 图层内联图例
 
