@@ -169,8 +169,12 @@ function openSnapshotDialog() {
 
 async function showOverviewOnMap() {
   const shown = await props.waterways.showOverview()
-  if (shown) {
-    ElMessage.success(`已在地图显示 ${props.waterways.overviewCount.value} 条航道要素`)
+  if (!shown) return
+  const count = props.waterways.overviewCount.value
+  if (count > 0) {
+    ElMessage.success(`已在地图显示 ${count} 条航道要素`)
+  } else {
+    ElMessage.warning(props.waterways.overviewError.value || '没有可叠加的航道要素')
   }
 }
 
