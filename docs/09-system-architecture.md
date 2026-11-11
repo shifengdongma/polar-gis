@@ -1,7 +1,11 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-08-10
+> 最后更新: 2026-11-11
+>
+> 本次按 `2026-10-10` 之后（会话 #27–#32）的实际代码与部署配置重新核对：
+> 主架构章节（技术栈、目录结构、API、数据模型、前端结构、文件清单）已与当前
+> `master`（`ab57c2a`）同步；历史会话细节见第 8 章。
 
 ---
 
@@ -17,12 +21,15 @@ Polar-GIS 是一个面向极地/高纬度海洋环境数据的 WebGIS 平台，�
 | ORM | SQLAlchemy 2.0 + Alembic |
 | 数据库 | PostgreSQL 16 + PostGIS 3.4 |
 | 空间数据引擎 | GDAL (ogrinfo, ogr2ogr, gdalinfo) |
-| 地图服务器 | GeoServer 2.26.2 + GeoWebCache |
+| 地图服务器 | GeoServer 2.25.3 + GeoWebCache |
 | 前端框架 | Vue 3 + Vite + TypeScript |
 | UI 组件库 | Element Plus (中文) |
-| 地图渲染 | OpenLayers 10.6 |
+| 地图渲染 | OpenLayers 10.6.1 |
 | 图表 | ECharts 6.0 |
 | 状态管理 | Pinia 3.0 |
+| 冰情/环境数据 | netCDF4 + numpy + Pillow + pyproj |
+| 测地线计算 | GeographicLib (`geographiclib-geodesic` 2.2, WGS84/Karney) |
+| 导航规划 | 内置 D* Lite + DNSGA-III（numpy 实现，无外部求解器） |
 | 容器化 | Docker Compose (5 服务) |
 | 反向代理 | Nginx |
 
@@ -35,22 +42,29 @@ Polar-GIS 是一个面向极地/高纬度海洋环境数据的 WebGIS 平台，�
 ```
 backend/
 ├── app/
-│   ├── main.py                 # FastAPI 应用入口点
-│   ├── models.py               # SQLAlchemy ORM 模型定义 (16张表)
-│   ├── schemas.py              # Pydantic 请求/响应模型
+│   ├── main.py                 # FastAPI 应用入口 + lifespan（冰情预热、GWC 回填）
+│   ├── models.py               # SQLAlchemy ORM 模型定义 (18 张表)
+│   ├── schemas.py              # Pydantic 请求/响应模型（含航道快照/预览）
 │   ├── cli.py                  # 命令行工具 (创建管理员)
 │   │
-│   ├── api/                    # API 路由层
+│   ├── api/                    # API 路由层（18 个模块）
 │   │   ├── auth.py             # 认证: 登录/刷新/登出/当前用户
 │   │   ├── users.py            # 管理员用户管理 CRUD
-│   │   ├── projects.py         # 项目 CRUD + 发布 + 地图配置
+│   │   ├── projects.py         # 项目 CRUD + 发布 + 地图配置 + 渲染计划
 │   │   ├── datasets.py         # 数据集管理 + S-57批次导入 + 上传
-│   │   ├── layers.py           # 图层元数据 + 空间查询 + 导出
+│   │   ├── layers.py           # 图层元数据 + 图例 + 空间查询 + 导出
 │   │   ├── base_maps.py        # 底图 CRUD
 │   │   ├── styles.py           # SLD 样式管理
+│   │   ├── s57_basemaps.py     # 全球海图底图导入（管理员）
+│   │   ├── s57_waterways.py    # S-57 航道专题：目录/搜索/预览/快照
+│   │   ├── ice.py              # 冰情 info/value/alignment/XYZ 瓦片
+│   │   ├── navigation_environment.py # 导航环境源/查询/矢量场/水深瓦片
+│   │   ├── navigation_vessels.py     # 船舶静态资料 + 吃水安全
+│   │   ├── navigation_plans.py       # 智能规划任务/候选/风险格/重评
+│   │   ├── navigation_risk.py        # 区域风险任务（risk_only）
 │   │   ├── demo.py             # 演示数据 (AIS/天气)
-│   │   ├── system.py           # 健康检查 + 审计日志
-│   │   └── deps.py             # 依赖注入 (认证/鉴权)
+│   │   ├── system.py           # 健康检查 + 审计日志 + GWC/样式刷新
+│   │   └── deps.py             # 依赖注入 (认证/鉴权/项目边界)
 │   │
 │   ├── core/                   # 核心基础设施
 │   │   ├── config.py           # Pydantic Settings (读取 .env)
@@ -59,26 +73,43 @@ backend/
 │   │   ├── errors.py           # AppError 异常 + 全局处理器
 │   │   └── middleware.py       # 请求上下文中间件 (Request ID)
 │   │
-│   ├── services/               # 业务逻辑层
+│   ├── services/               # 业务逻辑层（17 个模块）
 │   │   ├── storage.py          # 本地文件存储 + 上传校验
 │   │   ├── geoserver.py        # GeoServer REST API 客户端
 │   │   ├── importer.py         # GDAL 导入处理器 (矢量/栅格/S-57)
 │   │   ├── s57.py              # S-57 文件识别 + GDAL 检测
 │   │   ├── s57_batch.py        # S-57 批次导入处理器
+│   │   ├── s57_basemap.py      # 全球海图底图收集/发布
 │   │   ├── s57_styles.py       # S-57 SLD 样式预设 (10种) + 比例尺规则
 │   │   ├── s57_layer_catalog.py # S-57 图层分类事实来源（纯函数）
 │   │   ├── s57_style_refresh.py # SLD 样式幂等刷新 (sldHash 对比 + 缓存截断)
+│   │   ├── s57_waterway_catalog.py # 航道专题独立分类（不改动主目录）
+│   │   ├── s57_waterways.py    # 项目当前版本跨图层航道查询/详情
+│   │   ├── s57_waterway_export.py # 航道成果键集导出 + GeoJSON/manifest
+│   │   ├── ice.py              # NetCDF 冰情服务（info/value/PNG XYZ）
 │   │   ├── map_render_plan.py  # 组合图层渲染计划纯函数 (build_bundles)
 │   │   ├── gwc_backfill.py     # GWC EPSG:3413 瓦片缓存回填 (GridSet + 图层)
 │   │   └── audit.py            # 审计日志写入
 │   │
+│   ├── navigation/             # PolarOptionNav V3 业务域（43 个 .py）
+│   │   ├── contracts/          # 坐标/方向/时间/单位/质量/证据/状态
+│   │   ├── environment/        # 环境源服务、时间匹配、manifest、合成数据
+│   │   │   └── providers/      # GEBCO / CARRA2 / TOPAZ5 / WAM / ICE
+│   │   ├── vessel/             # 雪龙2静态资料 + 吃水安全
+│   │   ├── risk/               # legacy_v1 / real_v1 风险模型
+│   │   ├── planner/            # 25km 网格、D* Lite、DNSGA-III、能耗模型
+│   │   ├── tasks/              # 规划任务状态机 + worker 处理器
+│   │   ├── resources/          # 网格 NPZ、权重 JSON、船舶 JSON
+│   │   ├── schemas.py          # 导航请求/响应 Pydantic 模型
+│   │   └── netcdf.py           # NetCDF 通用读取辅助
+│   │
 │   └── worker/                 # 后台工作进程
-│       └── main.py             # 轮询导入任务 + 批次任务
-
-├── migrations/                 # Alembic 数据库迁移
-│   └── versions/               # 迁移脚本 (3个)
+│       └── main.py             # 轮询：批次导入 → 单数据集导入 → 规划任务
 │
-├── tests/                      # pytest 测试套件（按业务模块组织）
+├── migrations/                 # Alembic 数据库迁移
+│   └── versions/               # 0001–0006（含 navigation_planning/run_title）
+│
+├── tests/                      # pytest 测试套件（32 个 test_*.py）
 │
 ├── pyproject.toml              # 项目配置 + 依赖
 ├── alembic.ini                 # 迁移配置
@@ -96,34 +127,37 @@ backend/
 - **API 层**: 处理 HTTP 请求/响应, 参数校验, 权限检查
 - **Service 层**: 核心业务逻辑, 外部服务调用, 文件处理
 - **Core 层**: 配置, 数据库连接, 安全, 日志
-- **Worker 层**: 独立轮询进程, 异步处理导入任务
+- **Worker 层**: 独立轮询进程，串行处理批次导入、单数据集导入与智能规划任务
 
 ### 2.3 API 路由总览
 
-所有 API 端点均挂载在 `/api/v1` 前缀下, 共约 **60 个端点**:
+所有 API 端点均挂载在 `/api/v1` 前缀下。按 2026-11-11 代码清点为 **115 个路由装饰器**，主要模块如下：
 
 | 模块 | 路由前缀 | 功能 |
 |------|----------|------|
 | 认证 | `/api/v1/auth` | 登录/刷新/登出/当前用户 |
 | 用户管理 | `/api/v1/admin/users` | 用户 CRUD |
-| 项目(公开) | `/api/v1/projects` | 已发布项目浏览 + 地图配置 |
+| 项目(公开) | `/api/v1/projects` | 已发布项目浏览、地图配置、批量解析、渲染计划 |
 | 项目(管理) | `/api/v1/admin/projects` | 项目 CRUD + 发布/取消发布 |
 | 数据集 | `/api/v1/admin/datasets` | 数据集 CRUD + 版本管理 + 清理 |
 | 上传 | `/api/v1/admin/uploads` | 文件上传 |
-| S-57批导入 | `/api/v1/admin/s57-import-batches` | 批量 S-57 导入 |
+| S-57批导入 | `/api/v1/admin/s57-import-batches` | 批量 S-57 导入/暂停/恢复/取消 |
 | 导入任务 | `/api/v1/admin/import-jobs` | 导入任务监控 |
-| 图层(公开) | `/api/v1/layers` | 图层元数据 + 识别 + 搜索 + 导出 |
+| S-57 底图 | `/api/v1/admin/s57-basemaps` | 全球海图底图 profiles/preflight/import/runs |
+| 图层(公开) | `/api/v1/layers` | 元数据、图例、识别、搜索、导出 |
 | 图层(管理) | `/api/v1/admin/layers` | 图层管理 |
+| S-57 航道专题 | `/api/v1/projects/{projectId}/s57-waterways` | 目录/搜索/预览/快照保存与下载 |
+| 冰情 | `/api/v1/ice` | info/value/alignment/XYZ 瓦片 |
+| 导航环境 | `/api/v1/navigation/environment` | sources/times/query/batch-query/field/水深瓦片 |
+| 导航船舶 | `/api/v1/navigation/vessels` | 雪龙2资料 + 吃水安全 |
+| 智能规划 | `/api/v1/navigation/plans` | 创建/列表/详情/候选/风险格/取消/重评/重命名/删除 |
+| 区域风险 | `/api/v1/navigation/risk` | `risk_only` 风险任务 |
 | 底图(公开) | `/api/v1/base-maps` | 启用的底图列表 |
 | 底图(管理) | `/api/v1/admin/base-maps` | 底图 CRUD |
-| 样式 | `/api/v1/admin/styles` | SLD 样式管理 |
+| 样式 | `/api/v1/admin/styles` | SLD 样式管理 + S-57 样式刷新 |
+| GWC 缓存 | `/api/v1/admin/gwc` | EPSG:3413 GridSet/缓存回填 |
 | 演示 | `/api/v1/demo` | AIS 船舶 + 天气预报数据 |
-| 系统 | `/api/v1/health` | 存活/就绪检查 + 审计日志 |
-| S-57批暂停 | `/api/v1/admin/s57-import-batches/{id}/pause` | 暂停批量导入 |
-| S-57批恢复 | `/api/v1/admin/s57-import-batches/{id}/resume` | 恢复暂停的批量导入 |
-| S-57批取消 | `/api/v1/admin/s57-import-batches/{id}/cancel` | 取消批量导入 |
-| GWC缓存回填 | `/api/v1/admin/gwc/backfill` | 为已有 S-57 图层幂等补齐 EPSG:3413 GridSet/缓存配置 |
-| S-57样式刷新 | `/api/v1/admin/styles/refresh-s57` | sldHash 幂等刷新 SLD 样式 + 截断瓦片缓存 |
+| 系统 | `/api/v1/health`、`/api/v1/admin/audit-logs` | 存活/就绪检查 + 审计日志 |
 
 ### 2.4 数据导入架构 (S-57 Batch Import)
 
@@ -195,7 +229,7 @@ backend/
 - **账户锁定**: 5次失败 → 15分钟锁定
 - **审计**: 所有操作记录至 `audit_logs` 表
 
-### 2.5 数据模型 (16张表)
+### 2.6 数据模型 (18 张表)
 
 | 表名 | 用途 |
 |------|------|
@@ -215,8 +249,15 @@ backend/
 | `layers` | 发布图层 |
 | `base_maps` | 底图配置 |
 | `audit_logs` | 审计日志 |
+| `planning_runs` | 智能规划任务（状态/进度/船舶/数据策略/合成覆盖/标题） |
+| `planning_routes` | 候选航线（坐标 JSON/指标/风险快照引用） |
 
-### 2.6 核心业务流程
+> 迁移脚本：`0001_initial`、`0002_s57_import_batches`、`0003_project_code_active_unique`、
+> `0004_s57_batch_purpose`、`0005_navigation_planning`、`0006_navigation_run_title`。
+> 风险栅格 gzip 与航道快照 GeoJSON 不存表，写入共享存储卷
+> （`<STORAGE_ROOT>/navigation/plans|waterways`）。
+
+### 2.7 核心业务流程
 
 1. **数据上传 → 导入 → 发布**:
    上传文件 → GDAL 分析 → ogr2ogr 导入 PostgreSQL (`geo` schema) → GeoServer 发布图层
@@ -242,55 +283,56 @@ frontend/
 └── src/
     ├── main.ts                 # 应用入口 (Vue + Pinia + Router + Element Plus)
     ├── App.vue                 # 根组件 (<RouterView />)
-    ├── styles.css              # 全局样式 (1383行, CSS 自定义属性)
+    ├── styles.css              # 全局样式（map-/ice-/env-/waterway-/planning- 前缀）
     │
-    ├── api/
-    │   └── client.ts           # Axios 实例 + 自动令牌刷新
+    ├── api/ (5)                # client / projects / ice / navigation / s57Waterways
     │
-    ├── components/
-    │   ├── WeatherChart.vue    # ECharts 天气图表组件
-    │   └── RoutePlannerPanel.vue # 航路规划模拟面板 (非模态抽屉)
+    ├── components/ (17 .vue)
+    │   ├── 地图与航路            # RoutePlannerPanel / RouteInfoFlyout
+    │   ├── 航道与图例            # S57WaterwayPanel / S57LayerLegend
+    │   ├── 冰情                  # IceLayerPanel / IceTimeline / IceValueTooltip
+    │   ├── 环境叠加              # EnvironmentLayerPanel / EnvironmentTimeControl / EnvironmentValueTooltip
+    │   ├── 智能规划              # IntelligentPlanningPanel / NavigationTaskPanel /
+    │   │                         # PlanningResultPanel / RouteComparisonPanel /
+    │   │                         # RiskAnalysisPanel / VesselProfilePanel
+    │   └── WeatherChart          # 演示气象图表
     │
-    ├── composables/
-    │   └── useRouteDrawing.ts  # 航路地图交互 (Draw/Modify/重建/定位)
+    ├── composables/ (6)
+    │   ├── useRouteDrawing.ts    # 手绘航路 Draw/Modify/重建/定位
+    │   ├── useIceOverlay.ts      # 冰情 TileLayer 生命周期 + hover
+    │   ├── useEnvironmentOverlays.ts # 水深/风/流/浪叠加与矢量场
+    │   ├── useS57Waterways.ts    # 航道目录/搜索/预览/快照
+    │   ├── usePlanningRouteLayer.ts # 规划候选航线矢量层
+    │   └── useRiskGridLayer.ts   # 风险格矢量层 + 点选
     │
     ├── layouts/
-    │   └── AppLayout.vue       # 应用外壳 (侧边栏 + 顶栏 + 内容区)
+    │   └── AppLayout.vue         # 应用外壳 (侧边栏 + 顶栏 + 内容区)
     │
     ├── router/
-    │   └── index.ts            # 路由配置 + 导航守卫
+    │   └── index.ts              # 路由配置 + 导航守卫
     │
-    ├── stores/
-    │   ├── auth.ts             # 认证状态 (登录/引导/登出)
-    │   ├── projects.ts         # 项目列表状态
-    │   ├── routes.ts           # 航路草稿状态 (WGS84 真值 + localStorage)
-    │   ├── projects.test.ts    # Store 单元测试
-    │   └── routes.test.ts      # 航路 Store 单元测试
+    ├── stores/ (4)
+    │   ├── auth.ts               # 认证状态 (登录/引导/登出)
+    │   ├── projects.ts           # 项目列表状态
+    │   ├── routes.ts             # 航路草稿 (WGS84 真值 + localStorage)
+    │   └── navigation.ts         # 规划任务/候选/风险格/采纳
     │
-    ├── types/
-    │   └── index.ts            # TypeScript 类型定义 (含 RouteDraft / RoutePointRole)
+    ├── types/ (4)                # index / navigation / routePlanning / s57Waterways
     │
-    ├── utils/
-    │   ├── mapExtent.ts        # 地图范围解析
-    │   ├── mapExtent.test.ts   # 工具函数测试
-    │   ├── mapRoute.ts         # 航路纯 GIS 逻辑 (校验/解析/投影/样式/方向角色)
-    │   ├── mapRoute.test.ts    # 航路工具函数测试
-    │   └── s57ObjectNames.ts   # S-57 对象名称映射
+    ├── utils/ (21)               # 纯函数与基础设施
+    │   ├── mapExtent / mapRoute / mapMeasure / mapIce / mapEnvironment
+    │   ├── mapLayerBatch / mapRenderScheduler / mapRenderBundles / mapTileMerger
+    │   ├── mapS57Waterway / routePlanning / geodesicDistance / s57LayerLegend
+    │   ├── s57ObjectNames / basemaps / basemapLayers / basemapHealth
+    │   └── tileLoader / tileCache / tileRequestQueue / tileDiagnostics
     │
-    └── views/
-        ├── LoginView.vue       # 登录页
-        ├── MapWorkspaceView.vue # 全屏地图工作区
-        ├── ProjectsView.vue    # 项目门户
+    └── views/ (11)
+        ├── LoginView.vue         # 登录页
+        ├── MapWorkspaceView.vue  # 全屏地图工作区
+        ├── ProjectsView.vue      # 项目门户
         │
-        └── admin/              # 管理后台
-            ├── AdminDashboardView.vue     # 仪表盘
-            ├── UserManagementView.vue     # 用户管理
-            ├── ProjectManagementView.vue  # 项目管理
-            ├── DataCatalogView.vue        # 数据目录
-            ├── BatchImportView.vue        # S-57 批量导入
-            ├── DatasetCleanupView.vue     # 数据集清理
-            ├── ImportJobsView.vue         # 导入任务
-            └── SystemManagementView.vue   # 系统配置
+        └── admin/ (8)            # 仪表盘/用户/项目/数据目录/批量导入/
+                                  # 数据清理/导入任务/图层与系统
 ```
 
 ### 3.2 技术架构
@@ -298,9 +340,10 @@ frontend/
 ```
 Vue 3 (Composition API + <script setup>)
 ├── Pinia (状态管理)
-│   ├── useAuthStore    → 登录/引导/登出 + 令牌管理
+│   ├── useAuthStore     → 登录/引导/登出 + 令牌管理
 │   ├── useProjectsStore → 项目列表分页加载
-│   └── useRoutesStore  → 航路草稿 (WGS84 真值 + localStorage 持久化)
+│   ├── useRoutesStore   → 航路草稿 (WGS84 真值 + localStorage 持久化)
+│   └── useNavigationStore → 规划任务/候选/风险格/采纳与重评
 ├── Vue Router (路由 + 导航守卫)
 │   ├── beforeEach: 认证检查 + 角色检查
 │   └── Lazy loading: 所有路由组件动态 import
@@ -359,20 +402,44 @@ Vue 3 (Composition API + <script setup>)
     └─────────────┘
 ```
 
-- **postgres**: postgis/postgis:16-3.4
-- **geoserver**: docker.osgeo.org/geoserver:2.26.2
-- **backend**: FastAPI + Uvicorn (from `backend/Dockerfile`)
-- **worker**: 同 backend 镜像, 运行 `app.worker.main`
-- **web**: Nginx 提供前端静态文件 + 反向代理
+- **postgres**: postgis/postgis:16-3.4；`shm_size: 1gb`（航道大几何并发查询避免 `/dev/shm` 64MB 报 DiskFull）
+- **geoserver**: docker.osgeo.org/geoserver:2.25.3；JVM 2–4GB + G1GC
+- **backend**: FastAPI + Uvicorn（`backend/Dockerfile`），启动时 `alembic upgrade head`
+- **worker**: 同 backend 镜像，运行 `app.worker.main`；串行处理批次导入、单数据集导入、智能规划任务
+- **web**: Nginx 提供前端静态文件 + 反向代理（`^~ /api/` 优先于静态图片正则）
 
 ### 4.2 网络
-- `public`: web 对外暴露
-- `internal`: 内部服务间通信
+- `public`: web 对外暴露（postgres/geoserver 端口也映射到宿主机便于调试）
+- `internal`: 内部服务间通信（backend/worker 不对外）
 
-### 4.3 卷
+### 4.3 卷与数据挂载
 - `postgres-data`: 数据库持久化
 - `geoserver-data`: GeoServer 数据
-- `shared-storage`: 文件存储 (上传/导入)
+- `shared-storage`: 共享文件存储，backend/worker 读写；挂载到 `/data/storage`
+  - `<STORAGE_ROOT>/navigation/plans`: 规划风险栅格 gzip
+  - `<STORAGE_ROOT>/navigation/waterways`: 航道快照 `waterways.geojson` + `manifest.json`
+- `${ICE_DATA_HOST_PATH:-../data/ice}:/data/ice:ro`: 冰情 NetCDF（backend/worker）
+- `${NAVIGATION_DATA_HOST_PATH:-../data/navigation}:/data/navigation:ro`: GEBCO/CARRA2/TOPAZ5/WAM/冰情研究数据（backend/worker）
+- `../data/s57-basemaps:/data/s57-basemaps:ro`: 全球海图底图源文件
+
+### 4.4 关键运行参数
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ICE_ENABLED` | `true` | 冰情 API/瓦片总开关（404 `ICE_DISABLED`） |
+| `ICE_DATA_ROOT` | `/data/ice` | 冰情 NetCDF 目录 |
+| `ICE_MAX_CONCURRENT_GRID_LOADS` | `2` | 不同日期冷网格并发装载上限 |
+| `NAVIGATION_ENABLED` | `true` | 导航环境/规划总开关 |
+| `NAVIGATION_DATA_ROOT` | `/data/navigation` | 环境数据根目录 + `navigation_manifest.json` |
+| `NAVIGATION_DEFAULT_DATA_POLICY` | `real_only` | 默认数据策略（`real_only` / 合成研究） |
+| `PLANNER_RESULT_ROOT` | `/data/storage/navigation/plans` | 风险栅格持久目录 |
+| `S57_WATERWAY_SNAPSHOT_ROOT` | `/data/storage/navigation/waterways` | 航道成果目录 |
+| `S57_WATERWAY_SNAPSHOT_MAX_FEATURES` | `20000` | 单次保存最大要素数 |
+| `S57_WATERWAY_PREVIEW_MAX_FEATURES` | `2000` | 地图专题总览单次上限 |
+| `PLANNER_MAX_CELLS` | `20000` | 规划网格单元上限 |
+| `PLANNER_MAX_CANDIDATES` | `20` | 候选航线上限 |
+| `PLANNER_TIMEOUT_SECONDS` | `300` | 单任务超时 |
+| `PLANNER_MAX_CONCURRENT_JOBS` | `1` | worker 并发规划数（串行） |
 
 ---
 
@@ -705,7 +772,7 @@ loadSelectedDatasets (批量确认后)
 
 ---
 
-## 5.12 测量与地图内浮层 (会话 #24)
+## 5.12 测量与地图内浮层 (会话 #24；#32 椭球测距)
 
 ### 测量真值与投影生命周期
 
@@ -728,7 +795,7 @@ loadSelectedDatasets (批量确认后)
 | 解析闭式对照 | 80°N 平行圈 720 顶点 → 3,874,475 vs 真值 3,874,523（**0.001%**） |
 
 - 边按**大圆**处理，与 `getDistance`/`getLength` 的大圆语义一致；OL 的实现实际是 (λ, sinφ) 线性边（与其文档所称「大圆」不符）。
-- **与椭球测地线的差异**：球面模型比 WGS84 椭球测地线**偏短约 0.28%–0.42%**（高纬更大，中纬 45°N 约 −0.28%）。界面按「近似地表距离」表述，不宣称航海认证精度。
+- **距离模型（会话 #32 起）**：测距工具的折线距离改用 **WGS84 椭球测地线**（`geodesicDistance.ts` + `geographiclib-geodesic`，Karney 算法）逐段求和，并在结果文本标注「WGS84 椭球测地线」；`MeasureDraft` 的 WGS84 真值、投影重建与面积算法不变。面积仍用球面 Van Oosterom–Strackee；航路面板的航段里程（`mapRoute.ts`）仍用球面模型，二者约有 0.3%–0.6% 差异，属有意的范围控制。界面按「近似地表距离 / 椭球测地线」表述，不宣称航海认证精度。
 - 单位：距离 **km + NM（1 NM = 1852 m）**，短距离兼显 m；面积恒用 **m² / km²**（面积不换算海里）。
 
 ### 航段计算（唯一口径）
@@ -815,31 +882,27 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
 
 ## 6. 文件清单
 
-### 后端 (54 files，会话 #26 按磁盘实际清点修正)
-- Python 源文件: `app/api/` (11), `app/core/` (6), `app/services/` (10), `app/worker/` (2), 根文件 (4) = 33
-- 迁移文件: `migrations/` (5)
-- 测试文件: `tests/` (11)
-- 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
+> 2026-11-11 按磁盘实际清点（不含 `__pycache__` / `node_modules` / `.venv`）。
 
-### 前端 (44 source files + 20 test files，会话 #26 按磁盘实际清点修正)
-- Vue 组件: `src/views/` (11，含 `admin/` 8), `src/components/` (6), `src/layouts/` (1), `src/App.vue` (1) = 19
-- TypeScript 模块: `src/api/` (3), `src/stores/` (3), `src/types/` (2), `src/utils/` (12), `src/composables/` (2), `src/router/` (1), `src/main.ts` + `src/env.d.ts` (2) = 25
-- 测试: `*.test.ts` (20，与源码同目录，vitest + jsdom)
-- 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (8)
+### 后端（`backend/`，91 个 app Python 文件 + 34 个测试 Python 文件）
+- `app/api/`: 18（含 `__init__.py`）
+- `app/core/`: 6
+- `app/services/`: 17
+- `app/navigation/`: 43（contracts/environment/providers/vessel/risk/planner/tasks/resources）
+- `app/worker/`: 2
+- `app/` 根文件: 5（`main.py`、`models.py`、`schemas.py`、`cli.py`、`__init__.py`）
+- 迁移: `migrations/versions/` 6 个脚本（0001–0006）
+- 测试: 32 个 `test_*.py` + `conftest.py` + `navigation_fixtures.py`
+- 配置: `pyproject.toml`、`alembic.ini`、`.env.example`、`.dockerignore`、`Dockerfile`
 
-### 后端 (52 files)
-- Python 源文件: `app/api/` (10), `app/core/` (6), `app/services/` (9), `app/worker/` (2), 根文件 (4) = 31
-- 迁移文件: `migrations/` (5)
-- 测试文件: `tests/` (9)
-- 配置文件: `pyproject.toml`, `alembic.ini`, `.env.example`, `.dockerignore`, `Dockerfile` (5)
+### 前端（`frontend/src/`，65 个源码文件 + 41 个测试文件）
+- Vue: `views/` 11（含 `admin/` 8）、`components/` 17、`layouts/` 1、`App.vue` 1 = 30
+- TypeScript: `api/` 5、`stores/` 4、`types/` 4、`utils/` 21、`composables/` 6、`router/` 1、`main.ts` + `env.d.ts` = 43
+- 测试: 41 个 `*.test.ts`（与源码同目录，vitest + jsdom）
+- 配置: `package.json`、`package-lock.json`、`vite.config.ts`、`tsconfig.json` / `tsconfig.app.json` / `tsconfig.node.json`、`index.html`、`Dockerfile`、`.dockerignore`
 
-### 前端 (38 source files + 14 test files，会话 #24 按磁盘实际清点修正)
-- Vue 组件: `src/views/` (11，含 `admin/` 8), `src/components/` (3), `src/layouts/` (1), `src/App.vue` (1) = 16
-- TypeScript 模块: `src/api/` (2), `src/stores/` (3), `src/types/` (2), `src/utils/` (11), `src/composables/` (1), `src/router/` (1), `src/main.ts` + `src/env.d.ts` (2) = 22
-- 测试: `*.test.ts` (14，与源码同目录，vitest + jsdom)
-- 配置文件: `package.json`, `vite.config.ts`, `tsconfig.json` (x3), `index.html`, `Dockerfile`, `.dockerignore` (8)
-
----
+### 部署（`deploy/`）
+- `compose.yml`（5 服务）、`.env.example`、`nginx/default.conf`
 
 ## 7. 文档索引
 
@@ -857,14 +920,33 @@ OpenLayers 独立 TileLayer(密集度 zIndex 60 / 厚度 62,调试对齐 120)
 | `docs/10-work-log.md` | 工作日志 |
 | `docs/11-work-summary.md` | 工作总结 |
 | `docs/12-user-manual.md` | **用户操作使用手册** ⭐ |
-| `docs/plans/` | 优化方案文档 (global enc 导入 / 批量加载性能优化) |
+| `docs/13-presentation-slides.md` | 汇报材料 |
+| `docs/14-s57-version-update-and-route-drawing-research.md` | S-57 版本更新与航路绘制研究 |
+| `docs/15-Polar-GIS 集成 PolarOptionNav-System-V3 全功能开发任务书.md` | 导航集成总任务书 |
+| `docs/plans/v3-integration-audit.md` | V3 集成审计（基线/差距矩阵/迁移计划） |
+| `docs/plans/v3-integration-final-report.md` | V3 集成最终交付报告 |
+| `docs/plans/Polar-GIS 地图瓦片加载稳定性修复与 S-57 航道专题信息开发任务书.md` | 会话 #31 任务书 |
+| `docs/plans/Polar-GIS 测距精度优化、S-57 航道数据持久保存及海图图例开发任务.md` | 会话 #32 任务书 |
+| `docs/plans/` 其余文件 | 历史计划/提示词（冻结原文，含冰情、批量加载、航路绘制等） |
 
 ---
 
 ## 8. 导航集成（PolarOptionNav-System-V3）— 批次 A 基座
 
-> 2026-10-29 起实施。详细审计见 `docs/plans/v3-integration-audit.md`，实施计划见
-> `C:\Users\liyang\.claude\plans\docs-15-polar-gis-polaroptionnav-system-joyful-toast.md`（计划文件不入库）。
+> 2026-10-29 起实施。详细审计见 `docs/plans/v3-integration-audit.md`；实施计划文件不入库。
+
+### 8.0 2026-10-10 后计划、任务与实现索引
+
+| 日期 | 计划/任务来源 | 实际实现（会话） | 架构章节 | 状态 |
+|------|---------------|------------------|----------|------|
+| 2026-10-10 | 用户要求：术语修正 + 参考工程清理 | 会话 #27 | 5.14 / 10 日志 | ✅ 已完成并推送 |
+| 2026-10-29–30 | `docs/15` 任务书 + `v3-integration-audit.md` + `v3-integration-final-report.md` | 会话 #28（A–E 批次）、#29、#30 | 8.1–8.10 | ✅ 已完成；真实环境数据未验证 |
+| 2026-11-04 | `docs/plans/Polar-GIS 地图瓦片加载稳定性修复与 S-57 航道专题信息开发任务书.md` | 会话 #31 + 当日追加修复 | 8.11 | ✅ 已完成；GWC 3413 WMTS 未验证 |
+| 2026-11-04 | `docs/plans/Polar-GIS 测距精度优化、S-57 航道数据持久保存及海图图例开发任务.md` | 会话 #32 + 当日追加优化 | 8.12 | ✅ 已完成；完整 Compose 端到端建议补验 |
+| 2026-11-11 | 用户要求：核对 10.10 后计划并补全文档 09–12 | 会话 #33（文档维护） | 全文 | ✅ 本次更新 |
+
+> 当前代码基线：`master` @ `ab57c2a`（2026-11-04）。上表之后无新的业务代码提交；
+> 文档 09–12 于 2026-11-11 按真实代码与部署配置重新核对。
 
 ### 8.1 代码组织
 
@@ -881,11 +963,16 @@ backend/app/navigation/
 │   ├── quality.py              # AvailabilityStatus + DataQuality(real/synthetic/missing/unknown)
 │   ├── evidence.py             # 参数来源证据
 │   └── status.py               # PASS/FAIL/UNKNOWN（禁止布尔化）
+├── environment/                # 环境源服务 + providers（GEBCO/CARRA2/TOPAZ5/WAM/ICE）
+├── vessel/                     # 雪龙2静态资料 + 吃水安全
+├── risk/                       # legacy_v1 / real_v1 风险模型
+├── planner/                    # 25km 静态网格、D* Lite、DNSGA-III、能耗模型
+├── tasks/                      # 规划任务状态机 + worker 处理器
 ├── resources/
 │   ├── vessels/xuelong2.json   # 雪龙2静态资料（来源见文件 sources）
 │   ├── grids/northeast_passage_25km_static.npz  # 25km NEP 静态网格（488KB）
 │   └── risk/weights_v1.json    # legacy_v1 权重/公式与 real_v1 缺测策略
-└── (environment/vessel/risk/planner 由后续批次加入)
+└── netcdf.py / schemas.py      # NetCDF 辅助与请求/响应模型
 ```
 
 ### 8.2 配置

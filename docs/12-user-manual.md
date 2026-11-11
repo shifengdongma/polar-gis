@@ -30,6 +30,7 @@
 7. [API 参考](#7-api-参考)
 8. [常见问题](#8-常见问题)
 9. [附录](#9-附录)
+10. [智能航行规划（PolarOptionNav 集成）](#10-智能航行规划polaroptionnav-集成)
 
 ---
 
@@ -981,6 +982,8 @@ S-57 是国际海道测量组织（IHO）制定的数字海道测量数据传输
 - ✅ 支持增量更新链（`.000` 基础 → `.001` → `.002` ...）
 - ✅ 支持版本回滚
 - ✅ 支持批量导入（ZIP/目录）
+- ✅ 支持航道专题查询、地图专题总览与 GeoJSON 成果保存/下载（10.9）
+- ✅ 图层列表内联图例（优先 GeoServer GetLegendGraphic，失败时按 S-57 预设降级）
 - ❌ 不是经认证的 ECDIS（不可替代法定海图设备）
 
 **S-57 更新链规则**：
@@ -1087,7 +1090,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ### 7.5 管理 API（仅供管理员）
 
-管理 API 涵盖用户管理、项目管理（完整 CRUD）、数据集管理、上传管理、S-57 批量导入、导入任务、图层管理、样式管理、底图管理、审计日志等共约 60 个端点。完整清单请参阅 Swagger 文档。
+管理 API 涵盖用户管理、项目管理（完整 CRUD）、数据集管理、上传管理、S-57 批量导入、导入任务、图层管理、样式管理、底图管理、审计日志等。2026-11-11 代码清点约 **115 个路由装饰器**（含冰情、导航环境/规划/船舶、S-57 航道专题）。完整清单请参阅 Swagger 文档。
 
 ### 7.6 演示数据 API
 
@@ -1102,6 +1105,60 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 |------|------|------|
 | `GET` | `/api/v1/health/live` | 存活检查（仅进程状态） |
 | `GET` | `/api/v1/health/ready` | 就绪检查（数据库 + 存储） |
+
+### 7.8 冰情 API
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| `GET` | `/api/v1/ice/info` | 可用日期、字段、标签 | 无（与地图瓦片同边界） |
+| `GET` | `/api/v1/ice/value` | 指定经纬度/日期的原始网格值；无数据返回 `{"value": null}` | 无 |
+| `GET` | `/api/v1/ice/alignment` | 调试用网格对齐 GeoJSON | 无 |
+| `GET` | `/api/v1/ice/{field}/{projection}/tile/{z}/{x}/{y}.png` | 密集度/厚度 XYZ 瓦片（`field=concentration` / `thickness`，`projection=3413` / `3857`） | 无 |
+
+失败语义：未知字段/投影/日期/z 越界返回 404 `ICE_*`；`ICE_ENABLED=false` 返回 404 `ICE_DISABLED`；`/value` 的一切不可用统一 200 `null`。
+
+### 7.9 导航环境与智能规划 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/navigation/environment/sources` | 五类环境源状态/质量/时间 |
+| `GET` | `/api/v1/navigation/environment/times` | 可选时次 |
+| `POST` | `/api/v1/navigation/environment/query` | 单点五字段环境采样 |
+| `POST` | `/api/v1/navigation/environment/batch-query` | 批量采样（≤500 点） |
+| `POST` | `/api/v1/navigation/environment/field` | bbox+time 矢量场（风/流/浪，≤900 点） |
+| `GET` | `/api/v1/navigation/environment/tiles/bathymetry/{crs}/{z}/{x}/{y}.png` | 水深 XYZ 瓦片 |
+| `GET` | `/api/v1/navigation/vessels` | 船舶列表（雪龙2） |
+| `GET` | `/api/v1/navigation/vessels/{id}` | 船舶静态资料（吃水/UKC/功率/冰级） |
+| `GET` | `/api/v1/navigation/vessels/{id}/depth-safety?depth_m=` | 吃水安全校核 |
+| `POST` | `/api/v1/navigation/plans` | 创建规划任务（202） |
+| `GET` | `/api/v1/navigation/plans` | 历史任务分页 |
+| `GET` | `/api/v1/navigation/plans/{planId}` | 任务状态/进度/错误 |
+| `PATCH` | `/api/v1/navigation/plans/{planId}` | 重命名任务 |
+| `DELETE` | `/api/v1/navigation/plans/{planId}` | 删除终态任务及文件 |
+| `GET` | `/api/v1/navigation/plans/{planId}/routes` | 候选航线列表 |
+| `GET` | `/api/v1/navigation/plans/{planId}/routes/{routeId}` | 候选航线详情 |
+| `GET` | `/api/v1/navigation/plans/{planId}/risk-grid` | 风险格 GeoJSON（bbox/stride） |
+| `GET` | `/api/v1/navigation/plans/{planId}/risk-grid/{cellId}` | 单格风险/环境/质量/阻断原因 |
+| `POST` | `/api/v1/navigation/plans/{planId}/cancel` | 取消 queued/running 任务 |
+| `POST` | `/api/v1/navigation/plans/{planId}/evaluate-route` | 按当前航线重新评估 |
+| `POST` | `/api/v1/navigation/risk/evaluate` | `risk_only` 区域风险任务（202） |
+
+> 规划接口需要认证用户；取消仅任务创建者或管理员。任务由独立 worker 串行执行。
+
+### 7.10 S-57 航道专题与快照 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/catalog` | 航道类别目录与计数 |
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/search` | 当前项目版本跨图层搜索（分页） |
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/preview` | 地图专题总览要素（不落盘，默认 ≤2000） |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/{featureId}` | 航道要素详情（原始属性 + 中文标签） |
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 提取并保存 GeoJSON 成果（201） |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 已保存成果列表（含 `stale`） |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}` | 成果 manifest |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}/download` | 下载 `application/geo+json` |
+
+> 航道接口只读项目当前有效版本的已发布、可查询图层；快照目录默认 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/`。
 
 ---
 
@@ -1214,7 +1271,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ### 9.3 数据库表结构
 
-系统使用 16 张核心数据表：
+系统使用 18 张核心数据表：
 
 | 架构 | 表名 | 用途 |
 |------|------|------|
@@ -1234,7 +1291,12 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | public | `s57_import_batch_files` | 批量导入文件 |
 | public | `s57_import_batch_items` | 批量导入项目 |
 | public | `audit_logs` | 审计日志 |
+| public | `planning_runs` | 智能规划任务（状态/进度/船舶/数据策略/合成覆盖/标题） |
+| public | `planning_routes` | 候选航线（坐标 JSON/指标/风险快照） |
 | geo | `<导入数据表>` | 空间数据存储（由系统自动创建） |
+
+> 规划风险栅格 gzip 与航道快照 GeoJSON 不存表，保存在共享存储卷
+> `<STORAGE_ROOT>/navigation/plans|waterways`。数据库迁移版本为 `0001`–`0006`。
 
 ### 9.4 错误代码速查
 
@@ -1253,6 +1315,19 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `IMPORT_JOB_CONFLICT` | 数据集已有进行中的导入任务 |
 | `IMPORT_VALIDATION_FAILED` | 导入文件验证失败 |
 | `STORAGE_QUOTA_EXCEEDED` | 超过存储配额 |
+| `ICE_DISABLED` | 冰情功能已通过 `ICE_ENABLED=false` 关闭 |
+| `S57_WATERWAY_QUERY_TIMEOUT` | 航道查询超过 `S57_WATERWAY_QUERY_TIMEOUT_MS` |
+| `S57_WATERWAY_DB_UNAVAILABLE` | 航道查询数据库不可用（含共享内存不足） |
+| `S57_WATERWAY_FEATURE_NOT_FOUND` | 航道要素不存在或不属于当前项目版本 |
+| `S57_WATERWAY_SNAPSHOT_EMPTY` | 保存成果时没有匹配要素 |
+| `S57_WATERWAY_SNAPSHOT_NOT_FOUND` | 成果不存在 |
+| `ENVIRONMENT_DATA_MISSING` | `real_only` 下沿途环境数据缺失 |
+| `NO_FEASIBLE_ROUTE` | 规划无可行航线（极端合成值/阻断） |
+| `PLANNER_TIMEOUT` | 规划任务超时 |
+| `PLANNER_LIMIT_EXCEEDED` | 规划规模超过配置上限 |
+| `PLANNER_FAILED` | 规划算法内部失败 |
+| `PLAN_NOT_CANCELLABLE` | 任务已进入终态，无法取消 |
+| `PLAN_NOT_EDITABLE` | 运行中任务不可重命名/删除 |
 
 ### 9.5 快捷键与操作提示
 
@@ -1286,6 +1361,33 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `DEMO_DATA_ENABLED` | `false` | 是否启用演示数据 |
 | `QUERY_RESULT_LIMIT` | `1000` | 查询导出最大行数 |
 | `WORKER_POLL_SECONDS` | `2.0` | Worker 轮询间隔（秒） |
+| `ICE_ENABLED` | `true` | 冰情 API/瓦片开关 |
+| `ICE_DATA_ROOT` | `/data/ice` | 冰情 NetCDF 目录 |
+| `ICE_TILE_CACHE_ENTRIES` | `256` | 冰情瓦片 LRU 容量 |
+| `ICE_TILE_MAX_ZOOM` | `10` | 冰情瓦片最大层级 |
+| `ICE_MAX_CONCURRENT_GRID_LOADS` | `2` | 不同日期冷网格并发装载上限 |
+| `S57_WATERWAY_MAX_PAGE_SIZE` | `50` | 航道搜索单页上限 |
+| `S57_WATERWAY_QUERY_TIMEOUT_MS` | `10000` | 航道查询超时 |
+| `S57_WATERWAY_SNAPSHOT_MAX_FEATURES` | `20000` | 单次成果保存要素上限 |
+| `S57_WATERWAY_PREVIEW_MAX_FEATURES` | `2000` | 地图专题总览上限 |
+| `S57_WATERWAY_SNAPSHOT_BATCH_SIZE` | `500` | 成果导出批次大小 |
+| `S57_WATERWAY_SNAPSHOT_ROOT` | `<STORAGE_ROOT>/navigation/waterways` | 成果目录 |
+| `NAVIGATION_ENABLED` | `true` | 导航环境/规划开关 |
+| `NAVIGATION_DATA_ROOT` | `/data/navigation` | 环境数据根目录 |
+| `NAVIGATION_ICE_DATA_ROOT` | 复用 `ICE_DATA_ROOT` | 导航冰情数据目录 |
+| `NAVIGATION_ICE_BACKEND` | `auto` | `polar_gis` / `nextsim` / `auto` |
+| `NAVIGATION_DEFAULT_DATA_POLICY` | `real_only` | 默认数据策略 |
+| `NAVIGATION_ALLOW_FUTURE_MATCH` | `false` | 是否允许未来时次匹配 |
+| `PLANNER_RESULT_ROOT` | `storage/navigation/plans`（Compose 为 `/data/storage/navigation/plans`） | 风险栅格目录 |
+| `PLANNER_MAX_CELLS` | `20000` | 规划网格单元上限 |
+| `PLANNER_MAX_CANDIDATES` | `20` | 候选航线上限 |
+| `PLANNER_MAX_GENERATIONS` | `100` | 最大代数 |
+| `PLANNER_POPULATION_SIZE` | `36` | 种群规模 |
+| `PLANNER_TIMEOUT_SECONDS` | `300` | 任务超时 |
+| `PLANNER_MAX_SEARCH_EXPANSIONS` | `200000` | D* Lite 搜索上限 |
+| `PLANNER_MAX_CONCURRENT_JOBS` | `1` | worker 并发规划数 |
+| `PLANNER_MAX_QUEUED_RUNS` | `10` | 排队任务上限 |
+| `PLANNER_MAX_RETAINED_RUNS` | `100` | 历史任务保留上限 |
 
 #### 前端环境变量（`frontend/.env`）
 
@@ -1472,7 +1574,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ---
 
-> 📝 **文档版本**：v1.1  
-> 📅 **更新日期**：2026-11-04  
-> 📋 **适用版本**：Polar-GIS 一期  
+> 📝 **文档版本**：v1.2  
+> 📅 **更新日期**：2026-11-11  
+> 📋 **适用版本**：Polar-GIS 一期（`master` @ `ab57c2a`）  
 > ⚠️ **法律声明**：本平台为非认证的地理信息展示系统，不可替代经认证的航海设备或官方电子海图。

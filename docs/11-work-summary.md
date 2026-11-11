@@ -1,7 +1,31 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-10-10
+> 最后更新: 2026-11-11
+
+---
+
+## 会话 #33 — 10.10 后计划核对与文档 09–12 补全（2026-11-11）
+
+### 修改了什么
+
+- **`docs/09-system-architecture.md`**：按当前 `master` @ `ab57c2a` 刷新主架构事实——技术栈 GeoServer 2.25.3、netCDF4/numpy/Pillow/pyproj、GeographicLib、D* Lite + DNSGA-III；后端目录树补 `navigation/`、`ice.py`、`s57_basemap.py`、`s57_waterway_catalog/waterways/export.py` 与 7 个新 API 模块；前端目录树补 17 个组件、6 个 composable、4 个 store、21 个 utils；API 总览更新为 115 个路由；数据模型更新为 18 张表（新增 `planning_runs`/`planning_routes`）；部署章节补 `shm_size`、GeoServer 2.25.3、共享卷子目录、数据挂载与关键运行参数；5.12 测量改为 WGS84 椭球测距口径；文件清单按磁盘清点重写；新增 8.0「10.10 后计划/任务/实现索引」。
+- **`docs/10-work-log.md`**：更新头部日期；新增会话 #33，记录 10.10 后 20 个提交、5 份计划/任务书与实现的逐项对照、发现的 4 类文档缺口、修改清单与核对证据。
+- **`docs/11-work-summary.md`**：更新头部日期；新增本会话总结。
+- **`docs/12-user-manual.md`**：API 参考新增冰情、导航环境、智能规划、S-57 航道专题/快照接口；数据库表清单 16→18；新增航道/规划错误码；环境变量表补 `ICE_*`、`NAVIGATION_*`、`PLANNER_*`、`S57_WATERWAY_*`；页脚版本更新为 v1.2 / 2026-11-11。
+
+### 达到的效果
+
+- **架构文档与真实系统一致**：目录、模块、数据表、API、部署参数均可直接对照 `backend/`、`frontend/`、`deploy/compose.yml` 与 `models.py`，不再出现“文档写 16 表/60 端点、实际 18 表/115 路由”的偏差。
+- **10.10 后计划可追溯**：8.0 索引与日志 #33 把 5 份计划/任务书映射到会话 #27–#32 与具体架构章节，并明确标注已完成/未验证边界（真实环境数据、GWC 3413 WMTS、完整 Compose 端到端）。
+- **用户手册补齐新能力**：冰情、环境叠加、智能规划、航道专题/快照、内联图例、椭球测距均有操作说明与对应 API/配置参考。
+- **零代码影响**：仅文档变更；历史会话记录与 `docs/plans/` 冻结原文均未改写。
+
+### 验证结果
+
+- 代码清点：`backend/app` 91 个 `.py`（api 18/core 6/services 17/navigation 43/worker 2/根 5）；`backend/tests` 32 个 `test_*.py`；迁移 0001–0006；`frontend/src` 65 个源码 + 41 个测试；`models.py` 18 张表；115 个路由装饰器。
+- 部署核对：postgres `shm_size: 1gb`、GeoServer `2.25.3`、ICE/NAVIGATION/PLANNER/S57_WATERWAY 挂载与默认值均与 `deploy/compose.yml` 一致。
+- 本次未运行自动化测试（无代码变更）；文档交叉引用与版本日期已检查。
 
 ---
 
