@@ -1,7 +1,32 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-11-16
+> 最后更新: 2026-11-17
+
+---
+
+## 会话 #38 — 航道预览 422 与属性表导出修复（2026-11-17）
+
+### 修改了什么
+
+- 修复 `/s57-waterways/preview` 422：`sourceCells: null` 现在被 schema 接受为“全部 Cell”，不再报 `list_type`。
+- 属性表导出：
+  - 新增 `LAYER_EXPORT_MAX_FEATURES=100000`，不再受旧 1,000 行限制；
+  - 后端先 COUNT 检查，超限给出明确 422；
+  - 使用数据库流式游标逐行写临时 CSV/GeoJSON 文件，返回 FileResponse 并后台清理，避免一次性载入内存；
+  - GeoJSON properties 通过 `_json_safe()` 处理 `Decimal`/日期等真实属性值，修复 500；
+  - `ExportRequest.fields` 允许 null。
+
+### 达到的效果
+
+- 航道“在地图显示选中类别”恢复正常：原始请求返回 200，matchedTotal 1690、returnedCount 1626。
+- 2,446 行 DEPARE 可导出 CSV（3.2MB）和 GeoJSON（4.0MB，2,446 features）；小图层 OBSTRN 同样可导出。
+- 临时文件导出后自动清理。
+
+### 验证结果
+
+- 原始 preview payload 200；DEPARE/OBSTRN CSV+GeoJSON 全部 200。
+- 后端定向测试通过；ruff 通过；新增 schema nullable 回归测试。
 
 ---
 

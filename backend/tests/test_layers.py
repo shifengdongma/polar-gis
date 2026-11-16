@@ -4,6 +4,24 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models import Dataset, DatasetVersion, Layer, LayerStatus, VersionStatus
+from app.schemas import ExportRequest, S57WaterwayPreviewRequest
+
+
+def test_optional_filter_lists_accept_null_payloads() -> None:
+    """The frontend sends null for "all"/"unset"; this must not 422."""
+    export = ExportRequest.model_validate(
+        {"format": "csv", "filters": [], "fields": None}
+    )
+    assert export.fields is None
+    preview = S57WaterwayPreviewRequest.model_validate(
+        {
+            "objectClasses": ["FAIRWY"],
+            "sourceCells": None,
+            "classCursors": None,
+        }
+    )
+    assert preview.source_cells is None
+    assert preview.class_cursors is None
 
 
 def test_layer_catalog_only_lists_current_dataset_version(

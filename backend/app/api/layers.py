@@ -1,14 +1,17 @@
 import csv
-import io
 import json
 import re
+import tempfile
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.api.deps import get_current_user, require_admin
 from app.core.config import get_settings
@@ -25,7 +28,7 @@ from app.schemas import (
 )
 from app.services.audit import write_audit
 from app.services.s57_styles import preset_for_object_class
-from app.services.s57_waterways import object_class_for_layer
+from app.services.s57_waterways import _json_safe, object_class_for_layer
 
 public_router = APIRouter(prefix="/layers", tags=["layers"])
 admin_router = APIRouter(prefix="/admin/layers", tags=["admin-layers"])
@@ -316,6 +319,10 @@ def search_features(
     }
 
 
+def _remove_export_file(path: Path) -> None:
+    path.unlink(missing_ok=True)
+
+
 @public_router.post("/{layer_id}/exports")
 def export_features(
     layer_id: UUID,
@@ -323,59 +330,96 @@ def export_features(
     request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> Response:
+) -> FileResponse:
     layer = layer_or_404(db, layer_id, available_only=True)
     if not layer.exportable:
         raise AppError("LAYER_EXPORT_DISABLED", "当前图层不允许导出", 403)
     table = safe_source_table(layer)
     fields = allowed_fields(layer, payload.fields)
     where_sql, params = build_where(layer, payload)
+    total = db.scalar(
+        text(f"SELECT COUNT(*) FROM {table}{where_sql}"), params
+    ) or 0
+    max_features = max(1, settings.layer_export_max_features)
+    if total > max_features:
+        raise AppError(
+            "EXPORT_LIMIT_EXCEEDED",
+            f"导出结果超过允许数量（{max_features}），请缩小筛选范围",
+            422,
+        )
+
     field_sql = ", ".join(selected_column(field) for field in fields)
     prefix = f"{field_sql}, " if field_sql else ""
-    geom_expr = "ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry" if _layer_has_geometry(layer) else "NULL AS geometry"
-    params["limit"] = settings.query_result_limit + 1
-    rows = list(
-        db.execute(
+    geom_expr = (
+        "ST_AsGeoJSON(ST_Transform(geom,4326)) AS geometry"
+        if _layer_has_geometry(layer)
+        else "NULL AS geometry"
+    )
+    settings.temp_root.mkdir(parents=True, exist_ok=True)
+    suffix = ".csv" if payload.format == "csv" else ".geojson"
+    temp_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="",
+        suffix=suffix,
+        delete=False,
+        dir=settings.temp_root,
+    )
+    temp_path = Path(temp_file.name)
+    try:
+        result = db.execute(
             text(
                 f"SELECT {prefix}{geom_expr} "
-                f"FROM {table}{where_sql} LIMIT :limit"
-            ),
+                f"FROM {table}{where_sql}"
+            ).execution_options(stream_results=True),
             params,
-        ).mappings()
-    )
-    if len(rows) > settings.query_result_limit:
-        raise AppError("EXPORT_LIMIT_EXCEEDED", "导出结果超过允许数量", 422)
-    write_audit(
-        db,
-        "layer.export",
-        "layer",
-        "succeeded",
-        user=user,
-        resource_id=str(layer.id),
-        request_id=request.state.request_id,
-        changes={"format": payload.format, "count": len(rows)},
-    )
-    db.commit()
-    if payload.format == "csv":
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=[*fields, "geometry"])
-        writer.writeheader()
-        writer.writerows(dict(row) for row in rows)
-        return Response(
-            output.getvalue(),
-            media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{layer.code}.csv"'},
         )
-    features = [
-        {
-            "type": "Feature",
-            "geometry": json.loads(row["geometry"]) if row["geometry"] else None,
-            "properties": {field: row[field] for field in fields},
-        }
-        for row in rows
-    ]
-    return Response(
-        json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False),
-        media_type="application/geo+json",
-        headers={"Content-Disposition": f'attachment; filename="{layer.code}.geojson"'},
-    )
+        if payload.format == "csv":
+            writer = csv.DictWriter(temp_file, fieldnames=[*fields, "geometry"])
+            writer.writeheader()
+            for row in result.mappings():
+                writer.writerow(dict(row))
+        else:
+            temp_file.write('{"type":"FeatureCollection","features":[')
+            first = True
+            for row in result.mappings():
+                if not first:
+                    temp_file.write(",")
+                first = False
+                feature = {
+                    "type": "Feature",
+                    "geometry": json.loads(row["geometry"]) if row["geometry"] else None,
+                    "properties": _json_safe(
+                        {field: row[field] for field in fields}
+                    ),
+                }
+                temp_file.write(
+                    json.dumps(feature, ensure_ascii=False, separators=(",", ":"))
+                )
+            temp_file.write("]}")
+        temp_file.close()
+        write_audit(
+            db,
+            "layer.export",
+            "layer",
+            "succeeded",
+            user=user,
+            resource_id=str(layer.id),
+            request_id=request.state.request_id,
+            changes={"format": payload.format, "count": total},
+        )
+        db.commit()
+        return FileResponse(
+            temp_path,
+            media_type=(
+                "text/csv; charset=utf-8"
+                if payload.format == "csv"
+                else "application/geo+json"
+            ),
+            filename=f"{layer.code}{suffix}",
+            background=BackgroundTask(_remove_export_file, temp_path),
+        )
+    except Exception:
+        temp_file.close()
+        temp_path.unlink(missing_ok=True)
+        raise

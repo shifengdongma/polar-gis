@@ -1,7 +1,33 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-11-16
+> 最后更新: 2026-11-17
+
+---
+
+## 会话 #38 — 航道预览 422 与属性表导出修复（2026-11-17）
+
+**日期**: 2026-11-17
+**背景**: 用户点击航道“在地图显示选中类别”时 `/s57-waterways/preview` 返回 422；属性表“导出CSV/GeoJSON”不可用。
+
+### 一、复现与根因
+
+- preview 422 body：`list_type / body.sourceCells / Input should be a valid list / input: null`。前端用 `sourceCells: null` 表示“全部 Cell”，但 schema 只接受 list。
+- 属性导出：真实 DEPARE 2,446 行、DEPCNT 1,564 行超过 `QUERY_RESULT_LIMIT=1000`，返回 `EXPORT_LIMIT_EXCEEDED` 422；小图层可导出。
+- 修复上限后 GeoJSON 仍 500：真实属性含 `Decimal`，`json.dumps` 不可序列化；CSV 正常。
+
+### 二、修改
+
+- `app/schemas.py`：`S57WaterwayFilterRequest.source_cells` 改为 `list[str] | None`；`ExportRequest.fields` 改为 `list[str] | None`。
+- `app/core/config.py`：新增 `LAYER_EXPORT_MAX_FEATURES=100000`。
+- `app/api/layers.py`：导出先 `COUNT(*)` 检查上限；使用 `stream_results=True` 游标逐行写入 `settings.temp_root` 临时文件（CSV 用 DictWriter，GeoJSON 流式拼装 FeatureCollection），返回 `FileResponse` + `BackgroundTask` 清理；GeoJSON properties 使用 `_json_safe()` 处理 Decimal/日期等。
+- `tests/test_layers.py`：新增 nullable filter schema 回归测试。
+
+### 三、验证
+
+- 原始 preview payload：200，`matchedTotal=1690 / returnedCount=1626 / hasMore=true`。
+- DEPARE 2,446 行：CSV 200（3.2MB）、GeoJSON 200（4.0MB，2,446 features）；OBSTRN 5 行 CSV/GeoJSON 均 200；临时目录无残留。
+- 后端定向测试通过；ruff 通过。
 
 ---
 

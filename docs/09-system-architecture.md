@@ -1375,3 +1375,10 @@ backend/app/navigation/
 - 失败的两条原始 3413 瓦片 URL 均返回 **200 image/png 256×256**；抽查 `s57_gb1dn000_1_obstrn`、`s57_gb1de000_1_obstrn`、`s57_c110408a_1_obstrn` 的 GWC 配置均含 `EPSG:3413/EPSG:4326/EPSG:900913`。
 - 新增 `tests/test_geoserver_gwc.py` 锁定 GWC REST 路径、XML gridset/layer、900913 名称、masstruncate/seed；`test_gwc_backfill.py`/`test_importer.py` 更新 gridset 期望。定向 35 tests passed；ruff 通过。
 - 新导入的 S-57 图层由 `importer._enable_gwc_caching()` 使用同一修正后的客户端配置，后续无需手工回填；启动 daemon 线程仍会对已有当前版本图层做幂等补齐。
+
+### 8.15 会话 #38：航道预览 422 与属性表导出修复
+
+- **预览 422**：前端 `sourceCells: null` 表示“全部 Cell”，但 `S57WaterwayFilterRequest.source_cells` 只接受 list，Pydantic 返回 `list_type` 422。改为 `list[str] | None`；服务端 `normalize_source_cells()` 继续把 None 视为空过滤。
+- **属性表导出 1,000 行上限**：真实 DEPARE 2,446 行、DEPCNT 1,564 行触发 `EXPORT_LIMIT_EXCEEDED`。新增 `LAYER_EXPORT_MAX_FEATURES=100000`；`POST /layers/{id}/exports` 先 COUNT，超限返回 422，未超限时使用 `stream_results` 游标把 CSV/GeoJSON 流式写入 `settings.temp_root` 临时文件，返回 `FileResponse` 并由 `BackgroundTask` 清理，避免一次性载入内存。
+- **GeoJSON Decimal 序列化**：真实属性含 `Decimal`，原 `json.dumps` 返回 500；改用现有 `_json_safe()` 转换 properties。`ExportRequest.fields` 也改为 `list[str] | None`，允许前端未取得字段列表时发送 null。
+- 验证：原始 preview payload 返回 200（matchedTotal 1690/returned 1626）；DEPARE 2,446 行 CSV 3.2MB 与 GeoJSON 4.0MB 均 200，GeoJSON 含 2,446 features；OBSTRN 5 行 CSV/GeoJSON 均 200；临时文件由后台任务清理。

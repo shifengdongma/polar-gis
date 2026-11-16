@@ -1,6 +1,6 @@
 # Polar-GIS 用户操作使用手册
 
-## 极地海洋环境信息平台 — 用户手册 v1.6
+## 极地海洋环境信息平台 — 用户手册 v1.7
 
 ---
 
@@ -462,7 +462,7 @@ docker compose down -v
 2. 属性表以抽屉面板从右侧滑出（占屏幕 55%）
 3. 支持字段过滤搜索
 4. 支持分页浏览
-5. 可导出为 **CSV** 或 **GeoJSON** 格式
+5. 可导出为 **CSV** 或 **GeoJSON** 格式；导出按当前筛选条件流式写入临时文件，不再受旧 1,000 行限制，最多 100,000 行；超过上限会提示缩小筛选范围。
 
 #### 4.3.6 环境叠加层
 
@@ -1350,6 +1350,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `S57_WATERWAY_DB_UNAVAILABLE` | 航道查询数据库不可用（含共享内存不足） |
 | `S57_WATERWAY_FEATURE_NOT_FOUND` | 航道要素不存在或不属于当前项目版本 |
 | `S57_WATERWAY_CURSOR_INVALID` | 预览游标失效（项目版本/类别已变化），需重新加载 |
+| `EXPORT_LIMIT_EXCEEDED` | 图层属性导出超过 `LAYER_EXPORT_MAX_FEATURES`，请缩小筛选范围 |
 | `S57_WATERWAY_SNAPSHOT_EMPTY` | 保存成果时没有匹配要素 |
 | `S57_WATERWAY_SNAPSHOT_NOT_FOUND` | 成果不存在 |
 | `S57_THEMATIC_NO_LAYER` | 没有可提取的 S-57 专题图层 |
@@ -1396,7 +1397,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `GEOSERVER_PUBLIC_URL` | `/geoserver` | GeoServer 对外地址 |
 | `GEOSERVER_WORKSPACE` | `polar_gis` | GeoServer 工作空间名称 |
 | `DEMO_DATA_ENABLED` | `false` | 是否启用演示数据 |
-| `QUERY_RESULT_LIMIT` | `1000` | 查询导出最大行数 |
+| `QUERY_RESULT_LIMIT` | `1000` | 旧通用查询限制（属性表导出已改用 `LAYER_EXPORT_MAX_FEATURES`） |
 | `WORKER_POLL_SECONDS` | `2.0` | Worker 轮询间隔（秒） |
 | `ICE_ENABLED` | `true` | 冰情 API/瓦片开关 |
 | `ICE_DATA_ROOT` | `/data/ice` | 冰情 NetCDF 目录 |
@@ -1406,6 +1407,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `S57_WATERWAY_INTROSPECTION_BATCH_SIZE` | `200` | 每次批量内省的表数量；不再限制可遍历图层总数 |
 | `S57_WATERWAY_QUERY_WARNING_LAYERS` | `500` | 候选层超过该值时仅提示查询可能较慢，不截断 |
 | `S57_WATERWAY_MAX_PAGE_SIZE` | `50` | 航道搜索单页上限 |
+| `LAYER_EXPORT_MAX_FEATURES` | `100000` | 单图层属性表 CSV/GeoJSON 导出的最大行数；流式写入临时文件 |
 | `S57_WATERWAY_QUERY_TIMEOUT_MS` | `10000` | 航道查询超时 |
 | `S57_WATERWAY_SNAPSHOT_MAX_FEATURES` | `20000` | 单次成果保存要素上限 |
 | `S57_WATERWAY_PREVIEW_MAX_FEATURES` | `2000` | 单次预览页预算（可按类继续加载） |
@@ -1675,7 +1677,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ---
 
-> 📝 **文档版本**：v1.6
+> 📝 **文档版本**：v1.7
 > 📅 **更新日期**：2026-11-16
 > 📋 **适用版本**：Polar-GIS 一期（`master`，2026-11-16）
 > ⚠️ **法律声明**：本平台为非认证的地理信息展示系统，不可替代经认证的航海设备或官方电子海图。

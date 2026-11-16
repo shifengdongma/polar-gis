@@ -568,7 +568,7 @@ class S57WaterwayFilterRequest(ApiModel):
     object_classes: list[str] = Field(default_factory=list, max_length=50)
     include_auxiliary: bool = False
     bbox: tuple[float, float, float, float] | None = None
-    source_cells: list[str] = Field(default_factory=list, max_length=100)
+    source_cells: list[str] | None = Field(default=None, max_length=100)
 
     @field_validator("keyword")
     @classmethod
@@ -949,7 +949,7 @@ class ExportRequest(ApiModel):
     format: str = Field(pattern=r"^(csv|geojson)$")
     filters: list[FeatureFilter] = Field(default_factory=list)
     bbox: tuple[float, float, float, float] | None = None
-    fields: list[str] = Field(default_factory=list)
+    fields: list[str] | None = Field(default=None)
 
 
 class WeatherPointRequest(ApiModel):

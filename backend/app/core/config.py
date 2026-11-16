@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     gwc_3413_backfill: bool = True
     batch_parallel_workers: int = 8
     query_result_limit: int = 1000
+    # Layer attribute export streams to a temporary file; keep a separate,
+    # higher safety ceiling so real ENC tables (>1,000 rows) can be exported.
+    layer_export_max_features: int = 100000
     demo_data_enabled: bool = True
     ice_enabled: bool = True
     ice_data_root: Path = Path("/data/ice")
