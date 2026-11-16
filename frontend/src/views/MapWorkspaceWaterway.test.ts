@@ -39,6 +39,7 @@ describe('S-57 waterway integration', () => {
     expect(source).toContain(
       "'has-side-panel': waterwayPanelOpen || icePanelOpen || environmentPanelOpen",
     )
+    expect(source).toContain("'has-waterway-panel': waterwayPanelOpen")
   })
 
   it('keeps the thematic overlay out of S-57 runtime/bundle/route state', () => {

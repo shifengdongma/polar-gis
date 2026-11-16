@@ -69,16 +69,19 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('使用说明')
     expect(source).toContain('不需要先搜索')
     expect(source).toContain('不要求先加载 S-57 WMS 海图图层')
-    expect(source).toContain('交通分隔制 ≠ 推荐航路')
+    expect(source).toContain('低缩放仅作类别概览')
     expect(source).toContain('当前视口')
   })
 
-  it('keeps the map legend above the category list so it remains reachable', () => {
-    const legend = source.indexOf('waterway-map-legend')
+  it('keeps the map action above categories and the color legend available', () => {
+    const action = source.indexOf('waterway-map-actions')
     const groups = source.indexOf('waterway-class-groups')
-    expect(legend).toBeGreaterThan(0)
+    const legend = source.indexOf('waterway-map-legend')
+    expect(action).toBeGreaterThan(0)
     expect(groups).toBeGreaterThan(0)
-    expect(legend).toBeLessThan(groups)
+    expect(legend).toBeGreaterThan(0)
+    expect(action).toBeLessThan(groups)
+    expect(legend).toBeGreaterThan(groups)
   })
 
   it('does not write into route state', () => {

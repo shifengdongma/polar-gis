@@ -142,7 +142,7 @@ async function preview(manifest: S57ThematicExportManifest) {
     return
   }
   emit('preview', collection, manifest.exportId)
-  ElMessage.success('已在地图显示该成果的样例预览（非完整成果）')
+  ElMessage.success('已在地图显示该成果的样例预览')
 }
 
 function onOpen() {
@@ -160,9 +160,6 @@ function onOpen() {
     append-to-body
     @open="onOpen"
   >
-    <div class="thematic-disclaimer">
-      成果是航线规划的<b>原始候选数据</b>，不是经过安全论证的通航网络；DRVAL1/DRVAL2/VALDCO/VALSOU 不等于保证安全水深。
-    </div>
     <el-tabs v-model="activeTab">
       <el-tab-pane label="提取" name="extract">
         <div v-if="thematics.catalogLoading.value" class="thematic-empty">正在读取项目已导入的 S-57 对象类…</div>
@@ -279,9 +276,8 @@ function onOpen() {
             <el-button text @click="emit('clear-preview')">清除地图样例</el-button>
           </div>
 
-          <div class="thematic-semantics">
-            <div v-for="item in catalog?.semantics ?? []" :key="item">{{ item }}</div>
-            <div v-for="item in catalog?.warnings ?? []" :key="item">{{ item }}</div>
+          <div v-if="catalog?.warnings?.length" class="thematic-semantics">
+            <div v-for="item in catalog.warnings" :key="item">{{ item }}</div>
           </div>
         </template>
       </el-tab-pane>

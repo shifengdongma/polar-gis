@@ -401,7 +401,10 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 
 .layer-groups { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0 -4px; padding: 0 4px; scrollbar-color: #587985 transparent; scrollbar-width: thin; }
 /* 侧边专题面板展开时，为它保留高度；图层列表只占一小块并独立滚动。 */
-.layer-panel.has-side-panel .layer-groups { flex: 0 1 auto; min-height: 48px; max-height: 22vh; }
+.layer-panel.has-side-panel .layer-groups { flex: 0 1 auto; min-height: 48px; max-height: 16vh; }
+/* 航道专题使用整块左栏，避免图层树与多个卡片挤在一起；关闭专题后恢复图层树。 */
+.layer-panel.has-waterway-panel .layer-filters,
+.layer-panel.has-waterway-panel .layer-groups { display: none; }
 .layer-groups::-webkit-scrollbar { width: 6px; }
 .layer-groups::-webkit-scrollbar-track { background: transparent; }
 .layer-groups::-webkit-scrollbar-thumb { border-radius: 3px; background: #587985; }
@@ -1740,8 +1743,6 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-diagnostics-drawer .waterway-detail-section-title { color: #234e5c; }
 
 /* ── S-57 thematic extraction dialog ───────────────────────────────── */
-.thematic-disclaimer { margin-bottom: 8px; padding: 7px 9px; border: 1px solid #f0d49d; border-radius: 5px; background: #fff8e8; color: #8a5300; font-size: 10px; line-height: 1.5; }
-.thematic-disclaimer b { color: #6d3f00; }
 .thematic-empty, .thematic-error { padding: 8px 0; color: #6a7f87; font-size: 11px; line-height: 1.5; }
 .thematic-error { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid #efc4b6; border-radius: 5px; background: #fff3ef; color: #9b3f24; }
 .thematic-warning { margin-bottom: 8px; padding: 7px 9px; border: 1px solid #f0d49d; border-radius: 5px; background: #fff8e8; color: #8a5300; font-size: 10px; line-height: 1.5; }
@@ -1775,6 +1776,91 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .thematic-export-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 9px; }
 .thematic-manifest-details { margin-top: 3px; color: #5f7b85; font-size: 9px; line-height: 1.5; }
 .thematic-manifest-details summary { color: #1a6f8c; cursor: pointer; }
+
+/* ── S-57 waterway panel readability (2026-11-16) ───────────────────── */
+.waterway-panel { gap: 9px; padding: 9px 4px 4px 0; }
+.waterway-panel-heading { gap: 8px; }
+.waterway-panel-title { font-size: 13px; }
+.waterway-panel-badge { padding: 2px 6px; font-size: 9px; }
+.waterway-panel-empty { font-size: 11px; line-height: 1.6; }
+.waterway-panel-error { gap: 8px; padding: 8px 9px; font-size: 11px; }
+.waterway-search-box { gap: 7px; }
+.waterway-search-row { gap: 8px; }
+.waterway-class-groups { gap: 8px; padding: 9px; }
+.waterway-class-group { gap: 4px; }
+.waterway-class-group-title { font-size: 11px; }
+.waterway-class-checkbox { min-height: 24px; padding: 1px 0; font-size: 11px; white-space: normal; }
+.waterway-class-checkbox .el-checkbox__label { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; line-height: 1.35; }
+.waterway-class-checkbox .el-checkbox__label > span:first-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.waterway-class-code { margin-left: 0; font-size: 10px; }
+.waterway-class-count { margin-left: auto; padding-left: 0; font-size: 10.5px; }
+.waterway-auxiliary { gap: 6px; padding: 7px 8px; }
+.waterway-auxiliary-head { font-size: 10px; }
+.waterway-warnings { gap: 2px; font-size: 9.5px; line-height: 1.5; }
+.waterway-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 8px; padding: 8px 9px; }
+.waterway-stats span { display: flex; flex-direction: column; gap: 1px; color: #9fc0ca; font-size: 10.5px; line-height: 1.3; }
+.waterway-stats b { color: #e3f5f8; font-size: 13px; }
+.waterway-coverage-warning { padding: 8px 9px; font-size: 10px; line-height: 1.55; }
+.waterway-cell-filter { padding: 6px 8px; font-size: 10px; }
+.waterway-map-actions { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border: 1px solid rgba(104, 193, 207, .28); border-radius: 4px; background: rgba(8, 27, 38, .92); }
+.waterway-map-actions-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.waterway-map-actions-head > span { color: #b9dce4; font-size: 11px; font-weight: 600; }
+.waterway-map-actions-head .el-button { margin-left: 0; padding: 3px 8px; font-size: 10px; line-height: 1.3; white-space: normal; }
+.waterway-map-actions-head .el-button:first-of-type { flex: 1 1 auto; }
+.waterway-map-legend { position: static; gap: 7px; padding: 9px; }
+.waterway-map-legend-head { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
+.waterway-map-legend-head .el-button { padding: 3px 8px; font-size: 10px; }
+.waterway-legend-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-left: auto; }
+.waterway-legend-actions .el-button:first-child { flex: 0 1 auto; }
+.waterway-map-legend-items { gap: 5px 12px; }
+.waterway-map-legend-item { gap: 5px; font-size: 10px; }
+.waterway-map-legend-item i { width: 10px; height: 10px; }
+.waterway-map-legend-item b { font-size: 10px; }
+.waterway-map-legend-hint { font-size: 10.5px; line-height: 1.55; }
+.waterway-overview-note { font-size: 10px; line-height: 1.5; }
+.waterway-group-display { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border: 1px solid rgba(151, 190, 201, .18); border-radius: 4px; background: rgba(2, 14, 22, .22); }
+.waterway-group-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; padding-top: 2px; }
+.waterway-group-toggles .el-checkbox { margin-right: 0; font-size: 10px; }
+.waterway-results-head { flex-wrap: wrap; gap: 4px 8px; font-size: 10px; line-height: 1.45; }
+.waterway-results-head > span { min-width: 0; overflow-wrap: anywhere; }
+.waterway-result-list { gap: 6px; }
+.waterway-result-item { gap: 4px; padding: 8px; }
+.waterway-result-main { gap: 3px; }
+.waterway-result-main strong { font-size: 11.5px; }
+.waterway-result-meta { gap: 4px 9px; font-size: 9.5px; }
+.waterway-result-inform { font-size: 9.5px; }
+.waterway-result-actions .el-button { padding: 3px 6px; font-size: 9.5px; }
+.waterway-detail-desc { font-size: 11.5px; }
+.waterway-detail-section-title { margin: 12px 0 6px; font-size: 12px; }
+.waterway-detail-table { font-size: 11px; }
+.waterway-detail-actions { gap: 5px; margin-top: 8px; }
+.waterway-detail-actions .el-button { padding: 3px 6px; font-size: 10px; }
+.waterway-snapshot-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 7px 0; }
+.waterway-snapshot-actions .el-button { width: 100%; margin-left: 0; padding: 5px 6px; color: #c4dde4; border: 1px solid rgba(151, 190, 201, .18); border-radius: 4px; background: rgba(18, 44, 56, .52); font-size: 11px; line-height: 1.35; white-space: normal; }
+.waterway-snapshot-actions .el-button:hover { color: #eafafd; border-color: rgba(104, 193, 207, .48); background: rgba(22, 52, 65, .88); }
+.waterway-help-toggle { justify-self: end; margin-left: 0; padding: 4px 5px; color: #9fe3ee; border: 0; background: none; font-size: 10.5px; }
+.waterway-help-body { padding: 9px 10px; font-size: 11px; line-height: 1.6; }
+.waterway-help-body ol { padding-left: 18px; }
+.waterway-help-body li + li { margin-top: 3px; }
+.waterway-snapshot-form { gap: 7px; font-size: 12px; }
+.waterway-snapshot-form label { font-size: 11px; }
+.waterway-snapshot-summary, .waterway-snapshot-filters { padding: 7px 9px; font-size: 11px; line-height: 1.55; }
+.waterway-snapshot-hint { font-size: 10px; line-height: 1.55; }
+.waterway-snapshot-list { gap: 9px; }
+.waterway-snapshot-item { gap: 5px; padding: 9px 11px; }
+.waterway-snapshot-head { font-size: 12px; }
+.waterway-snapshot-head strong { font-size: 12.5px; }
+.waterway-snapshot-stale { padding: 2px 6px; font-size: 9px; }
+.waterway-snapshot-meta { font-size: 10px; line-height: 1.45; }
+.waterway-snapshot-item > .el-button { padding: 3px 6px; font-size: 10px; }
+.waterway-diagnostic-summary { gap: 6px 14px; padding: 9px 10px; font-size: 11px; }
+.waterway-diagnostic-regions { gap: 8px; }
+.waterway-diagnostic-region { padding: 8px 10px; }
+.waterway-diagnostic-region-head { font-size: 12px; }
+.waterway-diagnostic-region-meta { font-size: 10.5px; line-height: 1.5; }
+.waterway-diagnostic-region-note { font-size: 9.5px; line-height: 1.5; }
+.waterway-diagnostic-notes { gap: 3px; font-size: 10.5px; line-height: 1.55; }
+.waterway-diagnostic-references { gap: 8px; font-size: 10.5px; line-height: 1.55; }
 
 /* ── S-57 inline layer legend ───────────────────────────────────────── */
 .s57-layer-legend { margin: 2px 0 4px 19px; padding: 7px 8px; border: 1px solid rgba(151, 190, 201, .18); border-left: 2px solid rgba(104, 193, 207, .45); border-radius: 0 4px 4px 0; background: rgba(4, 20, 29, .55); }

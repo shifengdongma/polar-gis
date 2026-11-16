@@ -23,9 +23,9 @@ describe('S57LayerLegend', () => {
     expect(source).not.toContain('emoji')
   })
 
-  it('uses Chinese object descriptions and an honest safety note', () => {
+  it('uses Chinese object descriptions without safety/disclaimer notices', () => {
     expect(source).toContain('s57ObjectDescription')
-    expect(source).toContain('不代表实时航行状态或已验证的安全通道')
     expect(source).toContain('同一类别可能随比例尺/属性变化')
+    expect(source).not.toContain('不代表实时航行状态或已验证的安全通道')
   })
 })

@@ -112,8 +112,7 @@ onMounted(load)
         GeoServer 图例不可用，显示当前系统预设样式的简化符号。
       </p>
       <p class="s57-layer-legend-note">
-        图例为当前 GeoServer 样式的示意，同一类别可能随比例尺/属性变化；S-57
-        海图对象为制图数据，不代表实时航行状态或已验证的安全通道。
+        图例为当前 GeoServer 样式的示意，同一类别可能随比例尺/属性变化。
       </p>
     </template>
   </div>

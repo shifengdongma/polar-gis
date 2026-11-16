@@ -889,15 +889,11 @@ def create_thematic_export(
                 "layers": soundg_diagnostics,
                 "note": (
                     "SOUNDG 深度可能来自几何 Z 或 DEPTH 属性；单位/符号/垂直基准"
-                    "以源 S-57 为准，不作为保证安全水深。"
+                    "以源 S-57 为准。"
                 ),
             },
             "preview": preview_manifest,
-            "semantics": [
-                "DRVAL1/DRVAL2/VALDCO/VALSOU 不等于航道保证安全水深。",
-                "疏浚/扫测/未测区/数据质量对象不视为可靠实测水深。",
-                "专题成果是航线规划的原始候选数据，不是经过安全论证的通航网络。",
-            ],
+            "semantics": ["保留 S-57 原始几何、属性与来源信息。"],
             "warnings": warnings,
         }
         _write_manifest(temp_dir, manifest)

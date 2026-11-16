@@ -78,7 +78,7 @@ export const s57ObjectNames: Record<string, string> = {
 export const s57ObjectDescriptions: Record<string, string> = {
   COALNE: '海岸线对象，表示陆地与水域的分界线。',
   LNDARE: '陆地区域对象，表示不被水域覆盖的陆地范围。',
-  DEPARE: '水深区域对象，由等深线或 DRVAL1/DRVAL2 深度范围界定；不表示保证水深。',
+  DEPARE: '水深区域对象，由等深线或 DRVAL1/DRVAL2 深度范围界定。',
   DEPCNT: '等深线对象，连接相同水深值（VALDCO）的位置。',
   SOUNDG: '测深点对象，表示单个测深位置的水深值；不表示整片水域可航。',
   FAIRWY: '航道对象，表示供船舶航行的水域范围；实际可航性还需结合水深、碍航物与航海通告。',
@@ -91,7 +91,7 @@ export const s57ObjectDescriptions: Record<string, string> = {
   TSEZNE: '分道通航制区域对象。',
   TSSRON: '分道通航制环形道对象，用于船舶转向。',
   CTNARE: '谨慎航行/管制相关区域对象，具体限制需以原始属性为准。',
-  DRGARE: '疏浚区域对象，可能标注维护水深；不表示当前保证水深。',
+  DRGARE: '疏浚区域对象，可能标注维护水深。',
   RESARE: '限制区域对象，具体限制需以 RESTRN 等原始属性为准。',
   ACHARE: '锚地对象，表示船舶可以抛锚的水域。',
   BERTHS: '泊位对象，表示船舶停泊位置。',

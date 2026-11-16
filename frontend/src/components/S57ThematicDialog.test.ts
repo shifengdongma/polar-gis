@@ -15,13 +15,15 @@ describe('S57ThematicDialog', () => {
     expect(source).toContain('对象类')
     expect(source).toContain('提取并保存')
     expect(source).toContain('截断/不完整')
-    expect(source).toContain('不是经过安全论证的通航网络')
+    expect(source).not.toContain('不是经过安全论证')
+    expect(source).not.toContain('不等于保证安全水深')
     expect(source).toContain('append-to-body')
   })
 
   it('previews only a sample and keeps the waterway snapshot separate', () => {
     expect(source).toContain('在图上预览样例')
-    expect(source).toContain('样例预览（非完整成果）')
+    expect(source).toContain('样例预览')
+    expect(source).not.toContain('非完整成果')
     expect(source).not.toContain('waterways.createSnapshot')
     expect(source).not.toContain('waterways.showOverview')
   })

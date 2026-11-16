@@ -1334,3 +1334,13 @@ backend/app/navigation/
 - **真实栈验证**：`polar-gis` 项目 188 Cell/5,781 图层/1,279 航道层（RU=113 Cell/306 层）；修复后 catalog 61,888 条、preview `matchedTotal=1690`、Kara bbox preview 405 条；diagnostics 五个区域全部 `imported_enc_coverage`、`hasGap=false`、188/188 Cell 有 M_COVR bbox；thematic catalog 5,487 可提取层，SOUNDG 183 层/1,583 条且全部 3D；真实导出 RU2M6WF1 886 条/6 文件，SOUNDG 2,058 个 3D 点，manifest SHA 匹配；现有 FAIRWY 快照 13 条且包含 RU Cell。
 - 本轮未做浏览器点击级 E2E；前端 typecheck/tests/build 已通过。用户提供的 `output/航道成果_2026-11-11_04_51.geojson` 是独立文件（无 manifest），其 269 条结果对应旧的 200 层截断状态；本轮不修改该文件。
 - 专题成果受配置上限约束；触发时明确 `complete=false/truncated=true`，可按 Cell/类/视口缩小范围。SOUNDG 实测 3D，无需源文件回退；若其他环境为 2D，按 manifest 警告处理，不伪造深度。
+
+#### 8.13.6 航道面板可读性与免责提示清理
+
+- `S57ThematicDialog.vue`：删除顶部安全/免责横幅、专题 `semantics` 展示、预览“非完整成果”提示；保留截断/未知/2D 深度等事实性警告。
+- `S57WaterwayPanel.vue`：删除“交通分隔制 ≠ 推荐航路；局部 S-57 要素 ≠ 完整规划航线”和长度“不代表整条东北航道里程”；动作卡前置到类别前，类别/辅助/分组显示在前，颜色图例在后并 `position: static`；快照动作 2×2、统计 3×2、分组 2 列；字号整体提升。
+- `S57LayerLegend.vue`/`s57ObjectNames.ts`：删除“不代表实时航行状态或已验证的安全通道”“不表示保证水深”等文案。
+- 后端 `s57_thematic_catalog.py`/`s57_thematic_export.py`/`s57_waterway_diagnostics.py`/`s57_waterway_catalog.py`：同步清理 semantics、references/notes、region note、summary、类目描述中的安全免责措辞；保留 M_COVR/图层 extent 近似、数量未知、截断等事实说明。
+- `MapWorkspaceView.vue`：`has-waterway-panel` 打开航道专题时隐藏左侧图层过滤器/图层树，关闭后恢复；航道专题与冰情/环境面板互斥，避免侧栏高度竞争。`.layer-panel` 内部仍 `overflow:hidden`，`.waterway-panel` 内部滚动，footer 固定。
+- Headless Edge 1440×960：航道面板 226×669px，首屏 13/15 类别行可见；`scrollWidth=clientWidth`；footer 在面板下方且命中 footer 按钮；页面无被删除的免责文案。截图：`output/ui-waterway-20261116.png`、`output/ui-waterway-scrolled-20261116.png`。
+- 平台级 ECDIS/法律声明、演示数据声明与数据质量/截断/未知提示保留。

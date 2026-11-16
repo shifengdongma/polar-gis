@@ -72,10 +72,7 @@ REFERENCES: tuple[dict[str, str], ...] = (
     {
         "title": "USNIC Arctic Sea Routes",
         "url": "https://usicecenter.gov/Catalog/ArcticSeaRoutes",
-        "scope": (
-            "NSR 冰情/海路图产品覆盖约 40°E–160°W、70°N 以北；这是产品范围，"
-            "不是法定航道边界或唯一推荐航线。"
-        ),
+        "scope": "NSR 冰情/海路图产品覆盖约 40°E–160°W、70°N 以北。",
         "checkedAt": CHECKED_AT,
     },
     {
@@ -84,10 +81,7 @@ REFERENCES: tuple[dict[str, str], ...] = (
             "https://www.pame.is/ourwork/arctic-shipping/"
             "arctic-marine-shipping-assessment/"
         ),
-        "scope": (
-            "北极航运战略评估，讨论北方海航道、西北航道等；该页面不定义"
-            "东北航道/北方海航道的法定边界。"
-        ),
+        "scope": "北极航运战略评估，讨论北方海航道、西北航道等。",
         "checkedAt": CHECKED_AT,
     },
     {
@@ -96,10 +90,7 @@ REFERENCES: tuple[dict[str, str], ...] = (
             "https://arcticportal.org/downloads/maps/maps-shipping/"
             "2797-arctic-sea-routes-northeast-passage-and-eezs"
         ),
-        "scope": (
-            "展示主要北极海路与专属经济区的参考地图；不是航海许可或"
-            "法定边界。"
-        ),
+        "scope": "展示主要北极海路与专属经济区的参考地图。",
         "checkedAt": CHECKED_AT,
     },
     {
@@ -358,10 +349,7 @@ def build_waterway_diagnostics(db: Session, project_id: UUID) -> dict[str, Any]:
                     layer.feature_count is not None
                     for layer in region_waterway_layers
                 ),
-                "note": (
-                    "按 Cell/M_COVR/图层外围范围近似判断，不代表区域完整覆盖；"
-                    "研究对照范围，不是法定边界。"
-                ),
+                "note": "按 Cell/M_COVR/图层外围范围近似判断。",
             }
         )
 
@@ -383,17 +371,14 @@ def build_waterway_diagnostics(db: Session, project_id: UUID) -> dict[str, Any]:
             + "、".join(item["nameZh"] for item in missing_regions)
             + "。如已有合法授权 ENC，请通过批量导入并关联项目后重新诊断。"
             if missing_regions
-            else "当前项目在对照区域均检测到已关联的航道 ENC；仍为范围近似，不代表完整测深或官方航线。"
+            else "当前项目在对照区域均检测到已关联的航道 ENC（范围近似）。"
         ),
         "definitions": {
             "northeastPassage": "东北航道（NEP）：连接巴伦支海与白令海峡的宏观地理概念。",
             "northernSeaRoute": (
                 "北方海航道（NSR）：俄罗斯北极水域的航运管理概念，与 NEP 相关但不完全相同。"
             ),
-            "coverageCaveat": (
-                "USNIC NSR 产品覆盖约 40°E–160°W、70°N 以北只是产品范围，"
-                "不是法定边界或唯一推荐航线。"
-            ),
+            "coverageCaveat": "USNIC NSR 产品覆盖约 40°E–160°W、70°N 以北。",
         },
     }
 
@@ -431,9 +416,7 @@ def build_waterway_diagnostics(db: Session, project_id: UUID) -> dict[str, Any]:
         "references": [dict(item) for item in REFERENCES],
         "notes": [
             "仅统计当前项目已关联的当前版本 S-57 图层；未关联的数据集不会出现在此结果。",
-            "覆盖范围优先使用 M_COVR（CATCOV=1）的外围 bbox，否则使用图层 extent；"
-            "矩形范围不等于整片海域都有可靠测深。",
-            "交通分隔制 ≠ 推荐航路；局部 S-57 要素 ≠ 完整规划航线。",
+            "覆盖范围优先使用 M_COVR（CATCOV=1）的外围 bbox，否则使用图层 extent。",
             "东北航道（NEP）与北方海航道（NSR）相关但不完全相同。",
         ],
         "warnings": warnings,

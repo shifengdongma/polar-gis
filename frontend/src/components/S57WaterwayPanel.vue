@@ -436,7 +436,6 @@ function closePanel() {
         <li>“当前视口”是可选筛选：勾选后只查询当前地图范围；不勾选则查询整个项目当前版本。</li>
         <li>点击地图上<b>已经显示</b>的专题要素即可高亮并打开详情，无需先开启额外模式。</li>
         <li>图例颜色对应四个航道组；地图叠加有分页和浏览器预算（默认 6,000 条），达到上限会提示。低缩放仅作类别概览，放大查看细部。</li>
-        <li><b>交通分隔制 ≠ 推荐航路；局部 S-57 要素 ≠ 完整规划航线。</b></li>
       </ol>
     </div>
 
@@ -487,61 +486,24 @@ function closePanel() {
         </div>
       </div>
 
-      <div class="waterway-map-legend">
-        <div class="waterway-map-legend-head">
-          <span>地图专题图例</span>
-          <div class="waterway-legend-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :loading="overviewLoading"
-              :disabled="selectedClasses.size === 0"
-              @click="showOverviewOnMap"
-            >在地图显示选中类别</el-button>
-            <el-button
-              v-if="overviewHasMore"
-              size="small"
-              text
-              :loading="overviewLoading"
-              @click="loadMoreOnMap"
-            >加载更多</el-button>
-          </div>
-        </div>
-        <div class="waterway-map-legend-items">
-          <span
-            v-for="entry in groupSummary"
-            :key="entry.key"
-            class="waterway-map-legend-item"
-          >
-            <i :style="{ background: entry.color }"></i>{{ entry.label }}
-            <b>{{ entry.count }}</b>
-          </span>
-        </div>
-        <div class="waterway-group-toggles">
-          <el-checkbox
-            :model-value="groupVisible('fairway_route')"
+      <div class="waterway-map-actions">
+        <div class="waterway-map-actions-head">
+          <span>地图专题</span>
+          <el-button
             size="small"
-            @change="(value: string | number | boolean) => onGroupChange('fairway_route', value)"
-          >航道/推荐路线</el-checkbox>
-          <el-checkbox
-            :model-value="groupVisible('traffic_separation')"
+            type="primary"
+            plain
+            :loading="overviewLoading"
+            :disabled="selectedClasses.size === 0"
+            @click="showOverviewOnMap"
+          >在地图显示选中类别</el-button>
+          <el-button
+            v-if="overviewHasMore"
             size="small"
-            @change="(value: string | number | boolean) => onGroupChange('traffic_separation', value)"
-          >交通分隔制</el-checkbox>
-          <el-checkbox
-            :model-value="groupVisible('restriction')"
-            size="small"
-            @change="(value: string | number | boolean) => onGroupChange('restriction', value)"
-          >航行限制</el-checkbox>
-          <el-checkbox
-            :model-value="groupVisible('waterway_environment')"
-            size="small"
-            @change="(value: string | number | boolean) => onGroupChange('waterway_environment', value)"
-          >辅助/环境</el-checkbox>
-        </div>
-        <div class="waterway-map-legend-hint">
-          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计。交通分隔制 ≠ 推荐航路；低缩放仅作类别概览，放大查看细部。
+            text
+            :loading="overviewLoading"
+            @click="loadMoreOnMap"
+          >加载更多</el-button>
         </div>
         <div
           v-if="overviewMessage"
@@ -592,6 +554,51 @@ function closePanel() {
             <span class="waterway-class-code">{{ item.code }}</span>
             <span class="waterway-class-count">{{ item.count }}</span>
           </el-checkbox>
+        </div>
+      </div>
+
+      <div class="waterway-group-display">
+        <div class="waterway-class-group-title">地图分组显示</div>
+        <div class="waterway-group-toggles">
+          <el-checkbox
+            :model-value="groupVisible('fairway_route')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('fairway_route', value)"
+          >航道/推荐路线</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('traffic_separation')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('traffic_separation', value)"
+          >交通分隔制</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('restriction')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('restriction', value)"
+          >航行限制</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('waterway_environment')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('waterway_environment', value)"
+          >辅助/环境</el-checkbox>
+        </div>
+      </div>
+
+      <div class="waterway-map-legend">
+        <div class="waterway-map-legend-head">
+          <span>地图专题图例</span>
+        </div>
+        <div class="waterway-map-legend-items">
+          <span
+            v-for="entry in groupSummary"
+            :key="entry.key"
+            class="waterway-map-legend-item"
+          >
+            <i :style="{ background: entry.color }"></i>{{ entry.label }}
+            <b>{{ entry.count }}</b>
+          </span>
+        </div>
+        <div class="waterway-map-legend-hint">
+          勾选类别后点上方按钮即可上图，无需先“搜索”；数字来自图层目录统计。低缩放仅作类别概览，放大查看细部。
         </div>
       </div>
 
@@ -666,7 +673,7 @@ function closePanel() {
           <el-descriptions-item label="几何类型">{{ detail.geometryType || '未提供' }}</el-descriptions-item>
           <el-descriptions-item label="空间范围">{{ bboxText(detail.bbox) }}</el-descriptions-item>
           <el-descriptions-item v-if="detailLengthKm !== null" label="当前对象几何长度">
-            {{ detailLengthKm.toFixed(3) }} km（WGS84 测地线；不代表整条东北航道里程）
+            {{ detailLengthKm.toFixed(3) }} km（WGS84 测地线）
           </el-descriptions-item>
           <el-descriptions-item label="导入更新时间">{{ detail.updatedAt || '未提供' }}</el-descriptions-item>
         </el-descriptions>

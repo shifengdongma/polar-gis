@@ -769,6 +769,10 @@ const waterwayCatalogCount = computed(
 function toggleWaterwayPanel() {
   waterwayPanelOpen.value = !waterwayPanelOpen.value
   if (waterwayPanelOpen.value) {
+    // The waterway panel takes the full left column; keep other side panels
+    // from competing for the same height.
+    icePanelOpen.value = false
+    environmentPanelOpen.value = false
     layerPanelCollapsed.value = false
     void s57Waterways.loadCatalog()
     void s57Waterways.loadDiagnostics()
@@ -3110,9 +3114,23 @@ async function toggleAis() {
 
 function handleOverlayCommand(command: string) {
   if (command === 'ais') void toggleAis()
-  else if (command === 'ice') icePanelOpen.value = !icePanelOpen.value
-  else if (command === 'environment') environmentPanelOpen.value = !environmentPanelOpen.value
-  else if (command === 'bathymetry' || command === 'wind' || command === 'current' || command === 'wave') {
+  else if (command === 'ice') {
+    if (waterwayPanelOpen.value) {
+      waterwayPanelOpen.value = false
+      s57Waterways.deactivate()
+    }
+    icePanelOpen.value = !icePanelOpen.value
+  } else if (command === 'environment') {
+    if (waterwayPanelOpen.value) {
+      waterwayPanelOpen.value = false
+      s57Waterways.deactivate()
+    }
+    environmentPanelOpen.value = !environmentPanelOpen.value
+  } else if (command === 'bathymetry' || command === 'wind' || command === 'current' || command === 'wave') {
+    if (waterwayPanelOpen.value) {
+      waterwayPanelOpen.value = false
+      s57Waterways.deactivate()
+    }
     environmentPanelOpen.value = true
     environmentOverlays.toggle(command)
   } else if (command === 'risk') {
@@ -3244,7 +3262,7 @@ onBeforeUnmount(() => {
         <div class="projection-switch"><button :class="{ active: currentCrs === 'EPSG:3857' }" @click="switchProjection('EPSG:3857')">常规地图</button><button :class="{ active: currentCrs === 'EPSG:3413' }" @click="switchProjection('EPSG:3413')">北极投影</button></div>
       </div>
     </header>
-    <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed, 'has-side-panel': waterwayPanelOpen || icePanelOpen || environmentPanelOpen }]">
+    <aside :class="['layer-panel', 'glass-panel', { 'is-collapsed': layerPanelCollapsed, 'has-side-panel': waterwayPanelOpen || icePanelOpen || environmentPanelOpen, 'has-waterway-panel': waterwayPanelOpen }]">
       <div class="panel-heading"><div><span class="eyebrow">LAYERS</span><h2>图层目录</h2></div><span class="layer-count">{{ runtimeDatasets.length }}</span></div>
       <div class="layer-filters">
         <div class="basemap-row">

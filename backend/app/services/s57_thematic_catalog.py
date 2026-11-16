@@ -79,7 +79,6 @@ _DEFINITIONS: Final[tuple[ThematicClassRule, ...]] = (
         "S-57 测深点；一条 MultiPoint 要素可包含多个 soundings。",
         (
             "深度可能在几何第三维 Z；单位/符号以源 S-57 为准，不擅自取绝对值或改正负号。",
-            "测深点不等于航道保证水深，需结合基准、潮汐、数据质量和船舶吃水判断。",
         ),
         default_selected=True,
     ),
@@ -88,7 +87,7 @@ _DEFINITIONS: Final[tuple[ThematicClassRule, ...]] = (
         "等深线",
         "depth",
         "S-57 等深线，核心属性为 VALDCO。",
-        ("VALDCO 是等深线数值，不是保证可通行深度。",),
+        ("VALDCO 是等深线数值。",),
         default_selected=True,
     ),
     _rule(
@@ -96,26 +95,26 @@ _DEFINITIONS: Final[tuple[ThematicClassRule, ...]] = (
         "水深区域",
         "depth",
         "S-57 水深区域，核心属性为 DRVAL1/DRVAL2。",
-        ("DRVAL1/DRVAL2 是区域水深范围，不是航道保证水深。",),
+        ("DRVAL1/DRVAL2 是区域水深范围。",),
         default_selected=True,
     ),
     _rule(
         "DRGARE",
         "疏浚区域",
         "depth_supplement",
-        "S-57 疏浚区域；按对象语义展示，不视为可靠实测水深。",
+        "S-57 疏浚区域；按对象语义展示。",
     ),
     _rule(
         "SWPARE",
         "扫测区域",
         "depth_supplement",
-        "S-57 扫测区域；表示扫测范围，不替代逐点测深。",
+        "S-57 扫测区域；表示扫测范围。",
     ),
     _rule(
         "UNSARE",
         "未测量区域",
         "depth_supplement",
-        "S-57 未测量区域；不能据此推断水深。",
+        "S-57 未测量区域。",
     ),
     _rule(
         "M_QUAL",
@@ -128,21 +127,21 @@ _DEFINITIONS: Final[tuple[ThematicClassRule, ...]] = (
         "障碍物",
         "hazards",
         "S-57 障碍物；保留 VALSOU/WATLEV/CATOBS/EXPSOU/QUASOU 等原始属性。",
-        ("不生成障碍物位置或安全判断；属性含义随对象类别定义。",),
+        ("属性含义随对象类别定义。",),
     ),
     _rule(
         "WRECKS",
         "沉船",
         "hazards",
         "S-57 沉船；保留 VALSOU/WATLEV/CATWRK/QUASOU 等原始属性。",
-        ("不生成沉船位置或安全判断；缺失属性写“未知”。",),
+        ("缺失属性写“未知”。",),
     ),
     _rule(
         "UWTROC",
         "水下或露出水面的礁石",
         "hazards",
         "S-57 水下/露出礁石；保留 VALSOU/WATLEV/EXPSOU/QUASOU 等原始属性。",
-        ("不生成礁石位置或安全判断；缺失属性写“未知”。",),
+        ("缺失属性写“未知”。",),
     ),
 )
 
@@ -491,9 +490,5 @@ def build_thematic_catalog(db: Session, project_id: UUID) -> dict[str, Any]:
             ),
         },
         "warnings": list(resolution.warnings),
-        "semantics": [
-            "DRVAL1/DRVAL2/VALDCO/VALSOU 均不等于航道保证安全水深。",
-            "疏浚/扫测/未测区/数据质量对象按其自身语义展示，不视为可靠实测水深。",
-            "专题成果是航线规划的原始候选数据，不是经过安全论证的通航网络。",
-        ],
+        "semantics": [],
     }
