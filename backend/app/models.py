@@ -240,13 +240,20 @@ class S57ImportBatch(Base):
 
 class S57ImportBatchFile(Base):
     __tablename__ = "s57_import_batch_files"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "storage_key",
+            name="uq_s57_import_batch_files_batch_storage",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     batch_id: Mapped[UUID] = mapped_column(
         ForeignKey("s57_import_batches.id", ondelete="CASCADE"), index=True
     )
     original_name: Mapped[str] = mapped_column(String(500))
-    storage_key: Mapped[str] = mapped_column(String(500), unique=True)
+    storage_key: Mapped[str] = mapped_column(String(500))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     media_type: Mapped[str | None] = mapped_column(String(120))

@@ -5,6 +5,30 @@
 
 ---
 
+## 会话 #39 — 全球海图底图批量导入取消后 500 修复（2026-11-17）
+
+### 修改了什么
+
+- 修复 basemap Worker 不能读取服务器目录绝对源路径：新增 `_resolve_batch_source()`，相对 storage key 正常解析，绝对路径仅允许位于 `S57_BASEMAP_SOURCE_ROOT`。
+- 将 `s57_import_batch_files` 的 `storage_key` 从全局唯一改为 `(batch_id, storage_key)` 唯一；新增迁移 `0007_s57_batch_file_key_scope`。
+- 批量导入创建文件记录时按文件名去重。
+- 取消已失败/完成批次改为幂等返回 200；`_fail_batch()` 始终写 `BATCH` 失败项，UI 可看到失败原因。
+
+### 达到的效果
+
+- 全球海图底图导入可以正常进入 Worker 扫描/导入，不再因绝对路径立即失败。
+- 取消后再次导入不再 500；已验证 import → cancel → import → cancel 均 200。
+- 两个批次可各自保留同一源路径的文件记录，互不冲突。
+- 失败批次有 `BATCH` 错误项可定位原因。
+
+### 验证结果
+
+- 迁移 head `0007_s57_batch_file_key_scope`；约束 `UNIQUE (batch_id, storage_key)`。
+- 停 worker 实测：preflight 18 cells/29 files → import 200 → cancel 200 → import 200 → cancel 200；两批各 29 条文件记录；未导入真实底图数据；worker 已恢复。
+- 后端全量 **335 passed, 1 skipped**；ruff 通过；新增路径解析/越界拒绝/模型约束测试。
+
+---
+
 ## 会话 #38 — 航道预览 422 与属性表导出修复（2026-11-17）
 
 ### 修改了什么

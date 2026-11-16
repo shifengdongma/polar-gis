@@ -293,6 +293,13 @@ def cancel_s57_import_batch(
     batch = db.get(S57ImportBatch, batch_id)
     if batch is None:
         raise AppError("S57_BATCH_NOT_FOUND", "批量导入批次不存在", 404)
+    if batch.status in (
+        JobStatus.CANCELLED.value,
+        JobStatus.FAILED.value,
+        JobStatus.SUCCEEDED.value,
+    ):
+        # Idempotent: a batch that already finished/failed is returned as-is.
+        return batch
     if batch.status not in (
         JobStatus.QUEUED.value,
         JobStatus.RUNNING.value,

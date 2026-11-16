@@ -1382,3 +1382,25 @@ backend/app/navigation/
 - **属性表导出 1,000 行上限**：真实 DEPARE 2,446 行、DEPCNT 1,564 行触发 `EXPORT_LIMIT_EXCEEDED`。新增 `LAYER_EXPORT_MAX_FEATURES=100000`；`POST /layers/{id}/exports` 先 COUNT，超限返回 422，未超限时使用 `stream_results` 游标把 CSV/GeoJSON 流式写入 `settings.temp_root` 临时文件，返回 `FileResponse` 并由 `BackgroundTask` 清理，避免一次性载入内存。
 - **GeoJSON Decimal 序列化**：真实属性含 `Decimal`，原 `json.dumps` 返回 500；改用现有 `_json_safe()` 转换 properties。`ExportRequest.fields` 也改为 `list[str] | None`，允许前端未取得字段列表时发送 null。
 - 验证：原始 preview payload 返回 200（matchedTotal 1690/returned 1626）；DEPARE 2,446 行 CSV 3.2MB 与 GeoJSON 4.0MB 均 200，GeoJSON 含 2,446 features；OBSTRN 5 行 CSV/GeoJSON 均 200；临时文件由后台任务清理。
+
+### 8.16 会话 #39：全球海图底图批量导入取消后 500 修复
+
+#### 8.16.1 根因
+
+- 服务器目录底图导入把源文件绝对路径（如 `/data/s57-basemaps/C110408A.000`）写入 `S57ImportBatchFile.storage_key`，但 Worker 的 `_stage_sources()` 使用 `LocalStorage.resolve()`，该方法只接受 storage root 内的相对 key；绝对路径触发 `STORAGE_PATH_INVALID`，批次在 scan 阶段立即 failed。
+- `s57_import_batch_files.storage_key` 原有**全局唯一约束**；取消/失败后再次导入会复用相同源路径，插入文件记录时触发 `UniqueViolation`，`POST /admin/s57-basemaps/import` 返回 500。
+- 取消已 failed 的批次返回 409；批次 failed 时因 `total_cells>0` 不写 BATCH 错误项，UI 看不到失败原因。
+
+#### 8.16.2 修复
+
+- `s57_batch._resolve_batch_source()`：相对 key 仍走 `LocalStorage.resolve()`；绝对路径仅允许位于 `S57_BASEMAP_SOURCE_ROOT` 内（basemap 源目录），否则拒绝。Worker 与 API 共享 `/data/s57-basemaps` 挂载。
+- `models.S57ImportBatchFile`：移除 `storage_key` 全局 unique，改为 `UNIQUE(batch_id, storage_key)`；新增迁移 `0007_s57_batch_file_key_scope`（revision 需 ≤32 字符）。迁移 drop 旧唯一约束并创建 `uq_s57_import_batch_files_batch_storage`。
+- `api/s57_basemaps.py`：创建 batch file 记录时按文件名去重，避免同一批重复插入。
+- `api/datasets.py`：取消已 cancelled/failed/succeeded 的批次改为幂等返回；活动批次仍正常取消。
+- `s57_batch._fail_batch()`：无论 `total_cells` 是否为 0 都写入/更新 `cell_name="BATCH"` 的失败项，UI 能看到错误码/消息。
+
+#### 8.16.3 验证
+
+- 迁移后约束为 `uq_s57_import_batch_files_batch_storage UNIQUE (batch_id, storage_key)`，Alembic head `0007_s57_batch_file_key_scope`。
+- 临时停止 worker 后执行：preflight `canStart=true`（18 cells/29 files）→ import 200（batch A）→ cancel 200 cancelled → import 200（batch B）→ cancel 200；两批各保留 29 条相同源路径记录，无 500。未实际导入底图数据，worker 已恢复。
+- 全量后端 **335 passed, 1 skipped**；ruff 通过；新增 `_resolve_batch_source` 绝对路径/越界拒绝、模型约束回归测试。

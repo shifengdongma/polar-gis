@@ -10,12 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import require_admin
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.errors import AppError
@@ -27,7 +27,7 @@ from app.models import (
     Upload,
     User,
 )
-from app.schemas import ApiModel, S57ImportBatchDetail, S57ImportBatchItemRead, S57ImportBatchRead
+from app.schemas import ApiModel, S57ImportBatchDetail, S57ImportBatchItemRead
 from app.services.s57_basemap import (
     ERR_IMPORT_ALREADY_RUNNING,
     ERR_MANIFEST_CHANGED,
@@ -205,7 +205,7 @@ def run_preflight(
             code=ERR_PROFILE_NOT_FOUND,
             message=f"底图 profile 未找到: {body.profile_code}",
             status_code=404,
-        )
+        ) from None
 
     upload_dir = None
     if body.source_type == "upload" and body.upload_id:
@@ -248,7 +248,7 @@ def start_basemap_import(
             code=ERR_PROFILE_NOT_FOUND,
             message=f"底图 profile 未找到: {body.profile_code}",
             status_code=404,
-        )
+        ) from None
 
     # check for existing running import of same profile
     existing = db.scalars(
@@ -320,12 +320,16 @@ def start_basemap_import(
 
     # create batch file records for each selected file
     source_root = Path(settings.s57_basemap_source_root) if body.source_type == "server_directory" else upload_dir
+    seen_files: set[str] = set()
     for cell_data in result.cells:
         if cell_data.get("action") == "blocked":
             continue
         cell_name = cell_data["cellName"]
         for upd in cell_data.get("discoveredUpdates", []):
             fname = f"{cell_name}.{upd:03d}"
+            if fname in seen_files:
+                continue
+            seen_files.add(fname)
             fpath = source_root / fname if source_root else None
             if fpath and fpath.is_file():
                 bf = S57ImportBatchFile(
@@ -374,7 +378,6 @@ def get_basemap_run(
             status_code=404,
         )
 
-    from app.schemas import S57ImportBatchDetail, S57ImportBatchItemRead
     from app.models import S57ImportBatchItem as ItemModel
 
     items = db.scalars(

@@ -5,6 +5,34 @@
 
 ---
 
+## 会话 #39 — 全球海图底图批量导入取消后 500 修复（2026-11-17）
+
+**日期**: 2026-11-17
+**背景**: 2026-11-16 17:10 全球海图概览底图批量导入，点击取消后任务失败；再次导入 `POST /api/v1/admin/s57-basemaps/import` 返回 500。
+
+### 一、复现与根因
+
+- 失败批次 `9f850286-...`：status=failed、stage=failed、processed=0；items 全部 queued。
+- 后端 traceback：`UniqueViolation duplicate key ... s57_import_batch_files_storage_key_key`，重复 key `/data/s57-basemaps/C110408A.000`。
+- 进一步核查 Worker：`_stage_sources()` 用 `LocalStorage.resolve('/data/s57-basemaps/...')`，绝对路径不在 storage root 内，抛 `STORAGE_PATH_INVALID`，批次 scan 阶段立即失败。
+- 因此有两个叠加问题：①绝对源路径被 storage 校验拒绝；②`storage_key` 全局唯一导致取消/失败后无法复用同一批源文件；取消 failed 批次返回 409。
+
+### 二、修改
+
+- `app/services/s57_batch.py`：新增 `_resolve_batch_source()`；相对 key 走 storage root，绝对路径仅允许 `S57_BASEMAP_SOURCE_ROOT` 内；`_stage_sources` 使用该解析。`_fail_batch()` 统一写入/更新 `BATCH` 失败项，UI 可见错误码/消息。
+- `app/models.py`：`S57ImportBatchFile.storage_key` 移除 global unique，改为 `UniqueConstraint(batch_id, storage_key)`。
+- 新增迁移 `0007_s57_batch_file_key_scope`：drop `s57_import_batch_files_storage_key_key`，create `uq_s57_import_batch_files_batch_storage`；revision 缩短到 32 字符以内（Alembic version 列限制）。
+- `app/api/s57_basemaps.py`：batch file 创建按文件名去重。
+- `app/api/datasets.py`：取消已 cancelled/failed/succeeded 批次改为幂等返回，不再 409。
+
+### 三、验证
+
+- Alembic head `0007_s57_batch_file_key_scope`；约束为 `UNIQUE (batch_id, storage_key)`。
+- 停 worker 后：preflight `canStart=true`（18 cells/29 files）→ import 200 → cancel 200 cancelled → import 200 → cancel 200 cancelled；两批各 29 条相同 storage_key 记录，无 500；未实际导入数据，worker 已恢复。
+- 全量后端 **335 passed, 1 skipped**；ruff 修改文件通过；新增 absolute-path resolver/越界拒绝/模型约束测试。
+
+---
+
 ## 会话 #38 — 航道预览 422 与属性表导出修复（2026-11-17）
 
 **日期**: 2026-11-17

@@ -400,8 +400,8 @@ class S57BatchProcessor:
     ) -> None:
         """Run GeoServer layer group + GWC + base map registration."""
         try:
-            from app.services.s57_basemap import BasemapPostProcessor
             from app.services.geoserver import GeoServerClient
+            from app.services.s57_basemap import BasemapPostProcessor
 
             geoserver = GeoServerClient(self.settings)
             post_proc = BasemapPostProcessor(self.settings)
@@ -418,13 +418,32 @@ class S57BatchProcessor:
             batch.metadata_json = {**batch.metadata_json, "basemap": meta}
             db.commit()
 
+    def _resolve_batch_source(self, record: S57ImportBatchFile) -> Path:
+        """Resolve an uploaded relative key or a server-directory absolute path.
+
+        Basemap imports from ``S57_BASEMAP_SOURCE_ROOT`` store the absolute
+        source path; uploaded imports store a key relative to storage root.
+        Absolute paths are only accepted inside the configured basemap root.
+        """
+        key = str(record.storage_key)
+        candidate = Path(key)
+        if not candidate.is_absolute():
+            return self.storage.resolve(key)
+        source = candidate.resolve()
+        allowed_root = Path(self.settings.s57_basemap_source_root).resolve()
+        if not source.is_relative_to(allowed_root):
+            raise BatchSourceUnavailableError(
+                "批次源文件路径不在允许的 S-57 底图目录中"
+            )
+        return source
+
     def _stage_sources(self, db: Session, batch_id: UUID, temp_dir: Path) -> list[Path]:
         records = db.scalars(
             select(S57ImportBatchFile).where(S57ImportBatchFile.batch_id == batch_id)
         ).all()
         staged: list[Path] = []
         for record_index, record in enumerate(records):
-            source = self.storage.resolve(record.storage_key)
+            source = self._resolve_batch_source(record)
             if not source.is_file():
                 raise BatchSourceUnavailableError(
                     "批次源文件不在当前 Worker 的共享存储中。"
@@ -765,7 +784,13 @@ class S57BatchProcessor:
         target.stage = "failed"
         target.failed_cells = max(target.failed_cells, 1)
         target.finished_at = datetime.now(UTC)
-        if target.total_cells == 0:
+        item = db.scalar(
+            select(S57ImportBatchItem).where(
+                S57ImportBatchItem.batch_id == target.id,
+                S57ImportBatchItem.cell_name == "BATCH",
+            )
+        )
+        if item is None:
             item = S57ImportBatchItem(
                 batch_id=target.id,
                 cell_name="BATCH",
@@ -776,4 +801,10 @@ class S57BatchProcessor:
                 finished_at=datetime.now(UTC),
             )
             db.add(item)
+        else:
+            item.status = JobStatus.FAILED.value
+            item.stage = "failed"
+            item.error_code = code
+            item.error_message = message
+            item.finished_at = datetime.now(UTC)
         db.commit()

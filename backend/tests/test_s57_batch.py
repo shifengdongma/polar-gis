@@ -1,10 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api import datasets as datasets_api
 from app.core.config import Settings
@@ -20,8 +21,12 @@ from app.models import (
     User,
     VersionStatus,
 )
-from app.services.s57_batch import S57BatchProcessor, group_s57_files, validate_s57_chain
-from sqlalchemy.orm import sessionmaker
+from app.services.s57_batch import (
+    BatchSourceUnavailableError,
+    S57BatchProcessor,
+    group_s57_files,
+    validate_s57_chain,
+)
 
 
 def test_group_s57_files_by_cell_and_update() -> None:
@@ -64,6 +69,50 @@ def test_accept_continuous_chain() -> None:
             2: Path("RU4AB123.002"),
         },
     ) == [0, 1, 2]
+
+
+def test_resolve_batch_source_accepts_absolute_basemap_path(tmp_path) -> None:
+    source_root = tmp_path / "basemaps"
+    source_root.mkdir()
+    source_file = source_root / "C110408A.000"
+    source_file.write_bytes(b"base")
+    processor = S57BatchProcessor(
+        Settings(
+            storage_root=tmp_path / "storage",
+            temp_root=tmp_path / "temp",
+            s57_basemap_source_root=str(source_root),
+        )
+    )
+    assert processor._resolve_batch_source(
+        SimpleNamespace(storage_key=str(source_file))
+    ) == source_file.resolve()
+
+
+def test_resolve_batch_source_rejects_absolute_path_outside_basemap_root(
+    tmp_path,
+) -> None:
+    source_root = tmp_path / "basemaps"
+    source_root.mkdir()
+    outside = tmp_path / "outside.000"
+    outside.write_bytes(b"base")
+    processor = S57BatchProcessor(
+        Settings(
+            storage_root=tmp_path / "storage",
+            temp_root=tmp_path / "temp",
+            s57_basemap_source_root=str(source_root),
+        )
+    )
+    with pytest.raises(BatchSourceUnavailableError):
+        processor._resolve_batch_source(SimpleNamespace(storage_key=str(outside)))
+
+
+def test_batch_file_storage_key_is_scoped_by_batch() -> None:
+    names = {
+        str(constraint.name)
+        for constraint in S57ImportBatchFile.__table__.constraints
+    }
+    assert "s57_import_batch_files_storage_key_key" not in names
+    assert "uq_s57_import_batch_files_batch_storage" in names
 
 
 def test_batch_api_requires_admin(
