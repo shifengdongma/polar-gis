@@ -600,8 +600,8 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 
 ### GeoServer / GWC (后端)
 
-- **GridSet 创建**：发布 S-57 空间图层时 `ensure_gridset("EPSG:3413", "EPSG:3413", [-4194304, -4194304, 4194304, 4194304])` 幂等 PUT，extent 与 OpenLayers 默认 EPSG:3413 瓦片网格对齐；图层 GWC 启用覆盖三 gridset：`EPSG:3857` / `EPSG:4326` / `EPSG:3413`（mime 仅 image/png）
-- **已有图层回填**：`backend/app/services/gwc_backfill.py` — `ensure_gwc_3413_backfill()` 查询全部 AVAILABLE 且未软删的 S-57 图层，GET-then-PUT 幂等补齐（GWC 中缺失或缺 3413 gridset 才 PUT）；lifespan 后台 daemon 线程自动执行（`GWC_3413_BACKFILL=0` 禁用），`POST /api/v1/admin/gwc/backfill` 管理员端点可手动触发
+- **GridSet 创建**：发布 S-57 空间图层时通过 GWC 自有 REST（`/geoserver/gwc/rest/...`，XML body）执行 `ensure_gridset("EPSG:3413", "EPSG:3413", [-4194304, -4194304, 4194304, 4194304])` 幂等 PUT，22 级 resolution 与 OpenLayers 默认 EPSG:3413 瓦片网格对齐；图层 GWC 启用覆盖三 gridset：`EPSG:900913`（GWC 的 Web Mercator 规范名）/ `EPSG:4326` / `EPSG:3413`（mime image/png/jpeg）。
+- **已有图层回填**：`backend/app/services/gwc_backfill.py` — `ensure_gwc_3413_backfill()` 只查询当前数据集版本、AVAILABLE 且未软删的 S-57 图层，`get_gwc_layer()` GET 后仅在 GWC 中缺失或缺 3413 gridset 时 PUT；lifespan 后台 daemon 线程自动执行（`GWC_3413_BACKFILL=0` 禁用），`POST /api/v1/admin/gwc/backfill` 管理员端点可手动触发。真实 `polar-gis` 项目 5,781 层 checked / 4,859 updated。
 - **真实 bbox 发布**：`publish_feature_type` / `publish_feature_types_batch` 支持 `bounds` 参数（EPSG:4326 `[minx,miny,maxx,maxy]`），importer 按层从 `s57.extent` 传递；`_resolve_bounds` 对非法输入（长度≠4 / 非数值 / nan / inf / minx≥maxx 等）回退全球 -180..180 并仅告警
 - **SLD 比例尺规则**：`render_sld(min_scale_denominator, max_scale_denominator)` 在 Rule 内、Symbolizer 之前输出 `<sld:Min/MaxScaleDenominator>`；导入时持久化 `s57.minScaleDenominator`。生产同步路径（`sync_s57_layer_style`）以 **`max_scale_denominator`** 输出——"SOUNDG 放大到至少 1:25000 才渲染"（SD ≤ 25000）对应 SLD `MaxScaleDenominator`；误用 `MinScaleDenominator` 会反向（缩远才渲染）
 - **样式幂等刷新**：`backend/app/services/s57_style_refresh.py` — `sync_s57_layer_style()` 以 SLD sha256（`s57.sldHash`）对比判断，仅变化时 publish_style + set_default_style + `truncate_layer_cache`（best-effort，404 容忍）；`POST /api/v1/admin/styles/refresh-s57` 批量补齐已有图层
@@ -1350,3 +1350,28 @@ backend/app/navigation/
 - `s57_thematic_catalog.py` 动态 `other` 类只返回中性名称/描述，不再返回“按原始对象类导出，不做业务安全解释”或“不保证与水深/障碍物直接相关”caveat；前端 `S57ThematicDialog` 对 `category=other` 不渲染类说明。
 - `S57ThematicDialog` 新增 `previewActive` prop；当 `s57ThematicPreview.exportId` 非空时顶部显示“地图上正在显示样例预览 / 取消地图预览”。取消按钮 emit `clear-preview` → `MapWorkspaceView` 调用 `useS57ThematicPreview.clear()`，隐藏样例图层、清空 `exportId`；提示条在“提取”和“已保存成果”两个 tab 均可见。
 - Headless Edge 验证：提取页无该说明；已保存成果页点击“在图上预览样例”后提示条出现，点击“取消地图预览”后提示条/按钮消失；截图 `output/ui-thematic-preview-cancel-20261116.png`。
+
+### 8.14 会话 #37：北极投影 GWC EPSG:3413 瓦片 400 修复
+
+#### 8.14.1 根因
+
+- 前端切到 EPSG:3413 后，GWC WMS GetMap 对部分图层返回 400：
+  `Unable to match requested SRS EPSG:3413 to those supported by layer`。
+- 根因是 `GeoServerClient` 的 GWC 方法使用了错误的 REST 基址 `/geoserver/rest/gwc/...`；GeoServer 2.25 的 GWC REST 在 `/geoserver/gwc/rest/...`。启动回填因此一直 404，日志为 `GWC EPSG:3413 回填失败: GeoServer资源发布失败`。
+- 此外旧 payload 使用 GeoServer JSON（`id/crs/levels`）而 GWC PUT 需要 XML；图层 gridset 使用 `EPSG:3857`，但 GWC 已注册的 Web Mercator 名称是 `EPSG:900913`。因此即使修正路径，旧 payload 仍会 500（`Duplicate field coords` / `Duplicate field mimeFormats`）。
+
+#### 8.14.2 修复
+
+- `GeoServerClient` 新增 `_gwc_request()`，统一访问 `/geoserver/gwc/rest/...`；新增 `get_gwc_layer()`。
+- `ensure_gridset()` 改为 GWC XML：`<gridSet><name/><srs><number/></srs><extent><coords><double/>…</coords></extent><resolutions>…</resolutions><tileWidth>256</tileWidth><tileHeight>256</tileHeight></gridSet>`。
+- `ensure_gwc_layer()` 改为 GWC XML `<GeoServerLayer>`，gridsets 为 `EPSG:900913/EPSG:4326/EPSG:3413`，包含 `<autoCacheStyles>true</autoCacheStyles>`。
+- `truncate_layer_cache()` 改为 `POST /gwc/rest/masstruncate` + `<truncateLayer><layerName/>`；`seed_layer_cache()` 改为 `POST /gwc/rest/seed/{layer}.xml`。
+- `gwc_backfill.py` 改用 `get_gwc_layer()`；回填范围增加 `Dataset.current_version_id == Layer.dataset_version_id`，避免扫描历史版本（38k+ 层）。
+
+#### 8.14.3 验证
+
+- 修复前复现：失败 URL 返回 400 HTML `Unable to match requested SRS EPSG:3413...`；GWC 层 gridsets 仅 `EPSG:4326/EPSG:900913`，且 `EPSG:3413` gridset 不存在。
+- 修复后真实回填：`POST /admin/gwc/backfill` 返回 `{"checked":5781,"updated":4859,"skipped":false}`（约 175s）。
+- 失败的两条原始 3413 瓦片 URL 均返回 **200 image/png 256×256**；抽查 `s57_gb1dn000_1_obstrn`、`s57_gb1de000_1_obstrn`、`s57_c110408a_1_obstrn` 的 GWC 配置均含 `EPSG:3413/EPSG:4326/EPSG:900913`。
+- 新增 `tests/test_geoserver_gwc.py` 锁定 GWC REST 路径、XML gridset/layer、900913 名称、masstruncate/seed；`test_gwc_backfill.py`/`test_importer.py` 更新 gridset 期望。定向 35 tests passed；ruff 通过。
+- 新导入的 S-57 图层由 `importer._enable_gwc_caching()` 使用同一修正后的客户端配置，后续无需手工回填；启动 daemon 线程仍会对已有当前版本图层做幂等补齐。

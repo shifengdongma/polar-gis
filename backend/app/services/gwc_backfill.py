@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 GWC_3413_GRIDSET = "EPSG:3413"
 GWC_3413_CRS = "EPSG:3413"
 GWC_3413_EXTENT = [-4194304.0, -4194304.0, 4194304.0, 4194304.0]
-GWC_LAYER_GRIDSETS = ["EPSG:3857", "EPSG:4326", "EPSG:3413"]
+GWC_LAYER_GRIDSETS = ["EPSG:900913", "EPSG:4326", "EPSG:3413"]
 GWC_LAYER_MIME_FORMATS = ["image/png"]
 
 
@@ -56,6 +56,7 @@ def ensure_gwc_3413_backfill(
             Layer.geoserver_layer_name != "",
             Layer.deleted_at.is_(None),
             Dataset.data_type == DatasetType.S57.value,
+            Dataset.current_version_id == Layer.dataset_version_id,
             Dataset.deleted_at.is_(None),
         )
     ).all()
@@ -65,15 +66,11 @@ def ensure_gwc_3413_backfill(
         layer_name = layer.geoserver_layer_name or layer.code
         qualified = f"{layer.geoserver_workspace or settings.geoserver_workspace}:{layer_name}"
         try:
-            response = geoserver._request(
-                "GET",
-                f"gwc/layers/{qualified}.json",
-                allowed_statuses={200, 404},
-            )
+            data = geoserver.get_gwc_layer(layer_name)
         except Exception as exc:
             logger.warning("检查图层 %s 的 GWC 配置失败: %s", qualified, exc)
             continue
-        if response.status_code == 404:
+        if data is None:
             # Layer not configured in GWC at all — full configuration.
             try:
                 geoserver.ensure_gwc_layer(
@@ -86,10 +83,6 @@ def ensure_gwc_3413_backfill(
                 continue
             updated += 1
             continue
-        try:
-            data = response.json()
-        except ValueError:
-            data = {}
         grid_subsets = (data.get("GeoServerLayer") or {}).get("gridSubsets") or []
         grid_names = {gs.get("gridSetName") for gs in grid_subsets}
         if GWC_3413_GRIDSET not in grid_names:

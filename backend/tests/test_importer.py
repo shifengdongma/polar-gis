@@ -254,7 +254,7 @@ class TestEnableGwcCaching:
         assert len(stub.gwc_calls) == 2
         for layer_name, gridsets, mime_formats in stub.gwc_calls:
             assert layer_name in {"DEPARE", "LIGHTS"}
-            assert gridsets == ["EPSG:3857", "EPSG:4326", "EPSG:3413"]
+            assert gridsets == ["EPSG:900913", "EPSG:4326", "EPSG:3413"]
             assert "EPSG:3413" in gridsets
             assert mime_formats == ["image/png"]
 

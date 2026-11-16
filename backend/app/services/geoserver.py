@@ -1,6 +1,7 @@
 import logging
 import math
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 
@@ -45,6 +46,56 @@ class GeoServerClient:
                 response.text[-2000:],
             )
         return response
+
+    def _gwc_request(
+        self,
+        method: str,
+        path: str,
+        allowed_statuses: set[int] | None = None,
+        **kwargs: object,
+    ) -> httpx.Response:
+        """Call GeoWebCache's own REST API.
+
+        GWC is mounted at ``/geoserver/gwc/rest`` (not ``/geoserver/rest/gwc``),
+        and configuration PUTs use XML. The old path silently returned 404,
+        so the EPSG:3413 backfill never actually configured any layer.
+        """
+        try:
+            response = httpx.request(
+                method,
+                f"{self.base_url}/gwc/rest/{path.lstrip('/')}",
+                auth=self.auth,
+                timeout=60,
+                **kwargs,
+            )
+        except httpx.HTTPError as exc:
+            raise AppError("GEOSERVER_UNAVAILABLE", "GeoServer连接失败", 503) from exc
+        allowed = allowed_statuses or {200, 201, 202, 204}
+        if response.status_code not in allowed:
+            raise AppError(
+                "GEOSERVER_PUBLISH_FAILED",
+                "GeoWebCache 配置失败",
+                502,
+                response.text[-2000:],
+            )
+        return response
+
+    def get_gwc_layer(self, layer_name: str) -> dict | None:
+        """Return a GWC layer config or None when it is not cached yet."""
+        workspace = self.settings.geoserver_workspace
+        qualified = f"{workspace}:{layer_name}"
+        response = self._gwc_request(
+            "GET",
+            f"layers/{qualified}.json",
+            allowed_statuses={200, 404},
+        )
+        if response.status_code == 404:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def ensure_workspace(self) -> None:
         workspace = self.settings.geoserver_workspace
@@ -254,64 +305,68 @@ class GeoServerClient:
     ) -> None:
         """Enable GWC tile caching for a layer or layer group.
 
-        PUT /rest/gwc/layers/{qualified_name}.json
+        GWC REST PUT accepts XML, not the GeoServer JSON representation.
+        ``EPSG:900913`` is GWC's canonical name for Web Mercator; ``EPSG:3857``
+        alone would leave the layer without the grid used by the map.
         """
         if gridsets is None:
-            gridsets = ["EPSG:3857", "EPSG:4326"]
+            gridsets = ["EPSG:900913", "EPSG:4326", "EPSG:3413"]
         if mime_formats is None:
             mime_formats = ["image/png", "image/jpeg"]
 
         workspace = self.settings.geoserver_workspace
         qualified = f"{workspace}:{layer_name}"
-
-        payload = {
-            "GeoServerLayer": {
-                "name": qualified,
-                "enabled": True,
-                "mimeFormats": mime_formats,
-                "gridSubsets": [
-                    {"gridSetName": gs} for gs in gridsets
-                ],
-                "metaWidthHeight": [4, 4],
-                "expireCache": 0,
-                "expireClients": 0,
-                "gutter": 0,
-            }
-        }
-
-        self._request(
+        mime_xml = "".join(f"<string>{xml_escape(item)}</string>" for item in mime_formats)
+        subsets_xml = "".join(
+            f"<gridSubset><gridSetName>{xml_escape(gs)}</gridSetName></gridSubset>"
+            for gs in gridsets
+        )
+        body = (
+            "<GeoServerLayer>"
+            "<enabled>true</enabled>"
+            f"<name>{xml_escape(qualified)}</name>"
+            f"<mimeFormats>{mime_xml}</mimeFormats>"
+            "<autoCacheStyles>true</autoCacheStyles>"
+            f"<gridSubsets>{subsets_xml}</gridSubsets>"
+            "<metaWidthHeight><int>4</int><int>4</int></metaWidthHeight>"
+            "<expireCache>0</expireCache>"
+            "<expireClients>0</expireClients>"
+            "<gutter>0</gutter>"
+            "</GeoServerLayer>"
+        )
+        self._gwc_request(
             "PUT",
-            f"gwc/layers/{qualified}.json",
-            json=payload,
+            f"layers/{qualified}.xml",
+            content=body,
+            headers={"Content-Type": "application/xml"},
             allowed_statuses={200, 201, 204},
         )
 
     def ensure_gridset(self, gridset_name: str, crs: str, extent: list[float]) -> None:
-        """Create or update a GWC gridset.
-
-        PUT /rest/gwc/gridsets/{name}.json
-        """
-        payload = {
-            "id": gridset_name,
-            "crs": {
-                "@class": "org.geotools.referencing.CRS",
-                "value": crs,
-            },
-            "tileWidth": 256,
-            "tileHeight": 256,
-            "extent": {
-                "minx": extent[0],
-                "miny": extent[1],
-                "maxx": extent[2],
-                "maxy": extent[3],
-            },
-            "levels": _default_gridset_levels(extent),
-        }
-
-        self._request(
+        """Create or update a GWC gridset using GWC's XML representation."""
+        resolutions = [value["resolution"] for value in _default_gridset_levels(extent)]
+        srs_number = crs.rsplit(":", maxsplit=1)[-1]
+        resolution_xml = "".join(
+            f"<double>{value}</double>" for value in resolutions
+        )
+        body = (
+            "<gridSet>"
+            f"<name>{xml_escape(gridset_name)}</name>"
+            f"<srs><number>{xml_escape(srs_number)}</number></srs>"
+            "<extent><coords>"
+            + "".join(f"<double>{float(value)}</double>" for value in extent)
+            + "</coords></extent>"
+            f"<resolutions>{resolution_xml}</resolutions>"
+            "<tileWidth>256</tileWidth>"
+            "<tileHeight>256</tileHeight>"
+            f"<description>{xml_escape(gridset_name)} GWC gridset</description>"
+            "</gridSet>"
+        )
+        self._gwc_request(
             "PUT",
-            f"gwc/gridsets/{gridset_name}.json",
-            json=payload,
+            f"gridsets/{gridset_name}.xml",
+            content=body,
+            headers={"Content-Type": "application/xml"},
             allowed_statuses={200, 201, 204},
         )
 
@@ -319,36 +374,45 @@ class GeoServerClient:
         """Truncate (clear) the tile cache for a GWC layer."""
         workspace = self.settings.geoserver_workspace
         qualified = f"{workspace}:{layer_name}"
-        self._request(
-            "DELETE",
-            f"gwc/rest/masstruncate/{qualified}",
-            allowed_statuses={200, 202, 204, 404},
+        body = (
+            "<truncateLayer>"
+            f"<layerName>{xml_escape(qualified)}</layerName>"
+            "</truncateLayer>"
+        )
+        self._gwc_request(
+            "POST",
+            "masstruncate",
+            content=body,
+            headers={"Content-Type": "text/xml"},
+            allowed_statuses={200, 201, 202, 204, 404},
         )
 
     def seed_layer_cache(
         self,
         layer_name: str,
-        gridset: str = "EPSG:3857",
+        gridset: str = "EPSG:900913",
         zoom_start: int = 0,
         zoom_stop: int = 5,
     ) -> None:
         """Seed (pre-generate) GWC tiles for a range of zoom levels."""
         workspace = self.settings.geoserver_workspace
         qualified = f"{workspace}:{layer_name}"
-        payload = {
-            "seedRequest": {
-                "name": qualified,
-                "gridSetId": gridset,
-                "zoomStart": zoom_start,
-                "zoomStop": zoom_stop,
-                "type": "seed",
-                "threadCount": 4,
-            }
-        }
-        self._request(
+        body = (
+            "<seedRequest>"
+            f"<name>{xml_escape(qualified)}</name>"
+            f"<gridSetId>{xml_escape(gridset)}</gridSetId>"
+            f"<zoomStart>{int(zoom_start)}</zoomStart>"
+            f"<zoomStop>{int(zoom_stop)}</zoomStop>"
+            "<format>image/png</format>"
+            "<type>seed</type>"
+            "<threadCount>4</threadCount>"
+            "</seedRequest>"
+        )
+        self._gwc_request(
             "POST",
-            "gwc/rest/seed.json",
-            json=payload,
+            f"seed/{qualified}.xml",
+            content=body,
+            headers={"Content-Type": "text/xml"},
             allowed_statuses={200, 201, 202, 204},
         )
 

@@ -5,6 +5,42 @@
 
 ---
 
+## 会话 #37 — 北极投影 GWC EPSG:3413 瓦片 400 修复（2026-11-16）
+
+**日期**: 2026-11-16
+**背景**: 切换到“北极投影”后，部分 GWC WMS 瓦片返回 400：`Unable to match requested SRS EPSG:3413 to those supported by layer`，涉及 `polar_gis:s57_gb1dn000_1_obstrn` 等。
+
+### 一、复现与根因
+
+- 直接请求失败 URL，响应体明确为 `400: Unable to match requested SRS EPSG:3413 to those supported by layer`。
+- 查询 GWC REST：失败图层仅有 `EPSG:4326/EPSG:900913`，没有 `EPSG:3413`；`EPSG:3413` gridset 也不存在。
+- 后端日志：`GWC EPSG:3413 回填失败: GeoServer资源发布失败`。
+- 根因链：
+  1. `GeoServerClient` GWC 方法错误使用 `/geoserver/rest/gwc/...`；GeoServer 2.25 的 GWC REST 实际为 `/geoserver/gwc/rest/...`，所有 GET/PUT 一直 404。
+  2. 旧 gridset/layer PUT 使用 GeoServer JSON（`id/crs/levels`、`gridSubsets`）而 GWC 配置 PUT 需要 XML；直接 JSON 报 `Duplicate field coords` / `Duplicate field mimeFormats`。
+  3. 旧图层 gridset 使用 `EPSG:3857`，GWC 的 Web Mercator 注册名为 `EPSG:900913`。
+
+### 二、修改
+
+- `backend/app/services/geoserver.py`：
+  - 新增 `_gwc_request()`（`/gwc/rest/`）与 `get_gwc_layer()`。
+  - `ensure_gridset()` 改为 GWC XML `<gridSet>`（name/srs/extent coords/resolutions/tileSize/description）。
+  - `ensure_gwc_layer()` 改为 XML `<GeoServerLayer>`；gridsets `EPSG:900913/EPSG:4326/EPSG:3413`；加入 `<autoCacheStyles>true</autoCacheStyles>`。
+  - `truncate_layer_cache()` 改为 `POST /gwc/rest/masstruncate` + `<truncateLayer>`；`seed_layer_cache()` 改为 `POST /gwc/rest/seed/{layer}.xml`。
+- `backend/app/services/gwc_backfill.py`：改用 `get_gwc_layer()`；增加当前版本过滤，避免扫描 38k+ 历史图层。
+- 测试：新增 `tests/test_geoserver_gwc.py`；更新 `test_gwc_backfill.py`/`test_importer.py` 的 GWC 名称/路径期望。
+- 运维动作：重建 backend/worker，调用 `POST /api/v1/admin/gwc/backfill`，对 5,781 个当前版本 S-57 图层完成 4,859 次 3413 配置补齐。
+
+### 三、验证
+
+- 回填结果：`{"checked":5781,"updated":4859,"skipped":false}`，耗时约 175s。
+- 用户给出的两条失败 URL 均返回 **200 image/png 256×256**。
+- 抽查多个图层 GWC 配置均含 `EPSG:3413/EPSG:4326/EPSG:900913`。
+- 定向测试 35 passed；ruff 通过。
+- 新导入图层由修正后的 `_enable_gwc_caching()` 自动获得 3413，无需手工补配。
+
+---
+
 ## 会话 #36 — 专题提取：未分类说明清理 + 预览取消入口（2026-11-16）
 
 **日期**: 2026-11-16

@@ -70,7 +70,7 @@ async function submit() {
             登录系统
           </el-button>
         </el-form>
-        <div class="legal-notice">本系统仅供信息展示与辅助分析，不替代法定航海设备。</div>
+        <div class="legal-notice">极地海洋地理信息展示与辅助分析系统</div>
       </div>
     </section>
   </div>

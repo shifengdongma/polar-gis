@@ -5,6 +5,31 @@
 
 ---
 
+## 会话 #37 — 北极投影 GWC EPSG:3413 瓦片 400 修复（2026-11-16）
+
+### 修改了什么
+
+- 修正 `GeoServerClient` 的 GWC REST 基址为 `/geoserver/gwc/rest/`，新增 `_gwc_request()` / `get_gwc_layer()`。
+- 将 `ensure_gridset()`、`ensure_gwc_layer()` 从 GeoServer JSON 改为 GWC XML；gridset 使用 `<gridSet><name/><srs><number/><extent><coords/><resolutions/><tileWidth/><tileHeight/>`，图层使用 `<GeoServerLayer>`，gridsets 为 `EPSG:900913/EPSG:4326/EPSG:3413`，并设置 `autoCacheStyles=true`。
+- 修正 `truncate_layer_cache()`（`POST /gwc/rest/masstruncate` + XML）与 `seed_layer_cache()`（`POST /gwc/rest/seed/{layer}.xml`）。
+- `gwc_backfill.py` 仅处理当前 Dataset 版本，避免扫描历史版本；改为调用 `get_gwc_layer()`。
+- 新增 `tests/test_geoserver_gwc.py`，更新 backfill/importer 测试。
+
+### 达到的效果
+
+- 北极投影 EPSG:3413 瓦片不再 400：用户给出的两条失败 URL 均返回 **200 image/png 256×256**。
+- 真实 `polar-gis` 项目 5,781 个当前版本图层回填检查，4,859 个补齐 3413；GWC 图层统一支持 `EPSG:3413/EPSG:4326/EPSG:900913`。
+- 新导入的 S-57 图层自动获得 3413 gridset；启动后台回填仍会幂等补齐已有图层。
+
+### 验证结果
+
+- 回填 API：`{"checked":5781,"updated":4859,"skipped":false}`，约 175s。
+- 失败 URL 复测 200；抽查图层 GWC gridsets 含 3413。
+- 定向测试 **35 passed**；ruff 通过。
+- 前端无需改动；原有 3857 GWC 路径继续使用 `EPSG:900913` 规范名。
+
+---
+
 ## 会话 #36 — 专题提取：未分类说明清理 + 预览取消入口（2026-11-16）
 
 ### 修改了什么

@@ -1,6 +1,6 @@
 # Polar-GIS 用户操作使用手册
 
-## 极地海洋环境信息平台 — 用户手册 v1.5
+## 极地海洋环境信息平台 — 用户手册 v1.6
 
 ---
 
@@ -1208,6 +1208,9 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 **Q: 切换到北极投影后图层消失？**
 > 并非所有数据都支持 EPSG:3413 投影。GeoServer 会尝试动态重投影，但数据源必须在合理的地理范围内（高纬度区域）。
 
+**Q: 切换到北极投影后部分海图瓦片报 400？**
+> 该问题已在服务端修复：GWC 以前使用了错误的 REST 基址/JSON 配置，导致图层缺少 EPSG:3413 grid subset。当前版本会在启动时对当前项目 S-57 图层自动回填；管理员也可调用 `POST /api/v1/admin/gwc/backfill` 手动补齐。回填后 3413 瓦片应返回 200；新导入图层会自动配置 `EPSG:3413`。
+
 **Q: 地图上无法点击要素查看属性？**
 > 请确认：
 > 1. 图层可见性已打开
@@ -1416,6 +1419,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `S57_THEMATIC_EXPORT_TIMEOUT_SECONDS` | `300` | 专题提取时间预算；超时标记不完整 |
 | `S57_THEMATIC_PREVIEW_PER_CLASS` | `50` | 样例预览每类最多要素数 |
 | `S57_THEMATIC_PREVIEW_MAX_FEATURES` | `500` | 样例预览总要素上限 |
+| `GWC_3413_BACKFILL` | `true` | 启动时幂等回填 S-57 图层的 EPSG:3413 GWC grid subset；`0`/`false` 关闭 |
 | `NAVIGATION_ENABLED` | `true` | 导航环境/规划开关 |
 | `NAVIGATION_DATA_ROOT` | `/data/navigation` | 环境数据根目录 |
 | `NAVIGATION_ICE_DATA_ROOT` | 复用 `ICE_DATA_ROOT` | 导航冰情数据目录 |
@@ -1671,7 +1675,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ---
 
-> 📝 **文档版本**：v1.5
+> 📝 **文档版本**：v1.6
 > 📅 **更新日期**：2026-11-16
 > 📋 **适用版本**：Polar-GIS 一期（`master`，2026-11-16）
 > ⚠️ **法律声明**：本平台为非认证的地理信息展示系统，不可替代经认证的航海设备或官方电子海图。

@@ -20,15 +20,6 @@ from app.models import (
 from app.services.gwc_backfill import ensure_gwc_3413_backfill
 
 
-class FakeResponse:
-    def __init__(self, status_code: int, payload: dict | None = None) -> None:
-        self.status_code = status_code
-        self._payload = payload or {}
-
-    def json(self) -> dict:
-        return self._payload
-
-
 class StubGeoServer:
     """GeoServerClient stand-in recording gridset/GWC calls."""
 
@@ -36,7 +27,7 @@ class StubGeoServer:
         self.gridset_calls: list[tuple[str, str, list[float]]] = []
         self.gwc_puts: list[str] = []
         self.gets: list[tuple[str, str]] = []
-        self.responses: dict[str, FakeResponse] = {}
+        self.responses: dict[str, dict] = {}
 
     def ensure_gridset(self, gridset_name: str, crs: str, extent: list[float]) -> None:
         self.gridset_calls.append((gridset_name, crs, extent))
@@ -49,28 +40,19 @@ class StubGeoServer:
     ) -> None:
         self.gwc_puts.append(layer_name)
 
-    def _request(
-        self,
-        method: str,
-        path: str,
-        allowed_statuses: set[int] | None = None,
-        **kwargs: object,
-    ) -> FakeResponse:
-        self.gets.append((method, path))
-        key = path.split("gwc/layers/", 1)[1].rstrip(".json")
-        return self.responses.get(key, FakeResponse(404))
+    def get_gwc_layer(self, layer_name: str) -> dict | None:
+        key = f"polar_gis:{layer_name}"
+        self.gets.append(("GET", f"gwc/rest/layers/{key}.json"))
+        return self.responses.get(key)
 
     def set_layer_config(self, layer_name: str, grid_subsets: list[str]) -> None:
-        self.responses[f"polar_gis:{layer_name}"] = FakeResponse(
-            200,
-            {
-                "GeoServerLayer": {
-                    "name": f"polar_gis:{layer_name}",
-                    "enabled": True,
-                    "gridSubsets": [{"gridSetName": name} for name in grid_subsets],
-                }
-            },
-        )
+        self.responses[f"polar_gis:{layer_name}"] = {
+            "GeoServerLayer": {
+                "name": f"polar_gis:{layer_name}",
+                "enabled": True,
+                "gridSubsets": [{"gridSetName": name} for name in grid_subsets],
+            }
+        }
 
 
 def _seed_layer(
@@ -96,6 +78,8 @@ def _seed_layer(
     )
     db.add(version)
     db.flush()
+    dataset.current_version_id = version.id
+    db.flush()
     layer = Layer(
         dataset_version_id=version.id,
         code=code,
@@ -119,7 +103,7 @@ class TestBackfillFunction:
     ) -> None:
         _seed_layer(db_session, code="DEPARE")
         stub = StubGeoServer()
-        stub.set_layer_config("DEPARE", ["EPSG:3857", "EPSG:4326"])
+        stub.set_layer_config("DEPARE", ["EPSG:900913", "EPSG:4326"])
 
         result = ensure_gwc_3413_backfill(
             db_session,
@@ -135,12 +119,12 @@ class TestBackfillFunction:
             [-4194304.0, -4194304.0, 4194304.0, 4194304.0],
         )
         assert stub.gwc_puts == ["DEPARE"]
-        assert stub.gets == [("GET", "gwc/layers/polar_gis:DEPARE.json")]
+        assert stub.gets == [("GET", "gwc/rest/layers/polar_gis:DEPARE.json")]
 
     def test_skips_layer_already_having_3413(self, db_session: Session) -> None:
         _seed_layer(db_session, code="LIGHTS")
         stub = StubGeoServer()
-        stub.set_layer_config("LIGHTS", ["EPSG:3857", "EPSG:4326", "EPSG:3413"])
+        stub.set_layer_config("LIGHTS", ["EPSG:900913", "EPSG:4326", "EPSG:3413"])
 
         result = ensure_gwc_3413_backfill(
             db_session,
@@ -172,7 +156,7 @@ class TestBackfillFunction:
         _seed_layer(db_session, code="DEPARE_OLD", deleted=True)
         _seed_layer(db_session, code="OK_LAYER")
         stub = StubGeoServer()
-        stub.set_layer_config("OK_LAYER", ["EPSG:3857"])
+        stub.set_layer_config("OK_LAYER", ["EPSG:900913"])
 
         result = ensure_gwc_3413_backfill(
             db_session,
@@ -182,7 +166,7 @@ class TestBackfillFunction:
 
         assert result == {"checked": 1, "updated": 1, "skipped": False}
         assert stub.gwc_puts == ["OK_LAYER"]
-        assert stub.gets == [("GET", "gwc/layers/polar_gis:OK_LAYER.json")]
+        assert stub.gets == [("GET", "gwc/rest/layers/polar_gis:OK_LAYER.json")]
 
     def test_disabled_by_gwc_3413_backfill_env(self, db_session: Session) -> None:
         _seed_layer(db_session, code="DEPARE")
