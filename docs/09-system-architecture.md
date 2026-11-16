@@ -1344,3 +1344,9 @@ backend/app/navigation/
 - `MapWorkspaceView.vue`：`has-waterway-panel` 打开航道专题时隐藏左侧图层过滤器/图层树，关闭后恢复；航道专题与冰情/环境面板互斥，避免侧栏高度竞争。`.layer-panel` 内部仍 `overflow:hidden`，`.waterway-panel` 内部滚动，footer 固定。
 - Headless Edge 1440×960：航道面板 226×669px，首屏 13/15 类别行可见；`scrollWidth=clientWidth`；footer 在面板下方且命中 footer 按钮；页面无被删除的免责文案。截图：`output/ui-waterway-20261116.png`、`output/ui-waterway-scrolled-20261116.png`。
 - 平台级 ECDIS/法律声明、演示数据声明与数据质量/截断/未知提示保留。
+
+#### 8.13.7 专题提取未分类说明与预览取消
+
+- `s57_thematic_catalog.py` 动态 `other` 类只返回中性名称/描述，不再返回“按原始对象类导出，不做业务安全解释”或“不保证与水深/障碍物直接相关”caveat；前端 `S57ThematicDialog` 对 `category=other` 不渲染类说明。
+- `S57ThematicDialog` 新增 `previewActive` prop；当 `s57ThematicPreview.exportId` 非空时顶部显示“地图上正在显示样例预览 / 取消地图预览”。取消按钮 emit `clear-preview` → `MapWorkspaceView` 调用 `useS57ThematicPreview.clear()`，隐藏样例图层、清空 `exportId`；提示条在“提取”和“已保存成果”两个 tab 均可见。
+- Headless Edge 验证：提取页无该说明；已保存成果页点击“在图上预览样例”后提示条出现，点击“取消地图预览”后提示条/按钮消失；截图 `output/ui-thematic-preview-cancel-20261116.png`。

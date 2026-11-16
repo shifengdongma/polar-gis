@@ -3435,6 +3435,7 @@ onBeforeUnmount(() => {
       <S57ThematicDialog
         v-model="thematicDialogOpen"
         :thematics="s57Thematics"
+        :preview-active="Boolean(s57ThematicPreview.exportId.value)"
         @preview="onThematicPreview"
         @clear-preview="s57ThematicPreview.clear()"
       />

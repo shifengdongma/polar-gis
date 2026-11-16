@@ -17,6 +17,7 @@ import type {
 const props = defineProps<{
   modelValue: boolean
   thematics: S57ThematicsApi
+  previewActive?: boolean
 }>()
 const thematics = computed(() => props.thematics)
 const emit = defineEmits<{
@@ -160,6 +161,10 @@ function onOpen() {
     append-to-body
     @open="onOpen"
   >
+    <div v-if="previewActive" class="thematic-preview-banner">
+      <span>地图上正在显示样例预览</span>
+      <el-button size="small" text @click="emit('clear-preview')">取消地图预览</el-button>
+    </div>
     <el-tabs v-model="activeTab">
       <el-tab-pane label="提取" name="extract">
         <div v-if="thematics.catalogLoading.value" class="thematic-empty">正在读取项目已导入的 S-57 对象类…</div>
@@ -245,7 +250,9 @@ function onOpen() {
               </el-checkbox>
             </div>
             <div
-              v-for="item in category.classes.filter((entry) => entry.layerCount > 0)"
+              v-for="item in category.code !== 'other'
+                ? category.classes.filter((entry) => entry.layerCount > 0)
+                : []"
               :key="`${item.code}-desc`"
               class="thematic-class-desc"
             >
@@ -273,7 +280,6 @@ function onOpen() {
           <div v-if="thematics.createError.value" class="thematic-error">{{ thematics.createError.value }}</div>
           <div class="thematic-actions">
             <el-button type="primary" :loading="thematics.creating.value" @click="createExport">提取并保存</el-button>
-            <el-button text @click="emit('clear-preview')">清除地图样例</el-button>
           </div>
 
           <div v-if="catalog?.warnings?.length" class="thematic-semantics">

@@ -161,8 +161,8 @@ def thematic_rule_or_other(code: str | None) -> ThematicClassRule:
         code=normalized or "UNKNOWN",
         name_zh=object_name_for_class(normalized),
         category="other",
-        description="其他已导入的 S-57 空间对象类；按原始对象类导出，不做业务安全解释。",
-        caveats=("其他对象类不保证与水深/障碍物直接相关。",),
+        description="其他已导入的 S-57 空间对象类。",
+        caveats=(),
         default_selected=False,
     )
 

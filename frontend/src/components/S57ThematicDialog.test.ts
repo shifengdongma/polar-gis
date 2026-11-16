@@ -20,9 +20,11 @@ describe('S57ThematicDialog', () => {
     expect(source).toContain('append-to-body')
   })
 
-  it('previews only a sample and keeps the waterway snapshot separate', () => {
+  it('previews only a sample and offers an explicit cancel control', () => {
     expect(source).toContain('在图上预览样例')
     expect(source).toContain('样例预览')
+    expect(source).toContain('取消地图预览')
+    expect(source).toContain('previewActive')
     expect(source).not.toContain('非完整成果')
     expect(source).not.toContain('waterways.createSnapshot')
     expect(source).not.toContain('waterways.showOverview')

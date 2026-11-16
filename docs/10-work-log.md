@@ -5,6 +5,31 @@
 
 ---
 
+## 会话 #36 — 专题提取：未分类说明清理 + 预览取消入口（2026-11-16）
+
+**日期**: 2026-11-16
+**背景**: 用户反馈“提取”页未分类对象类仍显示“其他已导入的 S-57 空间对象类；按原始对象类导出，不做业务安全解释”，且“已保存成果”页点击“在图上预览样例”后没有取消预览按钮。
+
+### 一、修改
+
+- `backend/app/services/s57_thematic_catalog.py`：动态 `other` 类描述改为“其他已导入的 S-57 空间对象类。”，移除 caveat；“other”分类在 UI 中不再渲染任何类说明。
+- `frontend/src/components/S57ThematicDialog.vue`：
+  - 新增 `previewActive` prop 与顶部提示条“地图上正在显示样例预览 / 取消地图预览”。
+  - “提取”页不再单独放“清除地图样例”按钮，统一由提示条承担；预览状态在“提取/已保存成果”两个 tab 都可见。
+- `frontend/src/views/MapWorkspaceView.vue`：向对话框传入 `:preview-active="Boolean(s57ThematicPreview.exportId.value)"`；取消按钮 emit `clear-preview`，调用 `s57ThematicPreview.clear()` 清空地图样例。
+- CSS：新增 `.thematic-preview-banner`。
+
+### 二、验证
+
+- Headless Edge 真实栈：
+  - 提取页正文不含“不做业务安全解释”/“其他已导入的 S-57 空间对象类；按原始对象类导出”。
+  - 已保存成果列表加载后点击“在图上预览样例”：`bannerVisible=true`，文本“地图上正在显示样例预览 取消地图预览”；点击取消后 `bannerVisible=false`、取消按钮消失。
+  - 截图：`output/ui-thematic-preview-cancel-20261116.png`。
+- 前端 `npm run typecheck` 通过；`S57ThematicDialog.test`、`MapWorkspaceView.test` 共 30 passed。
+- 后端 `ruff` 通过；专题导出/API 定向测试 10 passed。
+
+---
+
 ## 会话 #35 — 航道专题面板可读性优化 + S-57 免责提示清理（2026-11-16）
 
 **日期**: 2026-11-16
