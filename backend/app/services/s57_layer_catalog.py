@@ -56,6 +56,8 @@ NAVIGATION_RECOMMENDED: Final = frozenset(
         "RDOSTA",
         "RDOCAL",
         "RETRFL",
+        "DWRTCL",
+        "DWRTPT",
         "RCRTCL",
         "RCTLPT",
         "TSSBND",
@@ -136,8 +138,10 @@ _OBJECT_NAMES = MappingProxyType(
         "RDOSTA": "无线电台",
         "RDOCAL": "无线电呼叫点",
         "RETRFL": "雷达反射器",
-        "RCRTCL": "雷达测距线",
-        "RCTLPT": "雷达控制点",
+        "DWRTCL": "深水航道中心线",
+        "DWRTPT": "深水航道部分",
+        "RCRTCL": "推荐航线中心线",
+        "RCTLPT": "推荐通航车道部分",
         "TSSBND": "交通分隔带边界",
         "TSSLPT": "交通分隔线",
         "TSEZNE": "交通分隔区域",
@@ -198,11 +202,20 @@ _NAVIGATION_AIDS: Final = frozenset(
         "RDOSTA",
         "RDOCAL",
         "RETRFL",
-        "RCRTCL",
-        "RCTLPT",
     }
 )
-_ROUTING: Final = frozenset({"TSSBND", "TSSLPT", "TSEZNE", "TSSRON"})
+_ROUTING: Final = frozenset(
+    {
+        "DWRTCL",
+        "DWRTPT",
+        "RCRTCL",
+        "RCTLPT",
+        "TSSBND",
+        "TSSLPT",
+        "TSEZNE",
+        "TSSRON",
+    }
+)
 
 # Phase 4: Per-object-class scale-dependent rendering hints.
 # These are the single source of truth shared between frontend scheduler and backend SLD.
@@ -247,6 +260,12 @@ _SCALE_RULES: Final[dict[str, dict[str, float | None | bool | int]]] = {
 _INVALID_GEOMETRY_TYPES: Final = frozenset(
     {"", "unknown", "none", "null", "n/a", "no geometry", "geometryless", "无", "无几何"}
 )
+
+
+def object_name_for_class(code: str | None) -> str:
+    """Return the configured Chinese object name, falling back to the raw code."""
+    normalized = (code or "").rsplit(":", maxsplit=1)[-1].strip().upper()
+    return _OBJECT_NAMES.get(normalized, normalized or "未命名对象")
 
 
 def has_valid_geometry(geometry_type: str | None) -> bool:

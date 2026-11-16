@@ -556,6 +556,10 @@ class S57WaterwayCatalogRead(ApiModel):
     total: int
     count_complete: bool
     truncated: bool
+    searchable_layer_count: int = 0
+    linked_cell_count: int = 0
+    candidate_layer_count: int = 0
+    resolved_layer_count: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -564,6 +568,7 @@ class S57WaterwayFilterRequest(ApiModel):
     object_classes: list[str] = Field(default_factory=list, max_length=50)
     include_auxiliary: bool = False
     bbox: tuple[float, float, float, float] | None = None
+    source_cells: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("keyword")
     @classmethod
@@ -603,6 +608,7 @@ class S57WaterwaySnapshotCreateRequest(S57WaterwayFilterRequest):
 
 class S57WaterwayPreviewRequest(S57WaterwayFilterRequest):
     max_features: int | None = Field(default=None, ge=1, le=10000)
+    class_cursors: dict[str, str] | None = None
 
 
 class S57WaterwaySearchItem(ApiModel):
@@ -642,8 +648,232 @@ class S57WaterwayPreviewResponse(ApiModel):
     items: list[S57WaterwaySearchItem] = Field(default_factory=list)
     total: int
     truncated: bool = False
+    matched_total: int | None = None
+    returned_count: int = 0
+    has_more: bool = False
+    class_has_more: dict[str, bool] = Field(default_factory=dict)
+    next_cursors: dict[str, str] = Field(default_factory=dict)
+    class_matched_totals: dict[str, int | None] = Field(default_factory=dict)
+    count_complete: bool = True
+    truncated_layers: bool = False
     group_counts: dict[str, int] = Field(default_factory=dict)
     object_class_counts: dict[str, int] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class S57WaterwayDiagnosticsTotals(ApiModel):
+    linked_cell_count: int = 0
+    waterway_layer_count: int = 0
+    searchable_layer_count: int = 0
+    renderable_layer_count: int = 0
+    feature_count: int = 0
+    count_complete: bool = True
+    candidate_layer_count: int = 0
+    resolved_layer_count: int = 0
+    catalog_truncated: bool = False
+    layer_warning_threshold: int = 500
+
+
+class S57WaterwayDiagnosticsCell(ApiModel):
+    source_cell: str
+    dataset_codes: list[str] = Field(default_factory=list)
+    dataset_names: list[str] = Field(default_factory=list)
+    version_nos: list[int] = Field(default_factory=list)
+    layer_count: int = 0
+    waterway_layer_count: int = 0
+    searchable_layer_count: int = 0
+    renderable_layer_count: int = 0
+    feature_count: int = 0
+    waterway_feature_count: int = 0
+    count_complete: bool = True
+    object_classes: list[str] = Field(default_factory=list)
+    waterway_classes: list[str] = Field(default_factory=list)
+    bbox: list[float] | None = None
+    coverage_source: str = "unknown"
+    coverage_verified: bool = False
+    reasons: list[str] = Field(default_factory=list)
+
+
+class S57WaterwayDiagnosticsRegion(ApiModel):
+    code: str
+    name_zh: str
+    approximate_bbox: list[list[float]] = Field(default_factory=list)
+    status: str
+    cells: list[str] = Field(default_factory=list)
+    waterway_classes: list[str] = Field(default_factory=list)
+    feature_count: int = 0
+    count_complete: bool = True
+    note: str = ""
+
+
+class S57WaterwayDiagnosticsRead(ApiModel):
+    project_id: str
+    generated_at: str
+    totals: S57WaterwayDiagnosticsTotals
+    cells: list[S57WaterwayDiagnosticsCell] = Field(default_factory=list)
+    classes: list[S57WaterwayClassRead] = Field(default_factory=list)
+    regions: list[S57WaterwayDiagnosticsRegion] = Field(default_factory=list)
+    northeast_passage: dict[str, Any] = Field(default_factory=dict)
+    references: list[dict[str, Any]] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    checked_at: str
+
+
+class S57ThematicLayerRead(ApiModel):
+    id: str
+    name: str
+    code: str
+    dataset_code: str
+    dataset_name: str
+    version_no: int
+    source_cell: str | None = None
+    feature_count: int | None = None
+    queryable: bool
+    renderable: bool
+    available: bool
+    extractable: bool
+    geometry_type: str | None = None
+    reason: str | None = None
+
+
+class S57ThematicClassRead(ApiModel):
+    code: str
+    name_zh: str
+    category: str
+    category_name_zh: str
+    description: str
+    caveats: list[str] = Field(default_factory=list)
+    default_selected: bool = False
+    count: int = 0
+    count_complete: bool = True
+    layer_count: int = 0
+    queryable: bool = False
+    renderable: bool = False
+    extractable: bool = False
+    layers: list[S57ThematicLayerRead] = Field(default_factory=list)
+
+
+class S57ThematicCategoryRead(ApiModel):
+    code: str
+    name_zh: str
+    classes: list[S57ThematicClassRead] = Field(default_factory=list)
+
+
+class S57ThematicCatalogRead(ApiModel):
+    categories: list[S57ThematicCategoryRead] = Field(default_factory=list)
+    classes: list[S57ThematicClassRead] = Field(default_factory=list)
+    total_layer_count: int = 0
+    extractable_layer_count: int = 0
+    feature_count: int = 0
+    count_complete: bool = True
+    candidate_layer_count: int = 0
+    resolved_layer_count: int = 0
+    cells: list[dict[str, Any]] = Field(default_factory=list)
+    datasets: list[dict[str, Any]] = Field(default_factory=list)
+    soundg_depth: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    semantics: list[str] = Field(default_factory=list)
+
+
+class S57ThematicExportCreateRequest(ApiModel):
+    name: str | None = Field(default=None, max_length=120)
+    object_classes: list[str] = Field(min_length=1, max_length=100)
+    bbox: tuple[float, float, float, float] | None = None
+    source_cells: list[str] = Field(default_factory=list, max_length=100)
+    dataset_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    max_features_per_class: int | None = Field(default=None, ge=1, le=1000000)
+
+    @field_validator("object_classes")
+    @classmethod
+    def strip_object_classes(cls, value: list[str]) -> list[str]:
+        normalized = [
+            item.rsplit(":", maxsplit=1)[-1].strip().upper()
+            for item in value
+            if item.strip()
+        ]
+        if not normalized:
+            raise ValueError("请至少选择一个 S-57 对象类")
+        return list(dict.fromkeys(normalized))
+
+    @field_validator("bbox")
+    @classmethod
+    def validate_bbox(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        if value is None:
+            return None
+        xmin, ymin, xmax, ymax = value
+        if not all(math.isfinite(item) for item in value):
+            raise ValueError("bbox 必须是有限数值")
+        if not (-180 <= xmin <= 180 and -180 <= xmax <= 180):
+            raise ValueError("bbox 经度必须在 -180..180")
+        if not (-90 <= ymin < ymax <= 90):
+            raise ValueError("bbox 纬度必须满足 -90 <= ymin < ymax <= 90")
+        return value
+
+
+class S57ThematicExportClassStat(ApiModel):
+    code: str
+    name_zh: str
+    category: str
+    category_name_zh: str
+    feature_count: int = 0
+    truncated: bool = False
+    layer_count: int = 0
+
+
+class S57ThematicExportFileRead(ApiModel):
+    path: str
+    object_class: str
+    source_cell: str | None = None
+    layer_id: str
+    feature_count: int
+    sha256: str
+    bytes: int
+    part: int = 1
+
+
+class S57ThematicExportPreviewRead(ApiModel):
+    path: str
+    feature_count: int
+    sha256: str
+    sample: bool = True
+
+
+class S57ThematicExportManifest(ApiModel):
+    schema_version: str
+    export_id: str
+    project_id: str
+    name: str
+    created_at: str
+    crs: str = "EPSG:4326"
+    categories: list[str] = Field(default_factory=list)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    bbox: list[float] | None = None
+    feature_count: int = 0
+    feature_count_unit: str | None = None
+    complete: bool = True
+    truncated: bool = False
+    truncation_reasons: list[str] = Field(default_factory=list)
+    object_classes: list[S57ThematicExportClassStat] = Field(default_factory=list)
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    cell_counts: dict[str, int] = Field(default_factory=dict)
+    files: list[S57ThematicExportFileRead] = Field(default_factory=list)
+    source_datasets: list[dict[str, Any]] = Field(default_factory=list)
+    source_version_ids: list[str] = Field(default_factory=list)
+    source_content_hashes: dict[str, str] = Field(default_factory=dict)
+    source_cells: list[str] = Field(default_factory=list)
+    skipped_layers: list[dict[str, Any]] = Field(default_factory=list)
+    depth: dict[str, Any] = Field(default_factory=dict)
+    preview: S57ThematicExportPreviewRead | None = None
+    semantics: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    stale: bool = False
+
+
+class S57ThematicExportList(ApiModel):
+    items: list[S57ThematicExportManifest] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

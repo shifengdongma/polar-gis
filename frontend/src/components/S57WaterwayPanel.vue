@@ -14,12 +14,14 @@ import type {
   S57WaterwaySearchItem,
   S57WaterwayProperty,
   S57WaterwaySnapshotManifest,
+  WaterwayGroup,
 } from '../types/s57Waterways'
 import {
   waterwayDisplayName,
   waterwayGroupColor,
   waterwaySourceLabel,
 } from '../utils/mapS57Waterway'
+import { measurePolylineLength } from '../utils/geodesicDistance'
 
 const props = defineProps<{ waterways: S57WaterwaysApi }>()
 const emit = defineEmits<{ (event: 'close'): void }>()
@@ -46,7 +48,6 @@ const detailVisible = computed(
 const selectedClasses = computed(() => props.waterways.selectedClasses.value)
 const includeAuxiliary = computed(() => props.waterways.includeAuxiliary.value)
 const viewportOnly = computed(() => props.waterways.viewportOnly.value)
-const selectionMode = computed(() => props.waterways.selectionMode.value)
 const catalogLoading = computed(() => props.waterways.catalogLoading.value)
 const catalogError = computed(() => props.waterways.catalogError.value)
 const searching = computed(() => props.waterways.searching.value)
@@ -77,8 +78,39 @@ const snapshotClassSummary = computed(
 const overviewLoading = computed(() => props.waterways.overviewLoading.value)
 const overviewError = computed(() => props.waterways.overviewError.value)
 const overviewCount = computed(() => props.waterways.overviewCount.value)
-const overviewTruncated = computed(() => props.waterways.overviewTruncated.value)
 const overviewWarnings = computed(() => props.waterways.overviewWarnings.value)
+const overviewMatchedTotal = computed(() => props.waterways.overviewMatchedTotal.value)
+const overviewHasMore = computed(() => props.waterways.overviewHasMore.value)
+const overviewCountComplete = computed(() => props.waterways.overviewCountComplete.value)
+const visibleGroups = computed(() => props.waterways.visibleGroups.value)
+const visibleCount = computed(() => props.waterways.visibleCount.value)
+const displayBudget = computed(() => props.waterways.displayBudget)
+const diagnostics = computed(() => props.waterways.diagnostics.value)
+const diagnosticsLoading = computed(() => props.waterways.diagnosticsLoading.value)
+const diagnosticsError = computed(() => props.waterways.diagnosticsError.value)
+const sourceCellFilter = computed(() => props.waterways.sourceCellFilter.value)
+const diagnosticsVisible = ref(false)
+const stats = computed(() => {
+  const data = catalog.value
+  const loaded = props.waterways.displayedCount.value
+  const matched = overviewMatchedTotal.value
+  return {
+    cells: data?.linkedCellCount ?? 0,
+    layers: data?.searchableLayerCount ?? 0,
+    matched,
+    loaded,
+    visible: visibleCount.value,
+    missing: matched === null ? null : Math.max(0, matched - loaded),
+    countComplete: (data?.countComplete ?? true) && overviewCountComplete.value,
+  }
+})
+const coverageGap = computed(() => diagnostics.value?.northeastPassage.hasGap ?? false)
+const missingRegionNames = computed(
+  () =>
+    diagnostics.value?.northeastPassage.missingRegions
+      .map((item) => item.nameZh)
+      .join('、') ?? '',
+)
 const groupSummary = computed(() => {
   const entries = new Map<
     string,
@@ -102,12 +134,162 @@ const overviewMessage = computed(() => {
   if (overviewLoading.value) return '正在从服务器提取选中类别的航道要素…'
   if (overviewError.value) return overviewError.value
   if (overviewCount.value > 0) {
-    return `已在地图显示 ${overviewCount.value} 条${
-      overviewTruncated.value ? '（达到单次显示上限）' : ''
-    }`
+    const matched =
+      overviewMatchedTotal.value === null
+        ? '匹配总数未知'
+        : `匹配 ${overviewMatchedTotal.value} 条`
+    const more = overviewHasMore.value ? '，可继续加载' : ''
+    return `地图已加载 ${overviewCount.value} 条（${matched}${more}）`
   }
   return ''
 })
+
+const REGION_STATUS_LABELS: Record<string, string> = {
+  imported_enc_coverage: '已导入相关 ENC（范围近似）',
+  only_basemap_or_auxiliary: '只有底图/辅助对象',
+  no_waterway_objects: '无航道对象',
+  no_enc_imported: '未导入相应 ENC',
+  unknown: '覆盖未知',
+}
+
+function regionStatusLabel(status: string): string {
+  return REGION_STATUS_LABELS[status] ?? status
+}
+
+function regionStatusType(
+  status: string,
+): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'imported_enc_coverage') return 'success'
+  if (status === 'no_enc_imported' || status === 'unknown') return 'danger'
+  return 'warning'
+}
+
+function onViewportOnlyChange(value: string | number | boolean) {
+  props.waterways.setViewportOnly(value === true)
+}
+
+function onGroupChange(group: string, value: string | number | boolean) {
+  props.waterways.setVisibleGroup(group as WaterwayGroup, value === true)
+}
+
+function groupVisible(group: string): boolean {
+  return visibleGroups.value.has(group as WaterwayGroup)
+}
+
+async function loadMoreOnMap() {
+  if (props.waterways.displayedCount.value >= displayBudget.value) {
+    ElMessage.warning(
+      `已达到地图叠加预算 ${displayBudget.value} 条，请缩小视口或减少类别`,
+    )
+    return
+  }
+  const before = props.waterways.displayedCount.value
+  const ok = await props.waterways.loadMoreOverview()
+  if (!ok) {
+    if (props.waterways.overviewError.value) {
+      ElMessage.warning(props.waterways.overviewError.value)
+    }
+    return
+  }
+  const added = props.waterways.displayedCount.value - before
+  if (added > 0) ElMessage.success(`已追加 ${added} 条航道要素`)
+  else ElMessage.info('没有更多可加载的航道要素')
+}
+
+function openDiagnostics() {
+  diagnosticsVisible.value = true
+  if (!diagnostics.value && !diagnosticsLoading.value) {
+    void props.waterways.loadDiagnostics()
+  }
+}
+
+function toPoints(value: unknown): Array<[number, number]> {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(
+      (point): point is [number, number] =>
+        Array.isArray(point) &&
+        point.length >= 2 &&
+        Number.isFinite(point[0]) &&
+        Number.isFinite(point[1]),
+    )
+    .map((point) => [Number(point[0]), Number(point[1])])
+}
+
+function geometryLengthKm(geometry: Record<string, unknown> | null): number | null {
+  if (!geometry) return null
+  const type = String(geometry.type || '')
+  const coordinates = geometry.coordinates
+  const lines: Array<Array<[number, number]>> = []
+  if (type === 'LineString') {
+    lines.push(toPoints(coordinates))
+  } else if (type === 'MultiLineString' && Array.isArray(coordinates)) {
+    for (const line of coordinates) lines.push(toPoints(line))
+  } else {
+    return null
+  }
+  let meters = 0
+  let hasLength = false
+  for (const line of lines) {
+    if (line.length < 2) continue
+    const value = measurePolylineLength(line)
+    if (Number.isFinite(value) && value > 0) {
+      meters += value
+      hasLength = true
+    }
+  }
+  return hasLength ? meters / 1000 : null
+}
+
+const detailLengthKm = computed(() =>
+  detail.value ? geometryLengthKm(detail.value.geometry) : null,
+)
+
+function bboxText(bbox: number[] | null): string {
+  if (!bbox || bbox.length < 4) return '未提供'
+  return bbox.map((value) => value.toFixed(5)).join(', ')
+}
+
+function detailCenter(): [number, number] | null {
+  const bbox = detail.value?.bbox
+  if (!bbox || bbox.length < 4) return null
+  return [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+}
+
+async function copyDetailInfo() {
+  const current = detail.value
+  if (!current) return
+  const center = detailCenter()
+  const lines = [
+    `名称：${waterwayDisplayName(current)}`,
+    `对象类别：${current.objectNameZh} · ${current.objectClass}`,
+    `来源 Cell：${current.sourceCell || '未提供'}`,
+    `数据集：${current.datasetName} · v${current.versionNo}`,
+    `几何类型：${current.geometryType || '未提供'}`,
+    `范围：${bboxText(current.bbox)}`,
+  ]
+  if (center) lines.push(`中心经纬度：${center[1].toFixed(6)}, ${center[0].toFixed(6)}`)
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'))
+    ElMessage.success('已复制经纬度/来源信息')
+  } catch {
+    ElMessage.warning('浏览器不允许访问剪贴板')
+  }
+}
+
+function viewSameCell() {
+  const cell = detail.value?.sourceCell
+  if (!cell) {
+    ElMessage.warning('该要素未提供来源 Cell')
+    return
+  }
+  props.waterways.setSourceCellFilter(cell)
+  ElMessage.info(`已切换为仅查看 Cell ${cell}`)
+}
+
+function clearSourceCellFilter() {
+  props.waterways.setSourceCellFilter(null)
+}
 
 function checked(code: string): boolean {
   return selectedClasses.value.has(code)
@@ -238,6 +420,7 @@ function closePanel() {
     <div class="waterway-snapshot-actions">
       <el-button size="small" text @click="openSnapshotDialog">保存提取结果</el-button>
       <el-button size="small" text @click="openSnapshotList">已保存航道数据</el-button>
+      <el-button size="small" text @click="openDiagnostics">覆盖诊断</el-button>
       <button
         type="button"
         class="waterway-help-toggle"
@@ -251,9 +434,29 @@ function closePanel() {
         <li>点击“在地图显示选中类别”即可把要素叠加到当前底图/海图上并自动缩放，<b>不需要先搜索，也不要求先加载 S-57 WMS 海图图层</b>。</li>
         <li>“搜索”只更新下方结果列表，不会自动上图；可在单条结果上点“定位/显示”。</li>
         <li>“当前视口”是可选筛选：勾选后只查询当前地图范围；不勾选则查询整个项目当前版本。</li>
-        <li>“地图点选”只用于点击<b>已经显示</b>的专题要素查看详情，不影响搜索或上图；需先显示要素再开启。</li>
-        <li>图例颜色对应四个航道组；地图叠加受单次上限约束（默认 2000 条），达到上限会提示。</li>
+        <li>点击地图上<b>已经显示</b>的专题要素即可高亮并打开详情，无需先开启额外模式。</li>
+        <li>图例颜色对应四个航道组；地图叠加有分页和浏览器预算（默认 6,000 条），达到上限会提示。低缩放仅作类别概览，放大查看细部。</li>
+        <li><b>交通分隔制 ≠ 推荐航路；局部 S-57 要素 ≠ 完整规划航线。</b></li>
       </ol>
+    </div>
+
+    <div v-if="hasWaterwayData" class="waterway-stats">
+      <span>ENC Cell <b>{{ stats.cells }}</b></span>
+      <span>可检索层 <b>{{ stats.layers }}</b></span>
+      <span>匹配 <b>{{ stats.matched === null ? '未知' : stats.matched }}</b></span>
+      <span>已加载 <b>{{ stats.loaded }}</b></span>
+      <span>当前可见 <b>{{ stats.visible }}</b></span>
+      <span>未加载 <b>{{ stats.missing === null ? '未知' : stats.missing }}</b></span>
+    </div>
+    <div v-if="!stats.countComplete" class="waterway-overview-note">
+      部分对象类数量无法精确统计，界面以“未知”显示。
+    </div>
+    <div v-if="coverageGap" class="waterway-coverage-warning">
+      当前项目未覆盖俄罗斯沿岸主要 NSR 航段（{{ missingRegionNames }}）；地图片段不能视为完整东北航道。如已有合法 ENC，请通过批量导入并关联项目。
+    </div>
+    <div v-if="sourceCellFilter" class="waterway-cell-filter">
+      仅看 Cell <b>{{ sourceCellFilter }}</b>
+      <el-button size="small" text @click="clearSourceCellFilter">清除</el-button>
     </div>
 
     <div v-if="catalogLoading" class="waterway-panel-empty">正在读取项目航道图层…</div>
@@ -276,11 +479,8 @@ function closePanel() {
           @keyup.enter="onSearch"
         />
         <div class="waterway-search-row">
-          <el-checkbox :model-value="viewportOnly" size="small" @change="(value: string | number | boolean) => (waterways.viewportOnly.value = value === true)">
+          <el-checkbox :model-value="viewportOnly" size="small" @change="onViewportOnlyChange">
             当前视口
-          </el-checkbox>
-          <el-checkbox :model-value="selectionMode" size="small" @change="(value: string | number | boolean) => waterways.setSelectionMode(value === true)">
-            地图点选
           </el-checkbox>
           <el-button size="small" type="primary" :disabled="!waterways.canSearch.value" :loading="searching" @click="onSearch">搜索</el-button>
           <el-button size="small" text @click="waterways.clearFilters()">清空</el-button>
@@ -290,14 +490,23 @@ function closePanel() {
       <div class="waterway-map-legend">
         <div class="waterway-map-legend-head">
           <span>地图专题图例</span>
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            :loading="overviewLoading"
-            :disabled="selectedClasses.size === 0"
-            @click="showOverviewOnMap"
-          >在地图显示选中类别</el-button>
+          <div class="waterway-legend-actions">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="overviewLoading"
+              :disabled="selectedClasses.size === 0"
+              @click="showOverviewOnMap"
+            >在地图显示选中类别</el-button>
+            <el-button
+              v-if="overviewHasMore"
+              size="small"
+              text
+              :loading="overviewLoading"
+              @click="loadMoreOnMap"
+            >加载更多</el-button>
+          </div>
         </div>
         <div class="waterway-map-legend-items">
           <span
@@ -309,8 +518,30 @@ function closePanel() {
             <b>{{ entry.count }}</b>
           </span>
         </div>
+        <div class="waterway-group-toggles">
+          <el-checkbox
+            :model-value="groupVisible('fairway_route')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('fairway_route', value)"
+          >航道/推荐路线</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('traffic_separation')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('traffic_separation', value)"
+          >交通分隔制</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('restriction')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('restriction', value)"
+          >航行限制</el-checkbox>
+          <el-checkbox
+            :model-value="groupVisible('waterway_environment')"
+            size="small"
+            @change="(value: string | number | boolean) => onGroupChange('waterway_environment', value)"
+          >辅助/环境</el-checkbox>
+        </div>
         <div class="waterway-map-legend-hint">
-          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计，叠加受单次上限约束。
+          勾选类别后点右侧按钮即可上图，无需先“搜索”；数字来自图层目录统计。交通分隔制 ≠ 推荐航路；低缩放仅作类别概览，放大查看细部。
         </div>
         <div
           v-if="overviewMessage"
@@ -372,7 +603,7 @@ function closePanel() {
       </div>
 
       <div class="waterway-results-head">
-        <span>搜索结果 {{ total }} 条</span>
+        <span>搜索结果 {{ total }} 条 · 已加载 {{ stats.loaded }} · 当前可见 {{ stats.visible }}</span>
         <el-button size="small" text :disabled="waterways.displayedCount.value === 0" @click="waterways.clearDisplay()">
           清除显示（{{ waterways.displayedCount.value }}）
         </el-button>
@@ -431,10 +662,20 @@ function closePanel() {
           <el-descriptions-item label="对象类别">{{ detail.objectNameZh }} · {{ detail.objectClass }}</el-descriptions-item>
           <el-descriptions-item label="来源">{{ waterwaySourceLabel(detail) }}</el-descriptions-item>
           <el-descriptions-item label="数据集">{{ detail.datasetName }} · v{{ detail.versionNo }}</el-descriptions-item>
+          <el-descriptions-item label="源 ENC Cell">{{ detail.sourceCell || '未提供' }}</el-descriptions-item>
           <el-descriptions-item label="几何类型">{{ detail.geometryType || '未提供' }}</el-descriptions-item>
-          <el-descriptions-item label="空间范围">{{ detail.bbox ? detail.bbox.map((value) => value.toFixed(5)).join(', ') : '未提供' }}</el-descriptions-item>
+          <el-descriptions-item label="空间范围">{{ bboxText(detail.bbox) }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailLengthKm !== null" label="当前对象几何长度">
+            {{ detailLengthKm.toFixed(3) }} km（WGS84 测地线；不代表整条东北航道里程）
+          </el-descriptions-item>
           <el-descriptions-item label="导入更新时间">{{ detail.updatedAt || '未提供' }}</el-descriptions-item>
         </el-descriptions>
+        <div class="waterway-detail-actions">
+          <el-button size="small" text @click="copyDetailInfo">复制经纬度/来源</el-button>
+          <el-button size="small" text :disabled="!detail.sourceCell" @click="viewSameCell">
+            查看同 Cell 其他对象
+          </el-button>
+        </div>
         <div class="waterway-detail-section-title">S-57 原始属性 / 中文解释</div>
         <el-table :data="detail.properties" size="small" class="waterway-detail-table" max-height="420">
           <el-table-column prop="field" label="字段" width="92" />
@@ -533,6 +774,80 @@ function closePanel() {
           <el-button size="small" text @click="downloadSnapshot(snapshot)">下载 GeoJSON</el-button>
         </article>
       </div>
+    </el-drawer>
+
+    <el-drawer
+      v-model="diagnosticsVisible"
+      title="航道完整性诊断 / 东北航道对照"
+      size="560px"
+      class="waterway-diagnostics-drawer"
+      append-to-body
+    >
+      <div v-if="diagnosticsLoading" class="waterway-panel-empty">正在核查项目关联、图层与覆盖范围…</div>
+      <div v-else-if="diagnosticsError" class="waterway-panel-error">
+        <span>{{ diagnosticsError }}</span>
+        <el-button size="small" text @click="waterways.loadDiagnostics()">重试</el-button>
+      </div>
+      <template v-else-if="diagnostics">
+        <div class="waterway-diagnostic-summary">
+          <span>已关联 Cell <b>{{ diagnostics.totals.linkedCellCount }}</b></span>
+          <span>航道层 <b>{{ diagnostics.totals.waterwayLayerCount }}</b></span>
+          <span>可检索 <b>{{ diagnostics.totals.searchableLayerCount }}</b></span>
+          <span>可渲染 <b>{{ diagnostics.totals.renderableLayerCount }}</b></span>
+          <span>要素 <b>{{ diagnostics.totals.featureCount }}</b></span>
+          <span>数量完整 <b>{{ diagnostics.totals.countComplete ? '是' : '未知' }}</b></span>
+        </div>
+        <div v-if="diagnostics.northeastPassage.hasGap" class="waterway-coverage-warning">
+          {{ diagnostics.northeastPassage.summary }}
+        </div>
+
+        <div class="waterway-detail-section-title">按 ENC Cell</div>
+        <el-table :data="diagnostics.cells" size="small" max-height="260">
+          <el-table-column prop="sourceCell" label="Cell" width="92" />
+          <el-table-column prop="versionNos" label="版本" width="60">
+            <template #default="{ row }">{{ row.versionNos.join(', ') || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="waterwayLayerCount" label="航道层" width="70" />
+          <el-table-column prop="waterwayFeatureCount" label="要素" width="70" />
+          <el-table-column prop="coverageSource" label="覆盖来源" width="100" />
+          <el-table-column label="原因" min-width="150">
+            <template #default="{ row }">{{ row.reasons.join('；') || '—' }}</template>
+          </el-table-column>
+        </el-table>
+
+        <div class="waterway-detail-section-title">东北航道 / 北方海航道对照区域</div>
+        <div class="waterway-diagnostic-regions">
+          <article
+            v-for="region in diagnostics.regions"
+            :key="region.code"
+            class="waterway-diagnostic-region"
+          >
+            <div class="waterway-diagnostic-region-head">
+              <strong>{{ region.nameZh }}</strong>
+              <el-tag size="small" :type="regionStatusType(region.status)">
+                {{ regionStatusLabel(region.status) }}
+              </el-tag>
+            </div>
+            <div class="waterway-diagnostic-region-meta">
+              Cell：{{ region.cells.join('、') || '无' }} · 航道类：{{ region.waterwayClasses.join('、') || '无' }} · 要素：{{ region.featureCount }}
+            </div>
+            <div class="waterway-diagnostic-region-note">{{ region.note }}</div>
+          </article>
+        </div>
+
+        <div class="waterway-detail-section-title">口径与参考</div>
+        <div class="waterway-diagnostic-notes">
+          <div v-for="note in diagnostics.notes" :key="note">{{ note }}</div>
+          <div v-for="warning in diagnostics.warnings" :key="warning">{{ warning }}</div>
+        </div>
+        <div class="waterway-diagnostic-references">
+          <div v-for="reference in diagnostics.references" :key="reference.url">
+            <a :href="reference.url" target="_blank" rel="noopener noreferrer">{{ reference.title }}</a>
+            <span>（{{ reference.checkedAt }}）</span>
+            <div>{{ reference.scope }}</div>
+          </div>
+        </div>
+      </template>
     </el-drawer>
   </section>
 </template>

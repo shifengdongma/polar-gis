@@ -14,18 +14,24 @@ describe('S-57 waterway integration', () => {
     expect((source.match(/map\.on\('pointermove'/g) ?? []).length).toBe(1)
   })
 
-  it('picks waterway features inside the existing singleclick handler only in selection mode', () => {
+  it('picks waterway features inside the existing singleclick handler without an extra mode', () => {
     const clickBlock = source.slice(
       source.indexOf("map.on('singleclick'"),
       source.indexOf("map.on('moveend'"),
     )
-    expect(clickBlock).toContain('s57Waterways.selectionMode.value')
+    expect(clickBlock).not.toContain('selectionMode.value')
     expect(clickBlock).toContain('s57Waterways.pickAtPixel(event.pixel)')
     expect(clickBlock).toContain('waterwayPanelOpen.value')
     expect(clickBlock).toContain('!layerPanelCollapsed.value')
-    // Waterway pick must precede weather/identify/route selection.
-    expect(clickBlock.indexOf('s57Waterways.pickAtPixel')).toBeLessThan(
-      clickBlock.indexOf('weatherMode.value'),
+    // Explicit weather/identify modes and higher-z route overlays keep priority.
+    expect(clickBlock.indexOf('weatherMode.value')).toBeLessThan(
+      clickBlock.indexOf('s57Waterways.pickAtPixel'),
+    )
+    expect(clickBlock.indexOf('routeDrawing.pickRouteAtPixel')).toBeLessThan(
+      clickBlock.indexOf('s57Waterways.pickAtPixel'),
+    )
+    expect(clickBlock.indexOf('planningRouteLayer.pickRouteAtPixel')).toBeLessThan(
+      clickBlock.indexOf('s57Waterways.pickAtPixel'),
     )
   })
 
@@ -39,7 +45,7 @@ describe('S-57 waterway integration', () => {
     expect(source).toContain('s57Waterways.attach()')
     expect(source).toContain('s57Waterways.reloadForProjection()')
     expect(source).toContain('s57Waterways.dispose()')
-    expect(source).toContain('s57Waterways.setSelectionMode(false)')
+    expect(source).toContain('s57ThematicPreview.dispose()')
     expect(source).not.toContain('runtimeLayers.value.add(s57Waterways')
     expect(source).not.toContain('routesStore.addWaterway')
   })

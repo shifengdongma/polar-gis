@@ -1,6 +1,6 @@
 # Polar-GIS 用户操作使用手册
 
-## 极地海洋环境信息平台 — 用户手册 v1.0
+## 极地海洋环境信息平台 — 用户手册 v1.3
 
 ---
 
@@ -369,6 +369,8 @@ docker compose down -v
 
 **快速切换**：
 - 点击图层名称左侧的开关直接切换可见性
+
+**底部专题入口**：图层面板底部提供“航道专题”（查询/叠加/快照）、“专题提取”（水深/危险物独立成果）与“环境叠加”。两者都是独立成果/图层，不改变海图 WMS 图层选择；操作见 §10.9、§10.10。
 
 #### S-57 图层批量加载（新增功能）
 
@@ -1149,16 +1151,28 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/projects/{projectId}/s57-waterways/catalog` | 航道类别目录与计数 |
-| `POST` | `/api/v1/projects/{projectId}/s57-waterways/search` | 当前项目版本跨图层搜索（分页） |
-| `POST` | `/api/v1/projects/{projectId}/s57-waterways/preview` | 地图专题总览要素（不落盘，默认 ≤2000） |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/catalog` | 航道类别目录与计数（`searchableLayerCount/linkedCellCount` 等） |
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/search` | 当前项目版本跨图层搜索（分页，可带 `sourceCells`） |
+| `POST` | `/api/v1/projects/{projectId}/s57-waterways/preview` | 地图专题分页要素（不落盘；公平分类预算 + `classCursors/matchedTotal/hasMore`） |
+| `GET` | `/api/v1/projects/{projectId}/s57-waterways/diagnostics` | 只读完整性诊断：Cell/对象类/数量/覆盖来源/东北航道区域缺口/参考口径 |
 | `GET` | `/api/v1/projects/{projectId}/s57-waterways/{featureId}` | 航道要素详情（原始属性 + 中文标签） |
 | `POST` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 提取并保存 GeoJSON 成果（201） |
 | `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots` | 已保存成果列表（含 `stale`） |
 | `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}` | 成果 manifest |
 | `GET` | `/api/v1/projects/{projectId}/s57-waterways/snapshots/{snapshotId}/download` | 下载 `application/geo+json` |
 
-> 航道接口只读项目当前有效版本的已发布、可查询图层；快照目录默认 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/`。
+**S-57 水深/危险物专题 API**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/projects/{projectId}/s57-thematics/catalog` | 实际可提取对象类/图层/要素数/Cell/数据集/SOUNDG 深度诊断 |
+| `POST` | `/api/v1/projects/{projectId}/s57-thematics/exports` | 创建专题成果（201；`objectClasses` 必选，可选 `bbox/sourceCells/datasetIds/maxFeaturesPerClass`） |
+| `GET` | `/api/v1/projects/{projectId}/s57-thematics/exports` | 历史成果列表（含 `complete/truncated/stale`） |
+| `GET` | `/api/v1/projects/{projectId}/s57-thematics/exports/{exportId}` | 成果 manifest |
+| `GET` | `/api/v1/projects/{projectId}/s57-thematics/exports/{exportId}/download` | 单文件 GeoJSON 或 ZIP；`?file=` 指定单文件、`?format=zip` 强制 ZIP |
+| `GET` | `/api/v1/projects/{projectId}/s57-thematics/exports/{exportId}/preview` | 成果样例预览（每类≤50/总计≤500，不是完整成果） |
+
+> 航道/专题接口只读项目当前有效版本的已发布、可查询图层；快照目录默认 `<STORAGE_ROOT>/navigation/waterways/<projectId>/<snapshotId>/`，专题成果默认 `<STORAGE_ROOT>/navigation/s57-thematics/<projectId>/<exportId>/`。专题成果不新增数据库表。
 
 ---
 
@@ -1257,17 +1271,29 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | DEPARE | 水深区域 | 面 |
 | DEPCNT | 等深线 | 线 |
 | SOUNDG | 水深点 | 点 |
-| NAVLNE | 导航线 | 线 |
+| NAVLNE | 航行线 | 线 |
 | FAIRWY | 航道 | 面 |
+| DWRTCL | 深水航道中心线 | 线 |
+| DWRTPT | 深水航道部分 | 点/面 |
+| RCRTCL | 推荐航线中心线 | 线 |
+| RCTLPT | 推荐通航车道部分 | 点/面 |
+| TSSLPT | 分道通航制车道部分 | 面 |
+| TSSBND | 交通分隔带边界 | 线 |
+| TSEZNE | 交通分隔区域 | 面 |
+| TSSRON | 环形交通分隔制 | 面 |
 | LIGHTS | 灯塔 | 点 |
 | BOYLAT | 侧面浮标 | 点 |
 | BCNLAT | 侧面立标 | 点 |
 | WRECKS | 沉船 | 点 |
 | OBSTRN | 障碍物 | 点/面 |
+| UWTROC | 水下或露出水面的礁石 | 点/面 |
+| M_QUAL | 数据质量 | 面 |
+| SWPARE | 扫测区域 | 面 |
+| UNSARE | 未测量区域 | 面 |
 | RESARE | 限制区域 | 面 |
 | ACHARE | 锚地 | 面 |
 
-完整列表见前端源文件 `frontend/src/utils/s57ObjectNames.ts`。
+> `RCRTCL/RCTLPT` 不是雷达对象；`TSSLPT` 是面状车道部分，不是航道线。完整列表见前端源文件 `frontend/src/utils/s57ObjectNames.ts`。
 
 ### 9.3 数据库表结构
 
@@ -1295,8 +1321,9 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | public | `planning_routes` | 候选航线（坐标 JSON/指标/风险快照） |
 | geo | `<导入数据表>` | 空间数据存储（由系统自动创建） |
 
-> 规划风险栅格 gzip 与航道快照 GeoJSON 不存表，保存在共享存储卷
-> `<STORAGE_ROOT>/navigation/plans|waterways`。数据库迁移版本为 `0001`–`0006`。
+> 规划风险栅格 gzip、航道快照 GeoJSON 与 S-57 专题成果不存表，保存在共享存储卷
+> `<STORAGE_ROOT>/navigation/plans|waterways|s57-thematics`。数据库迁移版本为 `0001`–`0006`，本轮专题功能不新增迁移。
+> 大型 ENC 项目（数千个 `geo.*` 表）需要 PostgreSQL `max_locks_per_transaction=4096`；`deploy/compose.yml` 已通过 postgres 启动参数设置。
 
 ### 9.4 错误代码速查
 
@@ -1319,8 +1346,15 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `S57_WATERWAY_QUERY_TIMEOUT` | 航道查询超过 `S57_WATERWAY_QUERY_TIMEOUT_MS` |
 | `S57_WATERWAY_DB_UNAVAILABLE` | 航道查询数据库不可用（含共享内存不足） |
 | `S57_WATERWAY_FEATURE_NOT_FOUND` | 航道要素不存在或不属于当前项目版本 |
+| `S57_WATERWAY_CURSOR_INVALID` | 预览游标失效（项目版本/类别已变化），需重新加载 |
 | `S57_WATERWAY_SNAPSHOT_EMPTY` | 保存成果时没有匹配要素 |
 | `S57_WATERWAY_SNAPSHOT_NOT_FOUND` | 成果不存在 |
+| `S57_THEMATIC_NO_LAYER` | 没有可提取的 S-57 专题图层 |
+| `S57_THEMATIC_NO_FEATURE` | 筛选后没有匹配的专题要素，未创建成果 |
+| `S57_THEMATIC_CLASS_INVALID` | 对象类未导入或不受支持 |
+| `S57_THEMATIC_EXPORT_NOT_FOUND` | 专题成果/文件不存在 |
+| `S57_THEMATIC_EXPORT_FAILED` | 专题提取读取/写入失败（临时目录已清理） |
+| `S57_THEMATIC_DOWNLOAD_INVALID` | 下载格式/文件选择无效（多文件请用 ZIP 或 `file` 参数） |
 | `ENVIRONMENT_DATA_MISSING` | `real_only` 下沿途环境数据缺失 |
 | `NO_FEASIBLE_ROUTE` | 规划无可行航线（极端合成值/阻断） |
 | `PLANNER_TIMEOUT` | 规划任务超时 |
@@ -1366,12 +1400,22 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 | `ICE_TILE_CACHE_ENTRIES` | `256` | 冰情瓦片 LRU 容量 |
 | `ICE_TILE_MAX_ZOOM` | `10` | 冰情瓦片最大层级 |
 | `ICE_MAX_CONCURRENT_GRID_LOADS` | `2` | 不同日期冷网格并发装载上限 |
+| `S57_WATERWAY_INTROSPECTION_BATCH_SIZE` | `200` | 每次批量内省的表数量；不再限制可遍历图层总数 |
+| `S57_WATERWAY_QUERY_WARNING_LAYERS` | `500` | 候选层超过该值时仅提示查询可能较慢，不截断 |
 | `S57_WATERWAY_MAX_PAGE_SIZE` | `50` | 航道搜索单页上限 |
 | `S57_WATERWAY_QUERY_TIMEOUT_MS` | `10000` | 航道查询超时 |
 | `S57_WATERWAY_SNAPSHOT_MAX_FEATURES` | `20000` | 单次成果保存要素上限 |
-| `S57_WATERWAY_PREVIEW_MAX_FEATURES` | `2000` | 地图专题总览上限 |
-| `S57_WATERWAY_SNAPSHOT_BATCH_SIZE` | `500` | 成果导出批次大小 |
-| `S57_WATERWAY_SNAPSHOT_ROOT` | `<STORAGE_ROOT>/navigation/waterways` | 成果目录 |
+| `S57_WATERWAY_PREVIEW_MAX_FEATURES` | `2000` | 单次预览页预算（可按类继续加载） |
+| `S57_WATERWAY_SNAPSHOT_BATCH_SIZE` | `500` | 成果/预览批次大小 |
+| `S57_WATERWAY_SNAPSHOT_ROOT` | `<STORAGE_ROOT>/navigation/waterways` | 航道快照目录 |
+| `S57_THEMATIC_ROOT` | `<STORAGE_ROOT>/navigation/s57-thematics` | 专题成果目录 |
+| `S57_THEMATIC_MAX_FEATURES_PER_CLASS` | `300000` | 单对象类专题提取上限 |
+| `S57_THEMATIC_MAX_FEATURES` | `1000000` | 单次专题提取总上限 |
+| `S57_THEMATIC_MAX_FEATURES_PER_FILE` | `50000` | 单 GeoJSON 分卷上限 |
+| `S57_THEMATIC_BATCH_SIZE` | `500` | 专题提取键集批次 |
+| `S57_THEMATIC_EXPORT_TIMEOUT_SECONDS` | `300` | 专题提取时间预算；超时标记不完整 |
+| `S57_THEMATIC_PREVIEW_PER_CLASS` | `50` | 样例预览每类最多要素数 |
+| `S57_THEMATIC_PREVIEW_MAX_FEATURES` | `500` | 样例预览总要素上限 |
 | `NAVIGATION_ENABLED` | `true` | 导航环境/规划开关 |
 | `NAVIGATION_DATA_ROOT` | `/data/navigation` | 环境数据根目录 |
 | `NAVIGATION_ICE_DATA_ROOT` | 复用 `ICE_DATA_ROOT` | 导航冰情数据目录 |
@@ -1507,8 +1551,8 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 左侧“图层目录”底部新增 **航道专题** 入口（徽标只统计主类别航道要素，不包含 DEPARE/DEPCNT/SOUNDG 等辅助要素）。面板分为：
 
-- **航道与推荐路线**：航道 FAIRWY、推荐航路 RECTRC、航行线 NAVLNE、双向航路段 TWRTPT、运河 CANALS；
-- **交通分隔制**：TSSLPT、TSSBND、TSEZNE、TSSRON；
+- **航道与推荐路线**：航道 FAIRWY、推荐航路 RECTRC、航行线 NAVLNE、双向航路段 TWRTPT、深水航道中心线 DWRTCL、深水航道部分 DWRTPT、推荐航线中心线 RCRTCL、推荐通航车道部分 RCTLPT（默认不选）、运河 CANALS；
+- **交通分隔制**：TSSLPT（分道通航制车道部分，面状）、TSSBND、TSEZNE、TSSRON；
 - **航行限制与管制**：CTNARE；
 - **航道环境辅助要素**：DRGARE；
 - **相关辅助要素（不视为航道）**：RESARE、ACHARE、BERTHS、PILPNT、DEPARE、DEPCNT、SOUNDG，需打开辅助开关后才会查询。
@@ -1517,32 +1561,43 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 1. 勾选需要的航道类别（计数为 0 的类别不可用）；
 2. 点击 **在地图显示选中类别**，要素会按组颜色叠加到当前底图/海图上并自动缩放；
-3. 如需点击要素查看属性，再开启 **地图点选** 并点击地图上的航道要素；
-4. 点击 **清除显示** 移除叠加。
+3. 直接点击地图上已显示的航道要素即可高亮并打开详情（无需先开启额外模式）；
+4. 需要更多要素时点击 **加载更多**；点击 **清除显示** 移除叠加。
 
 说明：
 
 - 左侧面板高度不足时，**航道专题区域内部滚动**，“地图专题图例/在地图显示选中类别”会吸附在专题区域顶部，图层面板底部按钮始终可见，不需要缩小浏览器页面。
 - **搜索**只更新下方结果列表，不会自动上图；可用单条结果的“定位/显示”。
 - **当前视口**是可选查询范围：勾选后只查当前地图范围，不勾选则查整个项目当前版本。
-- **地图点选**只影响“点击已显示要素查看详情”，不会影响搜索或上图的要素数量；没有显示要素时点击地图不会选中航道。
+- 地图点击只命中**已经显示**的航道要素；没有显示要素时点击地图不会选中航道。天气/识别模式、手绘航路和规划候选航线优先于航道拾取。
+- 面板顶部显示**已关联 ENC Cell / 可检索航道层 / 真实匹配数 / 地图已加载 / 当前可见 / 未加载**；匹配总数无法精确计算时显示“未知”，不会把“只加载了前 N 条”误写成“项目只有 N 条”。
+- 地图叠加分页加载：单次请求有服务端预算，前端总叠加预算默认 6,000 条；达到预算时提示缩小视口或减少类别。低缩放仅作类别概览，放大后显示细部。
 - 航道专题直接查询已导入的 PostGIS `geo.*` 数据，叠加图层独立于海图 WMS 图层；加载 S-57 海图图层只是提供背景海图，不是使用专题的前提。
 
 可按名称/属性（OBJNAM/NOBJNM/INFORM）搜索，或勾选“当前视口”只查当前地图范围；可勾选对象类别、分页结果。结果列表显示真实名称或“未命名航道要素”、S-57 对象代码、来源 ENC/数据集，提供：
 
 - **定位**：把该要素几何转换到当前地图投影并 fit；不改变投影、已选海图、冰情日期、航路草稿或规划结果；
-- **详情**：显示中文类别、原始代码、名称、来源 ENC、数据集版本、几何类型、空间范围、导入更新时间，以及原始属性/中文解释双列；缺失属性显示“未提供”；
+- **详情**：显示中文类别、原始代码、名称、来源 ENC、数据集版本、几何类型、空间范围、导入更新时间、原始属性/中文解释双列；线状要素额外显示**当前独立对象的 WGS84 测地线长度**（MultiLineString 逐段求和；不代表整条东北航道里程）；提供“复制经纬度/来源信息”“查看同 Cell 其他对象”；缺失属性显示“未提供”；
 - **显示/隐藏**：把有限搜索结果叠加到独立航道专题图层（不写入航路草稿，不参与 Draw/Modify/Select）。
 
 **地图专题总览（新增）**：类别列表下方显示“地图专题图例”，按航道组着色并汇总目录计数（航道与推荐路线、交通分隔制、限制/管制、相关辅助要素）。点击 **在地图显示选中类别**：
 
-- 按当前勾选类别、关键词与“当前视口”条件从服务器提取要素，叠加到独立航道专题图层（不写入航路草稿）；
-- 自动缩放到本次叠加要素范围；颜色与图例一致：航道与推荐路线为青色、交通分隔制为橙色、限制/管制为红色、辅助要素为灰色；
-- 受服务端单次显示上限约束（默认 2000 条，可在后端 `S57_WATERWAY_PREVIEW_MAX_FEATURES` 调整），达到上限会提示；无几何要素不会叠加；
-- 开启“地图点选”后，点击地图上的航道要素可查看详情；点击“清除显示”移除叠加；
-- 图例中的数字来自图层目录统计，不等同于本次实际叠加条数；面板会显示本次已叠加数量。
+- 按当前勾选类别、关键词与“当前视口”条件从服务器**按对象类公平分页**提取要素，叠加到独立航道专题图层（不写入航路草稿）；
+- 自动缩放到首批叠加要素范围；颜色与图例一致：航道与推荐路线为青色、交通分隔制为橙色、限制/管制为红色、辅助要素为灰色；低缩放降低线宽/填充透明度，避免橙色碎片化；
+- 点击 **加载更多** 继续追加；结果按要素 ID 去重合并，不会覆盖上一批。单次请求受 `S57_WATERWAY_PREVIEW_MAX_FEATURES`（默认 2000）约束，前端总叠加预算 6,000 条；
+- 面板顶部同时显示“真实匹配数”和“地图已加载数”；匹配总数未知时明确显示“未知”；
+- 分组开关可独立显示/隐藏“航道与推荐路线、交通分隔制、航行限制、辅助/环境”，只影响当前渲染，不丢弃已加载要素；
+- 点击 **清除显示** 移除叠加。
 
-打开“地图点选”后，点击地图上的航道专题要素会选中并打开详情；该模式默认关闭，进入识别/气象/测量/绘制/风险点选时会自动关闭。关闭面板会卸载专题图层。
+点击地图上的航道专题要素会选中并打开详情；不需要额外的“地图点选”模式。天气/识别模式、手绘航路、规划候选航线优先，进入测量/绘制/风险点选时航道拾取自动让位。关闭面板会卸载专题图层。
+
+**覆盖诊断与东北航道缺口**：
+
+- 面板顶部“覆盖诊断”打开只读抽屉，显示已关联 Cell、航道层、可检索/可渲染数、要素数；按 Cell 列出对象类/数量/覆盖来源/不可用原因。
+- 区域对照：挪威/巴伦支海入口、喀拉海、拉普捷夫海、东西伯利亚海、楚科奇/白令；状态为“已导入相关 ENC（范围近似）/只有底图或辅助对象/无航道对象/未导入相应 ENC/未知”。这是**研究对照范围**，不是法定边界，也不输出单一“完整度百分比”。
+- 覆盖范围优先使用 M_COVR（CATCOV=1）外围 bbox，否则使用图层 extent；矩形范围不等于整片海域都有可靠测深。
+- 若缺少俄罗斯沿岸主要 NSR 航段，面板持续提示“地图片段不能视为完整东北航道”，并建议通过批量导入合法 ENC 后重新诊断。
+- 参考口径：USNIC Arctic Sea Routes（NSR 图产品约 40°E–160°W、70°N 以北，仅为产品范围）、PAME AMSA、Arctic Portal NSR map、IHO S-57/GDAL S-57；核对日期 2026-11-16。
 
 说明：S-57 航道要素是**真实海图对象**，与手绘航路、智能规划生成的候选航线不是同一概念；系统不会把相邻 FAIRWY/NAVLNE 拼接成一条路径，也不会为无名称要素生成名称。CAT*/STATUS 等代码在缺少权威本地枚举字典时保留原始代码。
 
@@ -1566,6 +1621,47 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 **冰情/底图恢复**：冰情面板瓦片失败时显示原因并可“重新加载当前冰情”；底图选择器旁的刷新按钮可重新加载当前底图，配置失败的底图会显示重试入口。投影切换到无可用底图时会明确提示，不会把 3857 瓦片强行当作 3413 底图。
 
+### 10.10 S-57 专题数据提取（水深 / 危险物）
+
+左侧图层目录底部“**专题提取**”入口打开独立对话框（与“航道专题”相邻，但不修改航道快照流程）。成果面向航线规划的**原始候选数据**，不是经过安全论证的通航网络。
+
+**对象类**
+
+- **水深与海底地形**：SOUNDG（水深点）、DEPCNT（等深线）、DEPARE（水深区域）
+- **水深相关补充**：DRGARE（疏浚）、SWPARE（扫测）、UNSARE（未测量）、M_QUAL（数据质量）
+- **危险物**：OBSTRN（障碍物）、WRECKS（沉船）、UWTROC（水下/露出礁石）
+- **其他已导入对象类**：目录会动态列出当前项目实际导入且具有有效几何的其他 S-57 类，可单独勾选导出。
+
+**操作流程**
+
+1. 选择来源范围：“项目全部有效数据”或“当前视口”；可进一步多选具体 Cell / 数据集。
+2. 勾选对象类；面板显示源图层数、可提取层数、要素条数和数量未知提示。SOUNDG 的“条数”是 S-57 feature 数，一条 MultiPoint 可含多个测深点。
+3. 可选填写成果名称、单类上限；点击“提取并保存”。
+4. 服务端按 Cell/对象类分批读取**全部符合筛选条件的真实要素**（不是当前页/前 2,000 条），流式写入独立成果目录；完成后自动切到“已保存成果”。
+5. 在“已保存成果”中下载 GeoJSON/ZIP，或点击“在图上预览样例”查看每类少量样例（不是完整成果）。
+
+**成果与溯源**
+
+- 目录：`<STORAGE_ROOT>/navigation/s57-thematics/<projectId>/<exportId>/<category>/<CLASS>[_CELL].geojson`，超过单文件上限自动分卷 `.partNNN`；另有 `preview.geojson` 与 `manifest.json`。
+- 每个 Feature 保留真实几何（含 SOUNDG 几何 Z）、`originalAttributes`、对象类、来源 Layer/Dataset/Version/Cell、`geometryNdim`、原始 key（LNAM/RCID/FIDN/FIDS/ogc_fid 等）。
+- manifest 记录文件 SHA256、每类/每 Cell 数量、来源版本与原始哈希、`complete/truncated/truncationReasons`、跳过图层原因、SOUNDG 深度诊断、样例预览信息。
+- 达到单类 300,000、总计 1,000,000、单文件 50,000 或时间预算 300s 时，成果会明确标记 `截断/不完整`，并允许按 Cell/对象类/视口缩小范围重导；不会把不完整成果标成完整。
+- 成果使用服务器共享存储卷，重启后仍可列出/下载；每次提取生成独立 exportId，不覆盖旧成果。
+
+**深度语义（重要）**
+
+- SOUNDG 深度可能在几何第三维 Z，也可能来自 `DEPTH` 属性；平台保留原始值/原始坐标，不擅自取绝对值、改正负号或换算单位。
+- DEPARE 的 `DRVAL1/DRVAL2`、DEPCNT 的 `VALDCO`、危险物的 `VALSOU` 都**不等于航道保证水深**；疏浚/扫测/未测区/数据质量对象也不视为可靠实测水深。
+- 深度单位、符号、垂直基准需以源 S-57 为准；缺失时标“未知”。若真实 SOUNDG 几何为 2D，平台会明确警告，不用 DEPARE 范围替代测深值。
+
+**覆盖与东北航道**
+
+- 专题目录只统计当前项目已关联的当前版本图层；未导入/未关联的俄罗斯沿岸 ENC 不会凭空出现。
+- 需要补充时，请使用现有 S-57 批量导入功能导入合法授权的 `.000` + `.001...` 更新链并关联项目，再重新打开专题/诊断。
+- 平台不会抓取、绕过许可或复制商业 ENC，也不会把交通分隔制/深水区域拼接成“官方东北航道”。
+
+相关接口见 §7.10；错误码见 §9.4；环境变量见 §9.6。
+
 ## 11. 联系与支持
 
 - **GitHub 仓库**：https://github.com/shifengdongma/polar-gis.git
@@ -1574,7 +1670,7 @@ curl -X POST http://localhost:8088/api/v1/layers/{layer_id}/exports \
 
 ---
 
-> 📝 **文档版本**：v1.2  
-> 📅 **更新日期**：2026-11-11  
-> 📋 **适用版本**：Polar-GIS 一期（`master` @ `ab57c2a`）  
+> 📝 **文档版本**：v1.3
+> 📅 **更新日期**：2026-11-16
+> 📋 **适用版本**：Polar-GIS 一期（`master`，2026-11-16）
 > ⚠️ **法律声明**：本平台为非认证的地理信息展示系统，不可替代经认证的航海设备或官方电子海图。

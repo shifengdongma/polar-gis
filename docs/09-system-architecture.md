@@ -1,11 +1,12 @@
 # 09 — 系统架构文档 (System Architecture)
 
 > 极地海洋环境信息平台 (Polar-GIS) 系统架构说明
-> 最后更新: 2026-11-11
+> 最后更新: 2026-11-16
 >
-> 本次按 `2026-10-10` 之后（会话 #27–#32）的实际代码与部署配置重新核对：
+> 本次按 `2026-10-10` 之后（会话 #27–#34）的实际代码与部署配置重新核对：
 > 主架构章节（技术栈、目录结构、API、数据模型、前端结构、文件清单）已与当前
-> `master`（`ab57c2a`）同步；历史会话细节见第 8 章。
+> `master` 同步；历史会话细节见第 8 章。会话 #34 新增 S-57 水深/危险物专题提取、
+> 航道完整性诊断与东北航道覆盖对照。
 
 ---
 
@@ -44,10 +45,10 @@ backend/
 ├── app/
 │   ├── main.py                 # FastAPI 应用入口 + lifespan（冰情预热、GWC 回填）
 │   ├── models.py               # SQLAlchemy ORM 模型定义 (18 张表)
-│   ├── schemas.py              # Pydantic 请求/响应模型（含航道快照/预览）
-│   ├── cli.py                  # 命令行工具 (创建管理员)
+│   ├── schemas.py              # Pydantic 请求/响应模型（含航道快照/预览/专题/诊断）
+│   ├── cli.py                  # 命令行工具 (创建管理员、S-57 源文件只读清单)
 │   │
-│   ├── api/                    # API 路由层（18 个模块）
+│   ├── api/                    # API 路由层（19 个模块）
 │   │   ├── auth.py             # 认证: 登录/刷新/登出/当前用户
 │   │   ├── users.py            # 管理员用户管理 CRUD
 │   │   ├── projects.py         # 项目 CRUD + 发布 + 地图配置 + 渲染计划
@@ -56,7 +57,8 @@ backend/
 │   │   ├── base_maps.py        # 底图 CRUD
 │   │   ├── styles.py           # SLD 样式管理
 │   │   ├── s57_basemaps.py     # 全球海图底图导入（管理员）
-│   │   ├── s57_waterways.py    # S-57 航道专题：目录/搜索/预览/快照
+│   │   ├── s57_waterways.py    # S-57 航道专题：目录/搜索/预览/快照/诊断
+│   │   ├── s57_thematics.py    # S-57 水深/危险物专题：目录/提取/成果/下载/样例
 │   │   ├── ice.py              # 冰情 info/value/alignment/XYZ 瓦片
 │   │   ├── navigation_environment.py # 导航环境源/查询/矢量场/水深瓦片
 │   │   ├── navigation_vessels.py     # 船舶静态资料 + 吃水安全
@@ -73,7 +75,7 @@ backend/
 │   │   ├── errors.py           # AppError 异常 + 全局处理器
 │   │   └── middleware.py       # 请求上下文中间件 (Request ID)
 │   │
-│   ├── services/               # 业务逻辑层（17 个模块）
+│   ├── services/               # 业务逻辑层（20 个模块）
 │   │   ├── storage.py          # 本地文件存储 + 上传校验
 │   │   ├── geoserver.py        # GeoServer REST API 客户端
 │   │   ├── importer.py         # GDAL 导入处理器 (矢量/栅格/S-57)
@@ -84,8 +86,12 @@ backend/
 │   │   ├── s57_layer_catalog.py # S-57 图层分类事实来源（纯函数）
 │   │   ├── s57_style_refresh.py # SLD 样式幂等刷新 (sldHash 对比 + 缓存截断)
 │   │   ├── s57_waterway_catalog.py # 航道专题独立分类（不改动主目录）
-│   │   ├── s57_waterways.py    # 项目当前版本跨图层航道查询/详情
-│   │   ├── s57_waterway_export.py # 航道成果键集导出 + GeoJSON/manifest
+│   │   ├── s57_waterways.py    # 项目当前版本跨图层航道查询/详情/分页 SQL
+│   │   ├── s57_waterway_export.py # 航道成果键集导出 + GeoJSON/manifest + 公平预览
+│   │   ├── s57_waterway_diagnostics.py # 航道 Cell/对象类/覆盖/东北航道区域诊断
+│   │   ├── s57_project_layers.py # 通用项目 S-57 当前版本图层解析（不按类过滤）
+│   │   ├── s57_thematic_catalog.py # 水深/危险物专题分类 + 实际导入类 + SOUNDG Z 诊断
+│   │   ├── s57_thematic_export.py # 专题流式分卷导出 + manifest + ZIP + 样例
 │   │   ├── ice.py              # NetCDF 冰情服务（info/value/PNG XYZ）
 │   │   ├── map_render_plan.py  # 组合图层渲染计划纯函数 (build_bundles)
 │   │   ├── gwc_backfill.py     # GWC EPSG:3413 瓦片缓存回填 (GridSet + 图层)
@@ -131,7 +137,7 @@ backend/
 
 ### 2.3 API 路由总览
 
-所有 API 端点均挂载在 `/api/v1` 前缀下。按 2026-11-11 代码清点为 **115 个路由装饰器**，主要模块如下：
+所有 API 端点均挂载在 `/api/v1` 前缀下。按 2026-11-16 代码清点为 **122 个路由装饰器**，主要模块如下：
 
 | 模块 | 路由前缀 | 功能 |
 |------|----------|------|
@@ -146,7 +152,8 @@ backend/
 | S-57 底图 | `/api/v1/admin/s57-basemaps` | 全球海图底图 profiles/preflight/import/runs |
 | 图层(公开) | `/api/v1/layers` | 元数据、图例、识别、搜索、导出 |
 | 图层(管理) | `/api/v1/admin/layers` | 图层管理 |
-| S-57 航道专题 | `/api/v1/projects/{projectId}/s57-waterways` | 目录/搜索/预览/快照保存与下载 |
+| S-57 航道专题 | `/api/v1/projects/{projectId}/s57-waterways` | 目录/搜索/分页预览/快照保存下载/完整性诊断 |
+| S-57 水深危险物专题 | `/api/v1/projects/{projectId}/s57-thematics` | 实际类目录/流式提取/成果 manifest/GeoJSON-ZIP/样例预览 |
 | 冰情 | `/api/v1/ice` | info/value/alignment/XYZ 瓦片 |
 | 导航环境 | `/api/v1/navigation/environment` | sources/times/query/batch-query/field/水深瓦片 |
 | 导航船舶 | `/api/v1/navigation/vessels` | 雪龙2资料 + 吃水安全 |
@@ -1271,3 +1278,59 @@ backend/app/navigation/
 - 新增 `frontend/src/components/S57LayerLegend.vue`：仅在用户展开图例时请求；优先显示 GeoServer GetLegendGraphic `<img>`（1–2px 空图或错误时降级）；有预设时用 s57_styles 颜色/几何绘制简化 swatch；无预设只显示名称/代码并提示“无可用图例/预设符号”；说明文案明确图例为样式示意、非实时航行状态。
 - `MapWorkspaceView.vue` 图层状态行增加“图例”按钮，行下渲染内联图例；保留原有“图例与元数据”抽屉。图例请求与 TileRequestQueue/Render Bundle/GWC 独立。
 - `s57ObjectNames.ts` 新增 `s57ObjectDescriptions`（常见类别用途说明）与 `s57ObjectDescription()`。
+
+### 8.13 会话 #34：S-57 专题提取与航道完整性诊断
+
+#### 8.13.1 后端模块
+
+- `app/services/s57_project_layers.py`：不按航道类过滤的通用项目 S-57 图层解析。连接 `ProjectLayer→Layer→DatasetVersion→Dataset`，只取项目当前版本/未删除/`available` 状态；分批 `load_table_metadata()`，无 200 层截断；返回 table/key/fields/geometry/extent/featureCount/dataset/version/cell/contentHash，供航道诊断与专题导出复用。
+- `app/services/s57_waterways.py`：
+  - `resolve_waterway_layers()` 移除 `candidates[:s57_waterway_max_layers]`；改为按 `S57_WATERWAY_INTROSPECTION_BATCH_SIZE`（默认 200）分批遍历全部候选。`WaterwayResolution` 新增 `candidate_layer_count/resolved_layer_count`；`truncated` 固定 false（保留字段兼容）。
+  - 新增 `build_waterway_count_sql()` / `_build_waterway_union_sql()`；`source_cells` 过滤；`normalize_source_cells()` / `layer_matches_source_cells()`。
+  - `/preview` 改为按对象类公平分配预算（最多 2 轮），每类独立 cursor；响应新增 `matchedTotal/returnedCount/hasMore/classHasMore/nextCursors/classMatchedTotals/countComplete/truncatedLayers`；`total` 兼容字段在可计数时等于 matchedTotal。
+- `app/services/s57_waterway_export.py`：`_extract_features()` 读取 `max_features+1`，精确判断截断；新增 `encode/decode_preview_cursor()`、`_extract_class_page()`、`_class_matched_total()`；快照文件格式不变（仍 `waterways.geojson + manifest.json`）。
+- `app/services/s57_waterway_diagnostics.py` + `GET /projects/{id}/s57-waterways/diagnostics`：
+  - 统计当前项目已关联 Cell/航道层/可检索/可渲染/要素数/计数完整性；按 Cell 返回 dataset/version/object classes/bbox/coverageSource/coverageVerified/reasons。
+  - 覆盖 bbox 优先 M_COVR（若存在 `catcov` 字段仅取 CATCOV=1）`ST_Extent(ST_Transform(geom,4326))`；否则图层 `metadata_json.s57.extent` 并集；不把 bbox 说成完整测深覆盖。
+  - `REGIONS`：挪威/巴伦支海入口、喀拉海、拉普捷夫海、东西伯利亚海、楚科奇/白令；状态枚举 `imported_enc_coverage/only_basemap_or_auxiliary/no_waterway_objects/no_enc_imported/unknown`；输出 `northeastPassage.hasGap/missingRegions/summary`。区域是研究对照范围，不是法定边界。
+  - `REFERENCES` 记录 USNIC/PAME/Arctic Portal/IHO/GDAL URL、scope、checkedAt=2026-11-16；不返回 SQL/表名/凭据。
+- `app/services/s57_thematic_catalog.py`：
+  - 分类 depth（SOUNDG/DEPCNT/DEPARE）、depth_supplement（DRGARE/SWPARE/UNSARE/M_QUAL）、hazards（OBSTRN/WRECKS/UWTROC）、other（动态实际导入空间类）。
+  - SOUNDG 通过 `ST_NDims/ST_ZMin/ST_ZMax` 诊断几何维度；`depthPreserved=false` 时警告，不用 DEPARE 范围替代。
+  - `featureCount` 明确是 S-57 **feature 条数**，SOUNDG 一条 MultiPoint 可含多个测深点。
+  - 大项目目录计数使用 `_fill_layer_counts()`：50 张表/批 `UNION ALL COUNT(*)`，每批 savepoint/rollback；避免 5,781 张表在一个事务中耗尽 `max_locks_per_transaction`。`s57_project_layers.py` 本身不再逐表自动 COUNT，缺失计数明确为 unknown。
+- `app/services/s57_thematic_export.py` + `app/api/s57_thematics.py`：
+  - 目录 `<STORAGE_ROOT>/navigation/s57-thematics/<projectId>/<exportId>/<category>/<CLASS>[_CELL].geojson`；按单文件 50k 分卷 `.partNNN`；`preview.geojson` 每类≤50/总计≤500；`manifest.json` 原子 temp→final。
+  - 流式键集分批（默认 500/批），Feature 保留真实 GeoJSON（含 Z）、`originalAttributes`、`sourceLayer/Dataset/Version/Cell`、`geometryNdim`、`sourceKeyField/FeatureKey`；SOUNDG 增加 `depthSources/depthUnits/depthSign/verticalDatum/depthPreserved`。
+  - 上限：单类 300k、总计 1M、时间 300s；`limit+1` 探测，确认真截断才 `truncated=true`；`complete=false` 的可下载成果明确列 `truncationReasons`；不可用层列 `skippedLayers`，读取错误整体失败并清理。
+  - 列表/详情按当前项目全部 S-57 版本计算 `stale`；下载单文件 GeoJSON、多文件 ZIP（含 manifest），支持 `?file=`；`preview` 端点仅返回样例。
+- `app/cli.py`：只读 `s57-inventory --root <dir> [--output <json>]`，调用 `ogrinfo -ro -so -al -json` 检查 `.000`/更新链/对象类/数量/extent；不导入、不访问 DB。
+
+#### 8.13.2 分类修正
+
+- `s57_layer_catalog.py`：`RCRTCL` 由“雷达测距线”改为“推荐航线中心线”，`RCTLPT` 由“雷达控制点”改为“推荐通航车道部分”，并从 `_NAVIGATION_AIDS` 移入 `_ROUTING`；新增 `DWRTCL=深水航道中心线`、`DWRTPT=深水航道部分` 到 `NAVIGATION_RECOMMENDED/_ROUTING`。依据 IHO S-57 UOC / S-101 DCEG（DWRTCL=deep water route centreline，DWRTPT=deep water route part，RCRTCL=recommended route centreline，RCTLPT=recommended traffic lane part）。
+- `s57_waterway_catalog.py`：新增上述四类（RCTLPT 默认不选，面/点状推荐车道，不是连续中心线，也不属于 TSS）；`TSSLPT` 改为“分道通航制车道部分”；补充 VALDCO/VALSOU/WATLEV/EXPSOU/TECSOU/VERDAT/LNAM 原始代码标签与说明，不翻译枚举值。
+
+#### 8.13.3 前端
+
+- 新增 `api/s57Thematics.ts`、`types/s57Thematics.ts`、`composables/useS57Thematics.ts`、`components/S57ThematicDialog.vue`、`utils/mapS57Thematic.ts`、`composables/useS57ThematicPreview.ts`。
+- `MapWorkspaceView.vue`：左侧 footer 增加“专题提取”入口，打开 `append-to-body` 对话框；独立样例预览 `VectorLayer`（zIndex 79，位于航道 78 与规划 90 之间）；投影/卸载清理；点击优先级 `point-pick→绘制/测量→风险格点→天气/识别→手绘航路→规划候选→航道要素→默认`。
+- `useS57Waterways.ts`：`loadOverviewPage(append)`/`loadMoreOverview()`；按 feature id 合并去重；filter key 防旧 cursor 跨筛选；6,000 浏览器叠加预算；`overviewMatchedTotal/overviewHasMore/classCursors/classHasMore/classMatchedTotals`；`visibleGroups/visibleCount`；`sourceCellFilter`；`loadDiagnostics()`；详情 generation 防旧响应。
+- `S57WaterwayPanel.vue`：顶部统计（ENC Cell/可检索层/匹配/已加载/可见/未加载）、覆盖缺口警告、诊断抽屉（Cell 表+区域状态+参考）、加载更多、分组开关、详情测地线长度（仅线状，MultiLineString 逐段）、复制经纬度/来源、同 Cell 其他对象；空值“未提供”。
+- `mapS57Waterway.ts`：style 接收 `resolution`，低缩放降低线宽/点半径/填充透明度；面/线真实几何不变，不把 TSS 面线化拼接。
+- `waterwayViewportBbox()`：经度归一化，跨 180° 允许 west>east，后端拆分；近全球视口返回全经度。
+- 专题成果不进入 runtimeLayers/bundle/route store；航道快照保存/下载逻辑不变。
+
+#### 8.13.4 配置与成果上限
+
+- 新增 `S57_WATERWAY_INTROSPECTION_BATCH_SIZE=200`、`S57_WATERWAY_QUERY_WARNING_LAYERS=500`；`S57_WATERWAY_MAX_LAYERS` 保留为 deprecated，不再用于截断。
+- 新增 `S57_THEMATIC_ROOT`（默认为 `<STORAGE_ROOT>/navigation/s57-thematics`）、`S57_THEMATIC_MAX_FEATURES_PER_CLASS=300000`、`S57_THEMATIC_MAX_FEATURES=1000000`、`S57_THEMATIC_MAX_FEATURES_PER_FILE=50000`、`S57_THEMATIC_BATCH_SIZE=500`、`S57_THEMATIC_EXPORT_TIMEOUT_SECONDS=300`、`S57_THEMATIC_PREVIEW_PER_CLASS=50`、`S57_THEMATIC_PREVIEW_MAX_FEATURES=500`。
+- `deploy/compose.yml` 的 postgres 增加 `command: ["postgres", "-c", "max_locks_per_transaction=4096"]`；大型 ENC 项目一次查询可跨数百张 `geo.*` 表。
+- 专题导出每处理一个图层前 `db.rollback()` 并重设 `statement_timeout`，释放上一张表的 AccessShareLock；诊断每个 Cell 后 rollback；无新增数据库表/迁移。
+
+#### 8.13.5 验证与限制
+
+- 后端定向 49 tests passed；全量 pytest 为 **327 passed, 1 skipped**（PostGIS 集成测试按环境跳过）；ruff 本轮文件通过。前端 typecheck 通过；**44 文件 / 490 tests passed**；build 成功。
+- **真实栈验证**：`polar-gis` 项目 188 Cell/5,781 图层/1,279 航道层（RU=113 Cell/306 层）；修复后 catalog 61,888 条、preview `matchedTotal=1690`、Kara bbox preview 405 条；diagnostics 五个区域全部 `imported_enc_coverage`、`hasGap=false`、188/188 Cell 有 M_COVR bbox；thematic catalog 5,487 可提取层，SOUNDG 183 层/1,583 条且全部 3D；真实导出 RU2M6WF1 886 条/6 文件，SOUNDG 2,058 个 3D 点，manifest SHA 匹配；现有 FAIRWY 快照 13 条且包含 RU Cell。
+- 本轮未做浏览器点击级 E2E；前端 typecheck/tests/build 已通过。用户提供的 `output/航道成果_2026-11-11_04_51.geojson` 是独立文件（无 manifest），其 269 条结果对应旧的 200 层截断状态；本轮不修改该文件。
+- 专题成果受配置上限约束；触发时明确 `complete=false/truncated=true`，可按 Cell/类/视口缩小范围。SOUNDG 实测 3D，无需源文件回退；若其他环境为 2D，按 manifest 警告处理，不伪造深度。

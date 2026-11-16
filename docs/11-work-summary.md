@@ -1,7 +1,45 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-11-11
+> 最后更新: 2026-11-16
+
+---
+
+## 会话 #34 — S-57 水深/危险物专题提取 + 航道完整性诊断（2026-11-16）
+
+### 修改了什么
+
+- **后端数据/查询**：新增 `s57_project_layers.py` 通用项目 S-57 图层解析；删除 200 层预截断并改为分批内省全部候选；`_extract_features()` 以 `max+1` 探测修正截断误报；预览改为按对象类公平预算、单类 cursor、真实 `matchedTotal/hasMore/classHasMore/nextCursors`；新增 `sourceCells` 过滤与 `build_waterway_count_sql()`。
+- **航道诊断**：新增 `s57_waterway_diagnostics.py` 与 `GET /projects/{id}/s57-waterways/diagnostics`。按 Cell 返回已关联图层、可检索/可渲染数、要素数、M_COVR/图层 extent 覆盖来源与原因；按挪威/巴伦支海、喀拉海、拉普捷夫海、东西伯利亚海、楚科奇/白令给出近似覆盖状态和 NEP/NSR 缺口，附 USNIC/PAME/Arctic Portal/IHO/GDAL 参考 URL 与 2026-11-16 核对日期。
+- **专题成果体系**：新增 `s57_thematic_catalog.py`、`s57_thematic_export.py`、`/projects/{id}/s57-thematics/catalog|exports|download|preview`。按类/按 Cell 流式输出 `<STORAGE_ROOT>/navigation/s57-thematics/<projectId>/<exportId>/` 下的 GeoJSON + `preview.geojson` + `manifest.json`；保留真实 3D 几何/原始属性/Cell/版本/SHA256；单文件 50k 分卷，单类 300k、总计 1M、300s 时间预算，触发时明确 `complete=false/truncated=true`；多文件 ZIP。无 DB 表/迁移。
+- **SOUNDG 深度**：catalog/export 前用 `ST_NDims/ST_ZMin/ST_ZMax` 诊断；有 Z 直接导出并记录 `depthSources=geometry_z`，无 Z 明确警告，不用 DEPARE 范围替代；未改变全局 importer 参数。
+- **分类修正**：`RCRTCL/RCTLPT` 由错误的“雷达测距线/雷达控制点”改为“推荐航线中心线/推荐通航车道部分”，移入 routing；新增 `DWRTCL/DWRTPT`；`TSSLPT` 改为“分道通航制车道部分”；补充 VALDCO/VALSOU/WATLEV/EXPSOU/TECSOU/VERDAT/LNAM 原始代码标签。
+- **CLI**：`python -m app.cli s57-inventory --root <dir> [--output <json>]`，只读检查 `.000`/更新链/对象类/数量/extent，不导入。
+- **前端**：新增 `useS57Thematics`、`S57ThematicDialog`、`useS57ThematicPreview`、`mapS57Thematic` 与 API/types；左侧 footer 增加“专题提取”入口，对话框含分类/来源 Cell/数据集/视口/成果列表/下载/样例预览；独立专题预览图层 zIndex 79。
+- **航道交互**：`useS57Waterways` 支持增量追加（按 feature id 去重）、每类 cursor/hasMore、真实匹配数、6,000 浏览器预算、分组过滤、同 Cell 检索、诊断状态；`S57WaterwayPanel` 增加顶部统计、覆盖缺口警告、诊断抽屉、加载更多、分组开关、详情测地线长度、复制经纬度/来源、同 Cell 对象；地图点选不再要求额外模式；点击优先级保留天气/识别、手绘航路、规划候选优先。`mapS57Waterway` 按 resolution 降低低缩放线宽/点半径/填充透明度。
+- **文档**：更新 09 架构、10 日志、11 总结、12 用户手册；不改 01–08、`docs/plans/` 冻结原文。
+
+### 达到的效果
+
+- **航道“片段化”根因确认并修复**：真实 `polar-gis` 项目有 188 个 Cell、5,781 个图层、1,279 个航道层（其中 113 个 RU Cell、306 个 RU 航道层）；旧代码在可用性检查前只保留前 200 层，俄罗斯数据恰好全部被丢弃。修复后 catalog 为 1,279 层/61,888 条，预览 `matchedTotal=1690`，Kara 视口预览返回 405 条 RU 要素。
+- **东北航道覆盖结论修正**：诊断显示挪威/巴伦支海、喀拉海、拉普捷夫海、东西伯利亚海、楚科奇/白令 5 个对照区域均 `imported_enc_coverage`，`hasGap=false`；188 个 Cell 全部有 M_COVR 覆盖 bbox。之前的 269 条样本只反映 200 层截断后的子集，**不是项目数据缺失**。
+- **专题成果真实可下载**：真实导出 RU2M6WF1 的 SOUNDG/DEPARE/DEPCNT/OBSTRN/WRECKS/UWTROC 共 886 条、6 个文件、`complete=true`；SOUNDG 5 个 MultiPoint/2,058 个测深点全部 3D，manifest SHA 与实际文件一致；原始 LNAM/RCID/FIDN/FIDS/QUASOU/VERDAT 等保留。
+- **精确计数/截断**：预览按对象类公平分配并返回真实 `matchedTotal/classHasMore`；恰好等于上限不再误报截断；专题目录按 50 表/批 COUNT + rollback，避免 5,781 张表导致的 `max_locks_per_transaction` 耗尽。
+- **交互更可用**：点击已显示航道要素即可高亮/查看详情；线状要素显示当前对象测地线长度并注明不是整条东北航道里程；交通分隔制与推荐航路可通过分组开关区分；低缩放不再呈现大量橙色碎片。
+- **零数据库迁移**：专题成果只落共享存储卷，沿用航道快照的原子写与 manifest 模式。
+
+### 验证结果
+
+- 后端定向测试 `49 passed`；全量 `pytest -o addopts="" -q` 为 **327 passed, 1 skipped**（PostGIS 集成测试按环境跳过）；本轮新增/修改文件 `ruff check` 全部通过。
+- 前端 `npm run typecheck` 通过；`npm test` **44 files / 490 tests passed**；`npm run build` 成功（仅既有 chunk 体积警告）。
+- 真实栈：`deploy/docker compose up -d --build` 启动 PostGIS/GeoServer/backend/worker/web；catalog/diagnostics/thematic catalog/preview/export/snapshot 均通过真实 API 验证；真实专题成果与航道快照已落在共享存储卷。已修复大项目下 PostgreSQL 锁耗尽，并在 `deploy/compose.yml` 设置 `max_locks_per_transaction=4096`。
+
+### 剩余依赖
+
+- 本轮未进行浏览器点击级 E2E；前端 typecheck/490 tests/build 通过，API/真实数据已核验。
+- 专题成果受配置上限（单类 300k/总计 1M/单文件 50k/300s）约束；触发时明确标记截断，可按 Cell/类/视口缩小范围。
+- 若真实 SOUNDG 几何为 2D（本环境实际为 3D，已验证 2,058 点），才需要增加独立 `SPLIT_MULTIPOINT=ON + ADD_SOUNDG_DEPTH=ON` 源文件读取通路；当前不伪造深度。
+- 可选：若用户提供有许可的真实东北航道参考路线 GeoJSON，可作为独立“参考示意”图层显示并标注“非 S-57 海图要素”。
 
 ---
 

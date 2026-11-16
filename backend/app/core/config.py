@@ -43,7 +43,10 @@ class Settings(BaseSettings):
     s57_basemap_allow_local_source: bool = True
 
     # S-57 waterway thematic (read-only federated query over imported layers)
+    # Deprecated: kept for .env compatibility; no longer truncates candidate layers.
     s57_waterway_max_layers: int = 200
+    s57_waterway_introspection_batch_size: int = 200
+    s57_waterway_query_warning_layers: int = 500
     s57_waterway_query_timeout_ms: int = 10000
     s57_waterway_max_page_size: int = 50
     s57_waterway_max_offset: int = 10000
@@ -54,6 +57,16 @@ class Settings(BaseSettings):
     s57_waterway_snapshot_batch_size: int = 500
     s57_waterway_snapshot_timeout_ms: int = 120000
     s57_waterway_snapshot_root: Path | None = None
+
+    # S-57 depth/hazard thematic exports (filesystem results, no DB table)
+    s57_thematic_root: Path | None = None
+    s57_thematic_max_features_per_class: int = 300000
+    s57_thematic_max_features: int = 1000000
+    s57_thematic_max_features_per_file: int = 50000
+    s57_thematic_batch_size: int = 500
+    s57_thematic_export_timeout_seconds: int = 300
+    s57_thematic_preview_per_class: int = 50
+    s57_thematic_preview_max_features: int = 500
 
     # Navigation / environment
     navigation_enabled: bool = True
@@ -111,6 +124,13 @@ class Settings(BaseSettings):
         """Waterway snapshots live in the persistent shared storage volume by default."""
         return self.s57_waterway_snapshot_root or (
             self.storage_root / "navigation" / "waterways"
+        )
+
+    @property
+    def resolved_s57_thematic_root(self) -> Path:
+        """Thematic exports use the shared persistent storage volume."""
+        return self.s57_thematic_root or (
+            self.storage_root / "navigation" / "s57-thematics"
         )
 
 

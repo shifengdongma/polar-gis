@@ -13,6 +13,7 @@ from app.models import User
 from app.schemas import (
     S57WaterwayCatalogRead,
     S57WaterwayDetailRead,
+    S57WaterwayDiagnosticsRead,
     S57WaterwayPreviewRequest,
     S57WaterwayPreviewResponse,
     S57WaterwaySearchRequest,
@@ -21,6 +22,7 @@ from app.schemas import (
     S57WaterwaySnapshotList,
     S57WaterwaySnapshotManifest,
 )
+from app.services import s57_waterway_diagnostics as diagnostics_service
 from app.services import s57_waterway_export as snapshot_service
 from app.services import s57_waterways as service
 
@@ -122,6 +124,16 @@ def waterway_snapshot_download(
         media_type="application/geo+json",
         filename=f"waterways-{snapshot_id}.geojson",
     )
+
+
+@router.get("/diagnostics", response_model=S57WaterwayDiagnosticsRead)
+def waterway_diagnostics(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict:
+    project = project_or_404(db, project_id, include_unpublished=False)
+    return diagnostics_service.build_waterway_diagnostics(db, project.id)
 
 
 @router.get("/{feature_id}", response_model=S57WaterwayDetailRead)

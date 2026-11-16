@@ -50,6 +50,7 @@ import { api, apiErrorMessage } from '../api/client'
 import { resolveProjectMapLayers } from '../api/projects'
 import EnvironmentLayerPanel from '../components/EnvironmentLayerPanel.vue'
 import S57LayerLegend from '../components/S57LayerLegend.vue'
+import S57ThematicDialog from '../components/S57ThematicDialog.vue'
 import S57WaterwayPanel from '../components/S57WaterwayPanel.vue'
 import EnvironmentValueTooltip from '../components/EnvironmentValueTooltip.vue'
 import IceLayerPanel from '../components/IceLayerPanel.vue'
@@ -62,6 +63,8 @@ import { useEnvironmentOverlays } from '../composables/useEnvironmentOverlays'
 import { useIceOverlay } from '../composables/useIceOverlay'
 import { usePlanningRouteLayer } from '../composables/usePlanningRouteLayer'
 import { useRiskGridLayer } from '../composables/useRiskGridLayer'
+import { useS57ThematicPreview } from '../composables/useS57ThematicPreview'
+import { useS57Thematics } from '../composables/useS57Thematics'
 import { useS57Waterways } from '../composables/useS57Waterways'
 import { useRouteDrawing } from '../composables/useRouteDrawing'
 import { useNavigationStore } from '../stores/navigation'
@@ -713,15 +716,20 @@ function waterwayViewportBbox(): [number, number, number, number] | null {
     currentCrs.value,
     'EPSG:4326',
   )
-  const clamp = (value: number, min: number, max: number) =>
-    Math.min(max, Math.max(min, value))
-  const bbox: [number, number, number, number] = [
-    clamp(minLon, -180, 180),
-    clamp(minLat, -90, 90),
-    clamp(maxLon, -180, 180),
-    clamp(maxLat, -90, 90),
-  ]
-  if (!bbox.every((value) => Number.isFinite(value)) || bbox[1] >= bbox[3]) {
+  const normalizeLon = (value: number) =>
+    ((((value + 180) % 360) + 360) % 360) - 180
+  let west = normalizeLon(minLon)
+  let east = normalizeLon(maxLon)
+  if (maxLon - minLon >= 359) {
+    west = -180
+    east = 180
+  }
+  // When the projected viewport crosses the antimeridian, normalizeLon() can
+  // produce west > east; the backend interprets that as a split bbox.
+  const south = Math.max(-89.9, Math.min(89.9, minLat))
+  const north = Math.max(-89.9, Math.min(89.9, maxLat))
+  const bbox: [number, number, number, number] = [west, south, east, north]
+  if (!bbox.every((value) => Number.isFinite(value)) || south >= north) {
     return null
   }
   return bbox
@@ -733,6 +741,22 @@ const s57Waterways = useS57Waterways({
   getViewportBbox: waterwayViewportBbox,
   getFitPadding: waterwayFitPadding,
 })
+const thematicDialogOpen = ref(false)
+const s57Thematics = useS57Thematics({
+  getProjectId: () => String(route.params.id),
+  getViewportBbox: waterwayViewportBbox,
+})
+const s57ThematicPreview = useS57ThematicPreview({
+  getMap: () => map,
+  getCrs: () => currentCrs.value,
+  getFitPadding: waterwayFitPadding,
+})
+function onThematicPreview(
+  collection: Record<string, unknown>,
+  exportId: string,
+) {
+  s57ThematicPreview.showPreview(collection, exportId)
+}
 const waterwayCatalogCount = computed(
   // The badge means "航道专题要素", not the sum of auxiliary depth/sounding
   // objects. Auxiliary classes remain visible in the panel with their own
@@ -747,6 +771,7 @@ function toggleWaterwayPanel() {
   if (waterwayPanelOpen.value) {
     layerPanelCollapsed.value = false
     void s57Waterways.loadCatalog()
+    void s57Waterways.loadDiagnostics()
   } else {
     s57Waterways.deactivate()
   }
@@ -1229,6 +1254,7 @@ async function buildMap() {
   planningRouteLayer.attach()
   riskGridLayer.attach()
   s57Waterways.attach()
+  s57ThematicPreview.attach()
   applyBaseMapVisibility()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
@@ -1276,28 +1302,36 @@ async function buildMap() {
       else riskGridLayer.setSelected(null)
       return
     }
+    environmentOverlays.clearHover()
+    if (weatherMode.value) {
+      await queryWeather(lonLat)
+      return
+    }
+    if (queryMode.value) {
+      await identify(lonLat)
+      return
+    }
+    // 手绘航路/规划候选的叠加层级高于航道专题（95/90 vs 78），先让它们命中；
+    // 空白处再尝试航道要素，最后才关闭航路浮窗。
+    const pick = routeDrawing.pickRouteAtPixel(event.pixel, event.coordinate)
+    if (pick) {
+      openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
+      return
+    }
+    const planningPick = planningRouteLayer.pickRouteAtPixel(event.pixel)
+    if (planningPick) {
+      navigationStore.selectRoute(planningPick)
+      closeRouteFlyout()
+      return
+    }
     if (
       waterwayPanelOpen.value &&
       !layerPanelCollapsed.value &&
-      s57Waterways.selectionMode.value &&
       s57Waterways.pickAtPixel(event.pixel)
     ) {
       return
     }
-    environmentOverlays.clearHover()
-    if (weatherMode.value) await queryWeather(lonLat)
-    else if (queryMode.value) await identify(lonLat)
-    else {
-      // 命中手绘航路优先于算法候选航线;命中空白 → 只关浮窗,不动选中航路
-      const pick = routeDrawing.pickRouteAtPixel(event.pixel, event.coordinate)
-      if (pick) {
-        openRouteFlyout(pick.routeId, event.coordinate, lonLat, pick.segmentIndex)
-      } else {
-        const planningPick = planningRouteLayer.pickRouteAtPixel(event.pixel)
-        if (planningPick) navigationStore.selectRoute(planningPick)
-        closeRouteFlyout()
-      }
-    }
+    closeRouteFlyout()
   }))
   mapEventKeys.push(map.on('moveend', () => {
     window.clearTimeout(reconcileTimer)
@@ -1973,6 +2007,7 @@ function switchProjection(crs: string) {
   planningRouteLayer.reloadForProjection()
   riskGridLayer.reloadForProjection()
   s57Waterways.reloadForProjection()
+  s57ThematicPreview.reloadForProjection()
   // Re-attach only previously selected layers (shared merged-group sources)
   const toReattach = runtimeLayers.value.filter((rt) => savedSelectedIds.has(rt.config.id))
   for (const runtime of toReattach) runtime.visible = true
@@ -3149,6 +3184,8 @@ onBeforeUnmount(() => {
   planningRouteLayer.dispose()
   riskGridLayer.dispose()
   s57Waterways.dispose()
+  s57Thematics.dispose()
+  s57ThematicPreview.dispose()
   navigationStore.reset()
   stopPerfPoll()
   bulkAbortController?.abort()
@@ -3377,6 +3414,12 @@ onBeforeUnmount(() => {
       <IceLayerPanel v-if="icePanelOpen" :ice="iceOverlay" />
       <EnvironmentLayerPanel v-if="environmentPanelOpen" :env="environmentOverlays" />
       <S57WaterwayPanel v-if="waterwayPanelOpen" :waterways="s57Waterways" @close="closeWaterwayPanel" />
+      <S57ThematicDialog
+        v-model="thematicDialogOpen"
+        :thematics="s57Thematics"
+        @preview="onThematicPreview"
+        @clear-preview="s57ThematicPreview.clear()"
+      />
       <div class="layer-panel-footer">
         <button
           class="overlay-menu-trigger waterway-menu-trigger"
@@ -3386,6 +3429,15 @@ onBeforeUnmount(() => {
           @click="toggleWaterwayPanel"
         >
           <el-icon><Compass /></el-icon><span>航道专题</span><span class="overlay-menu-count">{{ waterwayCatalogCount }}</span>
+        </button>
+        <button
+          class="overlay-menu-trigger"
+          :class="{ active: thematicDialogOpen }"
+          type="button"
+          aria-label="S-57 专题提取"
+          @click="thematicDialogOpen = true"
+        >
+          <el-icon><DataAnalysis /></el-icon><span>专题提取</span>
         </button>
         <el-dropdown trigger="click" placement="top-start" @command="handleOverlayCommand">
           <button class="overlay-menu-trigger" type="button" aria-label="环境叠加">

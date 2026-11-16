@@ -21,6 +21,7 @@ from app.api import (
     navigation_vessels,
     projects,
     s57_basemaps,
+    s57_thematics,
     s57_waterways,
     styles,
     system,
@@ -148,6 +149,7 @@ app.include_router(navigation_vessels.router, prefix=api)
 app.include_router(navigation_plans.router, prefix=api)
 app.include_router(navigation_risk.router, prefix=api)
 app.include_router(s57_basemaps.router, prefix=api)
+app.include_router(s57_thematics.router, prefix=api)
 app.include_router(s57_waterways.router, prefix=api)
 app.include_router(system.health_router, prefix=api)
 app.include_router(system.audit_router, prefix=api)

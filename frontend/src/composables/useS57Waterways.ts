@@ -8,7 +8,7 @@
  * - Picking is invoked by the view's single `singleclick` handler only while
  *   the thematic panel and "地图点选" mode are active.
  */
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import type OlMap from 'ol/Map'
 import { createEmpty, extend } from 'ol/extent'
 import Feature from 'ol/Feature'
@@ -22,6 +22,7 @@ import {
   downloadWaterwaySnapshot,
   fetchWaterwayCatalog,
   fetchWaterwayDetail,
+  fetchWaterwayDiagnostics,
   listWaterwaySnapshots,
   previewWaterways,
   searchWaterways,
@@ -29,9 +30,11 @@ import {
 import type {
   S57WaterwayCatalog,
   S57WaterwayDetail,
+  S57WaterwayDiagnostics,
   S57WaterwaySearchItem,
   S57WaterwaySearchRequest,
   S57WaterwaySnapshotManifest,
+  WaterwayGroup,
 } from '../types/s57Waterways'
 import {
   WATERWAY_OVERLAY_Z_INDEX,
@@ -49,6 +52,13 @@ export interface S57WaterwaysOptions {
 }
 
 const PAGE_SIZE = 20
+const DISPLAY_BUDGET = 6000
+const ALL_GROUPS: WaterwayGroup[] = [
+  'fairway_route',
+  'traffic_separation',
+  'restriction',
+  'waterway_environment',
+]
 
 export function useS57Waterways(options: S57WaterwaysOptions) {
   const catalog = shallowRef<S57WaterwayCatalog | null>(null)
@@ -85,6 +95,19 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   const overviewCount = ref(0)
   const overviewTruncated = ref(false)
   const overviewWarnings = shallowRef<string[]>([])
+  const overviewMatchedTotal = ref<number | null>(null)
+  const overviewReturned = ref(0)
+  const overviewHasMore = ref(false)
+  const overviewCountComplete = ref(true)
+  const overviewTruncatedLayers = ref(false)
+  const classCursors = ref<Record<string, string>>({})
+  const classHasMore = ref<Record<string, boolean>>({})
+  const classMatchedTotals = ref<Record<string, number | null>>({})
+  const visibleGroups = ref<Set<WaterwayGroup>>(new Set(ALL_GROUPS))
+  const sourceCellFilter = ref<string | null>(null)
+  const diagnostics = shallowRef<S57WaterwayDiagnostics | null>(null)
+  const diagnosticsLoading = ref(false)
+  const diagnosticsError = ref('')
 
   let layer: VectorLayer<VectorSource> | null = null
   let source: VectorSource | null = null
@@ -95,7 +118,10 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   let snapshotListController: AbortController | null = null
   let snapshotCreateController: AbortController | null = null
   let overviewController: AbortController | null = null
+  let diagnosticsController: AbortController | null = null
   let searchGeneration = 0
+  let detailGeneration = 0
+  let overviewFilterKey = ''
   const styleCache = new Map<string, Style>()
 
   const hasWaterwayData = computed(() =>
@@ -109,6 +135,14 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     Math.max(1, Math.ceil(total.value / Math.max(1, pageSize.value))),
   )
   const displayedCount = computed(() => displayed.value.size)
+  const visibleCount = computed(() => {
+    let count = 0
+    for (const item of displayed.value.values()) {
+      if (visibleGroups.value.has(item.group)) count += 1
+    }
+    return count
+  })
+  const displayBudget = DISPLAY_BUDGET
 
   function defaultSelectedClasses(data: S57WaterwayCatalog): Set<string> {
     return new Set(
@@ -149,6 +183,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     selectedClasses.value = next
     const rule = catalog.value?.classes.find((item) => item.code === code)
     if (rule?.auxiliary && checked) includeAuxiliary.value = true
+    resetOverviewCursors()
   }
 
   function setClasses(codes: string[]) {
@@ -157,6 +192,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
       (item) => item.auxiliary && codes.includes(item.code),
     )
     includeAuxiliary.value = Boolean(auxiliary)
+    resetOverviewCursors()
   }
 
   function setIncludeAuxiliary(value: boolean) {
@@ -169,7 +205,39 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
         [...selectedClasses.value].filter((code) => !auxiliaryCodes.has(code)),
       )
     }
+    resetOverviewCursors()
   }
+
+  function setVisibleGroup(group: WaterwayGroup, visible: boolean) {
+    const next = new Set(visibleGroups.value)
+    if (visible) next.add(group)
+    else next.delete(group)
+    visibleGroups.value = next
+    rebuildSource()
+  }
+
+  function showOnlyFairways() {
+    visibleGroups.value = new Set(['fairway_route', 'restriction'])
+    rebuildSource()
+  }
+
+  function showAllGroups() {
+    visibleGroups.value = new Set(ALL_GROUPS)
+    rebuildSource()
+  }
+
+  function setSourceCellFilter(cell: string | null) {
+    sourceCellFilter.value = cell?.trim() || null
+    resetOverviewCursors()
+    if (sourceCellFilter.value) void runSearch(1)
+  }
+
+  function setViewportOnly(value: boolean) {
+    viewportOnly.value = value
+    resetOverviewCursors()
+  }
+
+  watch(keyword, () => resetOverviewCursors())
 
   async function runSearch(targetPage = 1) {
     if (selectedClasses.value.size === 0) {
@@ -191,6 +259,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
       objectClasses: [...selectedClasses.value],
       includeAuxiliary: includeAuxiliary.value,
       bbox,
+      sourceCells: sourceCellFilter.value ? [sourceCellFilter.value] : null,
       page: targetPage,
       pageSize: pageSize.value,
     }
@@ -224,12 +293,14 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     keyword.value = ''
     viewportOnly.value = false
     includeAuxiliary.value = false
+    sourceCellFilter.value = null
     selectedClasses.value = catalog.value ? defaultSelectedClasses(catalog.value) : new Set()
     results.value = []
     total.value = 0
     page.value = 1
     warnings.value = []
     searchError.value = ''
+    resetOverviewCursors()
   }
 
   function rebuildSource() {
@@ -237,6 +308,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     source.clear()
     const crs = options.getCrs()
     for (const item of displayed.value.values()) {
+      if (!visibleGroups.value.has(item.group)) continue
       const feature = waterwayFeatureFromItem(item, crs)
       if (feature) source.addFeature(feature)
     }
@@ -259,13 +331,26 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     return true
   }
 
-  function resetOverviewState() {
+  function resetOverviewCursors() {
     overviewController?.abort()
     overviewController = null
     overviewLoading.value = false
+    overviewMatchedTotal.value = null
+    overviewReturned.value = 0
+    overviewHasMore.value = false
+    overviewCountComplete.value = true
+    overviewTruncatedLayers.value = false
+    classCursors.value = {}
+    classHasMore.value = {}
+    classMatchedTotals.value = {}
+    overviewFilterKey = ''
+    overviewTruncated.value = false
+  }
+
+  function resetOverviewState() {
+    resetOverviewCursors()
     overviewError.value = ''
     overviewCount.value = 0
-    overviewTruncated.value = false
     overviewWarnings.value = []
   }
 
@@ -277,14 +362,31 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     rebuildSource()
   }
 
+  function currentOverviewFilterKey(
+    bbox: [number, number, number, number] | null,
+  ): string {
+    return JSON.stringify({
+      keyword: keyword.value.trim(),
+      classes: [...selectedClasses.value].sort(),
+      auxiliary: includeAuxiliary.value,
+      bbox,
+      sourceCell: sourceCellFilter.value,
+      viewportOnly: viewportOnly.value,
+    })
+  }
+
   /**
-   * Extract all currently selected waterway classes (with current keyword /
-   * viewport filters) and render them as one thematic overview on the map.
-   * The backend caps the number of features; nothing is persisted.
+   * Load one fair, per-class page of the waterway overview and merge it into
+   * the independent map overlay. Initial loads fit the view; subsequent
+   * loads append by stable feature id and never overwrite earlier pages.
    */
-  async function showOverview(): Promise<boolean> {
+  async function loadOverviewPage(append = false): Promise<boolean> {
     if (selectedClasses.value.size === 0) {
       overviewError.value = '请至少选择一个航道对象类别'
+      return false
+    }
+    if (append && displayed.value.size >= DISPLAY_BUDGET) {
+      overviewError.value = `已达到地图叠加预算 ${DISPLAY_BUDGET} 条，请缩小视口或减少类别`
       return false
     }
     let bbox: [number, number, number, number] | null = null
@@ -295,42 +397,82 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
         return false
       }
     }
+    const filterKey = currentOverviewFilterKey(bbox)
+    if (append && filterKey !== overviewFilterKey) {
+      resetOverviewCursors()
+      overviewError.value = '筛选条件或地图范围已变化，请重新点击“在地图显示选中类别”'
+      return false
+    }
+    const targetClasses = append
+      ? [...selectedClasses.value].filter((code) => classHasMore.value[code])
+      : [...selectedClasses.value]
+    if (append && targetClasses.length === 0) {
+      overviewHasMore.value = false
+      return false
+    }
+    const requestedCursors: Record<string, string> = {}
+    if (append) {
+      for (const code of targetClasses) {
+        const cursor = classCursors.value[code]
+        if (cursor) requestedCursors[code] = cursor
+      }
+    }
+    if (!append) resetOverviewCursors()
     overviewController?.abort()
     const controller = new AbortController()
     overviewController = controller
+    overviewFilterKey = filterKey
     overviewLoading.value = true
     overviewError.value = ''
-    overviewWarnings.value = []
     try {
       const data = await previewWaterways(
         options.getProjectId(),
         {
           keyword: keyword.value.trim() || null,
-          objectClasses: [...selectedClasses.value],
+          objectClasses: targetClasses,
           includeAuxiliary: includeAuxiliary.value,
           bbox,
+          sourceCells: sourceCellFilter.value ? [sourceCellFilter.value] : null,
+          classCursors: append ? requestedCursors : null,
         },
         controller.signal,
       )
-      if (controller.signal.aborted) return false
-      const next = new Map<string, S57WaterwaySearchItem>()
+      if (controller.signal.aborted || overviewController !== controller) return false
+      const next = append ? new Map(displayed.value) : new Map<string, S57WaterwaySearchItem>()
       for (const item of data.items) {
         if (item.geometry) next.set(item.id, item)
       }
       displayed.value = next
-      selectedId.value = null
+      if (!append) selectedId.value = null
       overviewCount.value = next.size
-      overviewTruncated.value = data.truncated
+      overviewMatchedTotal.value = data.matchedTotal ?? null
+      overviewReturned.value = data.returnedCount ?? data.items.length
+      overviewHasMore.value = data.hasMore ?? data.truncated ?? false
+      overviewCountComplete.value = data.countComplete ?? true
+      overviewTruncatedLayers.value = data.truncatedLayers ?? false
+      classCursors.value = { ...(data.nextCursors ?? {}) }
+      classHasMore.value = { ...(data.classHasMore ?? {}) }
+      classMatchedTotals.value = { ...(data.classMatchedTotals ?? {}) }
+      overviewTruncated.value = overviewHasMore.value
       const warnings = [...data.warnings]
-      if (next.size < data.total) {
-        warnings.push(`有 ${data.total - next.size} 条要素无几何，未在地图叠加`)
+      if (data.matchedTotal === null) {
+        warnings.push(`匹配总数暂无法精确计算；地图已加载 ${next.size} 条`)
+      } else if (next.size < data.matchedTotal) {
+        warnings.push(
+          `地图已加载 ${next.size} / 匹配 ${data.matchedTotal} 条；可继续加载或缩小视口`,
+        )
+      }
+      if (next.size >= DISPLAY_BUDGET) {
+        warnings.push(
+          `已达到浏览器叠加预算 ${DISPLAY_BUDGET} 条，请缩小视口或减少类别`,
+        )
       }
       overviewWarnings.value = warnings
       rebuildSource()
-      if (data.total === 0) overviewError.value = '没有匹配的航道要素'
+      if (!append && next.size === 0) overviewError.value = '没有匹配的航道要素'
 
       const map = options.getMap()
-      if (map && next.size > 0) {
+      if (!append && map && next.size > 0) {
         const extent = createEmpty()
         let hasExtent = false
         for (const item of next.values()) {
@@ -349,12 +491,39 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
       }
       return true
     } catch (caught) {
-      if (!controller.signal.aborted) {
+      if (overviewController === controller && !controller.signal.aborted) {
         overviewError.value = apiErrorMessage(caught, '航道专题展示失败')
       }
       return false
     } finally {
-      if (!controller.signal.aborted) overviewLoading.value = false
+      if (overviewController === controller) overviewLoading.value = false
+    }
+  }
+
+  function showOverview(): Promise<boolean> {
+    return loadOverviewPage(false)
+  }
+
+  function loadMoreOverview(): Promise<boolean> {
+    return loadOverviewPage(true)
+  }
+
+  async function loadDiagnostics() {
+    diagnosticsController?.abort()
+    diagnosticsController = new AbortController()
+    diagnosticsLoading.value = true
+    diagnosticsError.value = ''
+    try {
+      diagnostics.value = await fetchWaterwayDiagnostics(
+        options.getProjectId(),
+        diagnosticsController.signal,
+      )
+    } catch (caught) {
+      if (!diagnosticsController.signal.aborted) {
+        diagnosticsError.value = apiErrorMessage(caught, '航道完整性诊断加载失败')
+      }
+    } finally {
+      if (!diagnosticsController.signal.aborted) diagnosticsLoading.value = false
     }
   }
 
@@ -409,6 +578,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
           objectClasses: [...selectedClasses.value],
           includeAuxiliary: includeAuxiliary.value,
           bbox,
+          sourceCells: sourceCellFilter.value ? [sourceCellFilter.value] : null,
           maxFeatures: optionsArg.maxFeatures ?? null,
         },
         snapshotCreateController.signal,
@@ -477,7 +647,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
 
   function pickAtPixel(pixel: number[]): boolean {
     const map = options.getMap()
-    if (!map || !layer || !selectionMode.value) return false
+    if (!map || !layer || !layer.getVisible()) return false
     const picked: Feature<Geometry>[] = []
     map.forEachFeatureAtPixel(
       pixel,
@@ -498,6 +668,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
   }
 
   async function openDetail(id: string) {
+    const generation = ++detailGeneration
     detailController?.abort()
     detailController = new AbortController()
     detailLoading.value = true
@@ -508,17 +679,19 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
         id,
         detailController.signal,
       )
+      if (generation !== detailGeneration) return
       detail.value = response
     } catch (caught) {
-      if (!detailController.signal.aborted) {
+      if (generation === detailGeneration && !detailController.signal.aborted) {
         detailError.value = apiErrorMessage(caught, '航道要素详情加载失败')
       }
     } finally {
-      detailLoading.value = false
+      if (generation === detailGeneration) detailLoading.value = false
     }
   }
 
   function closeDetail() {
+    detailGeneration += 1
     detailController?.abort()
     detailController = null
     detail.value = null
@@ -537,11 +710,12 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
       source,
       zIndex: WATERWAY_OVERLAY_Z_INDEX,
       visible: false,
-      style: (feature) =>
+      style: (feature, resolution) =>
         waterwayStyleForFeature(
           feature as Feature<Geometry>,
           (feature.get('waterwayId') as string | undefined) === selectedId.value,
           styleCache,
+          resolution,
         ),
     })
     map.addLayer(layer)
@@ -554,6 +728,7 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
 
   function deactivate() {
     selectionMode.value = false
+    sourceCellFilter.value = null
     closeDetail()
     resetOverviewState()
     displayed.value = new Map()
@@ -568,12 +743,15 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     snapshotListController?.abort()
     snapshotCreateController?.abort()
     overviewController?.abort()
+    diagnosticsController?.abort()
     catalogController = null
     searchController = null
     detailController = null
     snapshotListController = null
     snapshotCreateController = null
     overviewController = null
+    diagnosticsController = null
+    detailGeneration += 1
     const map = options.getMap()
     if (layer) {
       if (map) map.removeLayer(layer)
@@ -620,6 +798,21 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     overviewCount,
     overviewTruncated,
     overviewWarnings,
+    overviewMatchedTotal,
+    overviewReturned,
+    overviewHasMore,
+    overviewCountComplete,
+    overviewTruncatedLayers,
+    classCursors,
+    classHasMore,
+    classMatchedTotals,
+    visibleGroups,
+    visibleCount,
+    displayBudget,
+    sourceCellFilter,
+    diagnostics,
+    diagnosticsLoading,
+    diagnosticsError,
     hasWaterwayData,
     availableClassCount,
     canSearch,
@@ -629,6 +822,11 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     toggleClass,
     setClasses,
     setIncludeAuxiliary,
+    setVisibleGroup,
+    showOnlyFairways,
+    showAllGroups,
+    setSourceCellFilter,
+    setViewportOnly,
     runSearch,
     setPage,
     clearFilters,
@@ -636,6 +834,8 @@ export function useS57Waterways(options: S57WaterwaysOptions) {
     isItemShown,
     clearDisplay,
     showOverview,
+    loadMoreOverview,
+    loadDiagnostics,
     loadSnapshots,
     createSnapshot,
     downloadSnapshot,

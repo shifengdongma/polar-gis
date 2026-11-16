@@ -112,6 +112,8 @@ class WaterwayResolution:
     layers: tuple[WaterwayLayerRef, ...]
     warnings: tuple[str, ...]
     truncated: bool = False
+    candidate_layer_count: int = 0
+    resolved_layer_count: int = 0
 
 
 def _s57_metadata(layer: Layer) -> dict[str, Any]:
@@ -192,15 +194,20 @@ def load_table_metadata(db: Session, source_tables: list[str]) -> dict[str, Tabl
             column_map.setdefault(str(table_name), {})[str(column_name).lower()] = str(data_type)
         srid_map: dict[str, int] = {}
         try:
-            srid_rows = db.execute(
-                text(
-                    "SELECT f_table_name, srid FROM geometry_columns "
-                    "WHERE f_table_schema = 'geo' AND f_geometry_column = 'geom' "
-                    "  AND f_table_name IN :names"
-                ).bindparams(bindparam("names", expanding=True)),
-                {"names": table_names},
-            ).all()
-            srid_map = {str(table_name): int(srid) for table_name, srid in srid_rows}
+            # Optional metadata: use a savepoint so a view/permission issue
+            # cannot abort the caller's transaction.
+            with db.begin_nested():
+                srid_rows = db.execute(
+                    text(
+                        "SELECT f_table_name, srid FROM geometry_columns "
+                        "WHERE f_table_schema = 'geo' AND f_geometry_column = 'geom' "
+                        "  AND f_table_name IN :names"
+                    ).bindparams(bindparam("names", expanding=True)),
+                    {"names": table_names},
+                ).all()
+                srid_map = {
+                    str(table_name): int(srid) for table_name, srid in srid_rows
+                }
         except DBAPIError:
             srid_map = {}
     else:
@@ -281,22 +288,24 @@ def resolve_waterway_layers(db: Session, project_id: UUID) -> WaterwayResolution
             continue
         candidates.append((link, layer, code))
 
-    truncated = len(candidates) > settings.s57_waterway_max_layers
-    if truncated:
-        candidates = candidates[: settings.s57_waterway_max_layers]
+    warnings: list[str] = []
+    if len(candidates) > settings.s57_waterway_query_warning_layers:
+        warnings.append(
+            f"项目航道候选图层较多（{len(candidates)} 个），查询可能较慢；"
+            "请缩小类别或视口范围"
+        )
 
     tables = [
         layer.source_table
         for _, layer, _ in candidates
         if layer.source_table and _TABLE_PATTERN.fullmatch(layer.source_table)
     ]
-    metadata = load_table_metadata(db, tables)
-    warnings: list[str] = []
-    if truncated:
-        warnings.append(
-            f"项目航道图层超过 {settings.s57_waterway_max_layers} 个，仅展示前 "
-            f"{settings.s57_waterway_max_layers} 个图层"
-        )
+    # Introspect all candidate tables in bounded batches; never silently drop
+    # layers merely because the project has more than a fixed number of them.
+    batch_size = max(1, settings.s57_waterway_introspection_batch_size)
+    metadata: dict[str, TableMeta] = {}
+    for start in range(0, len(tables), batch_size):
+        metadata.update(load_table_metadata(db, tables[start : start + batch_size]))
 
     layers: list[WaterwayLayerRef] = []
     for _link, layer, code in candidates:
@@ -352,9 +361,15 @@ def resolve_waterway_layers(db: Session, project_id: UUID) -> WaterwayResolution
             feature_count = None
         if feature_count is None and available and table_meta is not None:
             try:
-                feature_count = int(
-                    db.scalar(text(f"SELECT COUNT(*) FROM {_safe_table(layer.source_table)}")) or 0
-                )
+                with db.begin_nested():
+                    feature_count = int(
+                        db.scalar(
+                            text(
+                                f"SELECT COUNT(*) FROM {_safe_table(layer.source_table)}"
+                            )
+                        )
+                        or 0
+                    )
             except DBAPIError:
                 feature_count = None
 
@@ -387,7 +402,16 @@ def resolve_waterway_layers(db: Session, project_id: UUID) -> WaterwayResolution
                 content_hash=version.content_hash,
             )
         )
-    return WaterwayResolution(layers=tuple(layers), warnings=tuple(warnings), truncated=truncated)
+    return WaterwayResolution(
+        layers=tuple(layers),
+        warnings=tuple(warnings),
+        # Candidate discovery is complete; a query/feature budget may still
+        # limit an individual preview or snapshot, but resolution itself no
+        # longer truncates silently.
+        truncated=False,
+        candidate_layer_count=len(candidates),
+        resolved_layer_count=len(layers),
+    )
 
 
 def _layer_ref(layer: WaterwayLayerRef) -> dict[str, Any]:
@@ -454,6 +478,12 @@ def build_catalog(resolution: WaterwayResolution) -> dict[str, Any]:
         "total": total,
         "countComplete": count_complete,
         "truncated": resolution.truncated,
+        "searchableLayerCount": sum(1 for layer in resolution.layers if layer.searchable),
+        "linkedCellCount": len(
+            {layer.source_cell for layer in resolution.layers if layer.source_cell}
+        ),
+        "candidateLayerCount": resolution.candidate_layer_count,
+        "resolvedLayerCount": resolution.resolved_layer_count,
         "warnings": warnings,
     }
 
@@ -608,11 +638,11 @@ def _keyword_condition(layer: WaterwayLayerRef, keyword: str, index: int, params
     return f"({' OR '.join(parts)})"
 
 
-def build_waterway_search_sql(
+def _build_waterway_union_sql(
     layers: list[WaterwayLayerRef],
     payload: Any,
-) -> tuple[str, str, dict[str, Any]]:
-    """Return (count_sql, rows_sql, params). Pure/unit-testable."""
+) -> tuple[str, dict[str, Any]]:
+    """Build the parameterized UNION ALL used by search and count queries."""
     params: dict[str, Any] = {}
     selects: list[str] = []
     keyword = (payload.keyword or "").strip()
@@ -670,8 +700,29 @@ def build_waterway_search_sql(
             f"FROM {table} AS w{where}"
         )
     if not selects:
+        return "", {}
+    return " UNION ALL ".join(selects), params
+
+
+def build_waterway_count_sql(
+    layers: list[WaterwayLayerRef],
+    payload: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Return a parameterized COUNT query for the selected layers/filters."""
+    union, params = _build_waterway_union_sql(layers, payload)
+    if not union:
+        return "", {}
+    return f"SELECT COUNT(*) FROM ({union}) AS waterway_hits", params
+
+
+def build_waterway_search_sql(
+    layers: list[WaterwayLayerRef],
+    payload: Any,
+) -> tuple[str, str, dict[str, Any]]:
+    """Return (count_sql, rows_sql, params). Pure/unit-testable."""
+    union, params = _build_waterway_union_sql(layers, payload)
+    if not union:
         return "", "", {}
-    union = " UNION ALL ".join(selects)
     count_sql = f"SELECT COUNT(*) FROM ({union}) AS waterway_hits"
     rows_sql = (
         "SELECT * FROM ("
@@ -887,6 +938,23 @@ def _db_error(error: DBAPIError) -> AppError:
     return AppError("S57_WATERWAY_QUERY_FAILED", "航道专题查询失败", 500)
 
 
+def normalize_source_cells(values: list[str] | tuple[str, ...] | None) -> set[str]:
+    """Normalize optional source-cell filters without trusting client SQL."""
+    return {
+        str(value).strip().upper()
+        for value in (values or [])
+        if str(value).strip()
+    }
+
+
+def layer_matches_source_cells(
+    layer: WaterwayLayerRef, requested: set[str]
+) -> bool:
+    if not requested:
+        return True
+    return bool(layer.source_cell) and layer.source_cell.strip().upper() in requested
+
+
 def execute_waterway_search(db: Session, project_id: UUID, payload: Any) -> dict[str, Any]:
     settings = get_settings()
     if (payload.page - 1) * payload.page_size > settings.s57_waterway_max_offset:
@@ -898,7 +966,23 @@ def execute_waterway_search(db: Session, project_id: UUID, payload: Any) -> dict
     resolution = resolve_waterway_layers(db, project_id)
     selected, warnings = _selected_codes(payload)
     warnings.extend(resolution.warnings)
+    requested_cells = normalize_source_cells(getattr(payload, "source_cells", None))
     layers = [layer for layer in resolution.layers if layer.object_class in selected]
+    if requested_cells:
+        matching_cells = {
+            layer.source_cell.strip().upper()
+            for layer in layers
+            if layer.source_cell
+        }
+        missing_cells = sorted(requested_cells - matching_cells)
+        if missing_cells:
+            warnings.append(
+                "当前选择中没有以下海图 Cell："
+                + ", ".join(missing_cells)
+            )
+        layers = [
+            layer for layer in layers if layer_matches_source_cells(layer, requested_cells)
+        ]
     present_classes = {layer.object_class for layer in layers}
     missing = sorted(selected - present_classes)
     if missing:

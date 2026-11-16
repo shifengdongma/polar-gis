@@ -21,6 +21,10 @@ def test_primary_waterway_classes_match_task_candidate_set():
             "RECTRC",
             "NAVLNE",
             "TWRTPT",
+            "DWRTCL",
+            "DWRTPT",
+            "RCRTCL",
+            "RCTLPT",
             "TSSLPT",
             "TSSBND",
             "TSEZNE",
@@ -58,6 +62,12 @@ def test_groups_and_default_selection():
     assert classify_waterway("DRGARE").default_selected is False
     assert classify_waterway("DEPARE").auxiliary is True
     assert classify_waterway("DEPARE").name_zh == "水深区域"
+    assert classify_waterway("DWRTCL").group == "fairway_route"
+    assert classify_waterway("DWRTPT").group == "fairway_route"
+    assert classify_waterway("RCRTCL").name_zh == "推荐航线中心线"
+    assert classify_waterway("RCTLPT").name_zh == "推荐通航车道部分"
+    assert classify_waterway("RCTLPT").default_selected is False
+    assert classify_waterway("TSSLPT").name_zh == "分道通航制车道部分"
 
 
 def test_normalize_object_class_accepts_workspace_prefix_and_case():

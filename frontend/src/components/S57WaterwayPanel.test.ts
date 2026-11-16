@@ -26,7 +26,7 @@ describe('S57WaterwayPanel', () => {
   it('supports keyword, viewport, categories, pagination and explicit actions', () => {
     expect(source).toContain('搜索航道名称或属性')
     expect(source).toContain('当前视口')
-    expect(source).toContain('地图点选')
+    expect(source).toContain('点击地图上')
     expect(source).toContain('waterways.runSearch')
     expect(source).toContain('waterways.setPage')
     expect(source).toContain('定位')
@@ -69,7 +69,7 @@ describe('S57WaterwayPanel', () => {
     expect(source).toContain('使用说明')
     expect(source).toContain('不需要先搜索')
     expect(source).toContain('不要求先加载 S-57 WMS 海图图层')
-    expect(source).toContain('地图点选')
+    expect(source).toContain('交通分隔制 ≠ 推荐航路')
     expect(source).toContain('当前视口')
   })
 

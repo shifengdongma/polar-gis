@@ -15,8 +15,10 @@ with ``json.load`` without touching the database.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -32,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.services.s57_waterway_catalog import WATERWAY_CLASS_RULES
 from app.services.s57_waterways import (
     WaterwayLayerRef,
     _apply_statement_timeout,
@@ -39,8 +42,11 @@ from app.services.s57_waterways import (
     _geometry_bbox,
     _json_safe,
     _selected_codes,
+    build_waterway_count_sql,
     build_waterway_export_batch_sql,
     encode_waterway_id,
+    layer_matches_source_cells,
+    normalize_source_cells,
     resolve_waterway_layers,
 )
 
@@ -49,6 +55,10 @@ GEOJSON_FILENAME = "waterways.geojson"
 MANIFEST_FILENAME = "manifest.json"
 
 _SNAPSHOT_ID_PATTERN = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
+_CURSOR_MAX_LENGTH = 512
+_CURSOR_KEY_MAX_LENGTH = 256
+
+logger = logging.getLogger(__name__)
 
 
 def _snapshot_root(root: Path | None = None) -> Path:
@@ -119,6 +129,8 @@ def _feature_from_row(row: dict[str, Any], layer: WaterwayLayerRef) -> dict[str,
             "sourceVersionId": str(layer.version_id) if layer.version_id else None,
             "sourceVersionNo": layer.version_no,
             "sourceCell": layer.source_cell,
+            "sourceKeyField": layer.key_column.upper() if layer.key_column else None,
+            "sourceFeatureKey": feature_key,
             "originalAttributes": _json_safe(raw_attributes),
         },
     }
@@ -226,6 +238,26 @@ def _resolve_usable_layers(
     if missing:
         warnings.append(f"项目中没有以下类别的航道图层：{', '.join(missing)}")
 
+    requested_cells = normalize_source_cells(
+        getattr(payload, "source_cells", None)
+    )
+    if requested_cells:
+        matching_cells = {
+            layer.source_cell.strip().upper()
+            for layer in layers
+            if layer.source_cell
+        }
+        missing_cells = sorted(requested_cells - matching_cells)
+        if missing_cells:
+            warnings.append(
+                "当前选择中没有以下海图 Cell：" + ", ".join(missing_cells)
+            )
+        layers = [
+            layer
+            for layer in layers
+            if layer_matches_source_cells(layer, requested_cells)
+        ]
+
     keyword = (payload.keyword or "").strip()
     usable: list[WaterwayLayerRef] = []
     for layer in layers:
@@ -252,15 +284,20 @@ def _extract_features(
     max_features: int,
     batch_size: int,
 ) -> tuple[list[tuple[WaterwayLayerRef, dict[str, Any]]], bool]:
-    """Read all matching rows in keyset batches, returning (layer, feature) pairs."""
+    """Read matching rows in keyset batches, returning (layer, feature) pairs.
+
+    One extra row is read to prove that truncation is real. A result set whose
+    size is exactly ``max_features`` is not reported as truncated when the
+    source is exhausted.
+    """
     extracted: list[tuple[WaterwayLayerRef, dict[str, Any]]] = []
-    truncated = False
+    target = max_features + 1
     _apply_statement_timeout(db, get_settings().s57_waterway_snapshot_timeout_ms)
     try:
         for layer in usable:
             after_key: str | None = None
-            while len(extracted) < max_features:
-                limit = min(batch_size, max_features - len(extracted))
+            while len(extracted) < target:
+                limit = min(batch_size, target - len(extracted))
                 sql, params = build_waterway_export_batch_sql(
                     layer, payload, after_key=after_key, limit=limit
                 )
@@ -270,7 +307,7 @@ def _extract_features(
                 if not rows:
                     break
                 for row in rows:
-                    if len(extracted) >= max_features:
+                    if len(extracted) >= target:
                         break
                     feature = _feature_from_row(dict(row), layer)
                     if feature is not None:
@@ -278,12 +315,165 @@ def _extract_features(
                 after_key = str(rows[-1]["feature_key"])
                 if len(rows) < limit:
                     break
-            if len(extracted) >= max_features:
-                truncated = True
+            if len(extracted) >= target:
                 break
     except DBAPIError as error:
         raise _db_error(error) from error
-    return extracted, truncated
+    truncated = len(extracted) > max_features
+    return extracted[:max_features], truncated
+
+
+def encode_preview_cursor(layer_id: UUID, after_key: str) -> str:
+    payload = json.dumps(
+        {"l": str(layer_id), "k": str(after_key)}, separators=(",", ":")
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_preview_cursor(value: str) -> tuple[UUID, str]:
+    if not value or len(value) > _CURSOR_MAX_LENGTH:
+        raise AppError(
+            "S57_WATERWAY_CURSOR_INVALID",
+            "预览游标已失效，请重新加载",
+            409,
+        )
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        layer_id = UUID(str(payload["l"]))
+        after_key = str(payload["k"])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise AppError(
+            "S57_WATERWAY_CURSOR_INVALID",
+            "预览游标已失效，请重新加载",
+            409,
+        ) from exc
+    if not after_key or len(after_key) > _CURSOR_KEY_MAX_LENGTH:
+        raise AppError(
+            "S57_WATERWAY_CURSOR_INVALID",
+            "预览游标已失效，请重新加载",
+            409,
+        )
+    return layer_id, after_key
+
+
+def _extract_class_page(
+    db: Session,
+    layers: list[WaterwayLayerRef],
+    payload: Any,
+    limit: int,
+    cursor: str | None,
+) -> tuple[list[tuple[WaterwayLayerRef, dict[str, Any]]], str | None, bool]:
+    """Extract one fair page for a single object class.
+
+    The cursor only identifies the current layer/key; subsequent layers are
+    consumed in stable resolution order. One extra row is read to prove
+    ``has_more`` without over-reporting truncation.
+    """
+    if not layers or limit < 1:
+        return [], None, False
+    batch_size = max(1, get_settings().s57_waterway_snapshot_batch_size)
+    start_index = 0
+    after_key: str | None = None
+    if cursor:
+        layer_id, after_key = decode_preview_cursor(cursor)
+        found = next(
+            (index for index, layer in enumerate(layers) if layer.layer_id == layer_id),
+            None,
+        )
+        if found is None:
+            raise AppError(
+                "S57_WATERWAY_CURSOR_INVALID",
+                "预览游标对应的图层已不是当前版本，请重新加载",
+                409,
+            )
+        start_index = found
+
+    collected: list[tuple[WaterwayLayerRef, dict[str, Any]]] = []
+    target = limit + 1
+    try:
+        for offset, layer in enumerate(layers[start_index:]):
+            current_after = after_key if offset == 0 else None
+            while len(collected) < target:
+                remaining = target - len(collected)
+                batch_limit = min(batch_size, remaining)
+                sql, params = build_waterway_export_batch_sql(
+                    layer, payload, after_key=current_after, limit=batch_limit
+                )
+                if not sql:
+                    break
+                rows = db.execute(text(sql), params).mappings().all()
+                if not rows:
+                    break
+                for row in rows:
+                    if len(collected) >= target:
+                        break
+                    feature = _feature_from_row(dict(row), layer)
+                    if feature is not None:
+                        collected.append((layer, feature))
+                current_after = str(rows[-1]["feature_key"])
+                if len(rows) < batch_limit:
+                    break
+            if len(collected) >= target:
+                break
+    except DBAPIError as error:
+        raise _db_error(error) from error
+
+    has_more = len(collected) > limit
+    kept = collected[:limit]
+    next_cursor: str | None = None
+    if has_more and kept:
+        last_layer, last_feature = kept[-1]
+        last_key = str(
+            (last_feature.get("properties") or {}).get("sourceFeatureKey") or ""
+        )
+        if last_key:
+            next_cursor = encode_preview_cursor(last_layer.layer_id, last_key)
+    return kept, next_cursor, has_more
+
+
+def _class_matched_total(
+    db: Session,
+    layers: list[WaterwayLayerRef],
+    payload: Any,
+    code: str,
+    warnings: list[str],
+) -> int | None:
+    count_sql, params = build_waterway_count_sql(layers, payload)
+    if not count_sql:
+        return 0
+    try:
+        with db.begin_nested():
+            return int(db.scalar(text(count_sql), params) or 0)
+    except DBAPIError as error:
+        # A PostgreSQL statement timeout aborts the current transaction. Use a
+        # savepoint so later class queries remain usable.
+        pgcode = getattr(getattr(error, "orig", None), "pgcode", None)
+        if pgcode == "57014" or "statement timeout" in str(error).lower():
+            warnings.append(f"{code} 匹配总数计算超时，显示为“未知”")
+        else:
+            logger.warning("S-57 航道预览匹配总数计算失败", exc_info=True)
+            warnings.append(f"{code} 匹配总数计算失败，显示为“未知”")
+        return None
+
+
+def _empty_preview_response(warnings: list[str]) -> dict[str, Any]:
+    return {
+        "items": [],
+        "total": 0,
+        "truncated": False,
+        "matchedTotal": 0,
+        "returnedCount": 0,
+        "hasMore": False,
+        "classHasMore": {},
+        "nextCursors": {},
+        "classMatchedTotals": {},
+        "countComplete": True,
+        "truncatedLayers": False,
+        "groupCounts": {},
+        "objectClassCounts": {},
+        "warnings": warnings,
+    }
 
 
 def _preview_item(
@@ -357,6 +547,10 @@ def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dic
         "objectClasses": sorted(selected),
         "includeAuxiliary": payload.include_auxiliary,
         "bbox": list(payload.bbox) if payload.bbox else None,
+        "sourceCells": sorted(
+            normalize_source_cells(getattr(payload, "source_cells", None))
+        )
+        or None,
         "maxFeatures": effective_max,
     }
     return write_snapshot(
@@ -376,39 +570,138 @@ def create_waterway_snapshot(db: Session, project_id: UUID, payload: Any) -> dic
 
 
 def preview_waterway_items(db: Session, project_id: UUID, payload: Any) -> dict[str, Any]:
-    """Return matching features for map preview; nothing is written to disk."""
+    """Return one fair, cursor-paged preview page; nothing is written to disk.
+
+    Each selected object class receives an equal share of the request budget,
+    so a high-volume class (for example TSSLPT) cannot hide every other class.
+    A second pass redistributes unused budget. The response carries per-class
+    match totals, cursors and explicit has-more flags.
+    """
     settings = get_settings()
-    usable, _selected, warnings = _resolve_usable_layers(db, project_id, payload)
+    usable, selected, warnings = _resolve_usable_layers(db, project_id, payload)
     if not usable:
         warnings.append("没有可展示的航道图层，请检查对象类别与筛选条件")
-        return {
-            "items": [],
-            "total": 0,
-            "truncated": False,
-            "groupCounts": {},
-            "objectClassCounts": {},
-            "warnings": warnings,
-        }
+        return _empty_preview_response(warnings)
 
     max_features = max(1, settings.s57_waterway_preview_max_features)
     if payload.max_features is not None and payload.max_features > max_features:
         warnings.append(f"单次最多显示 {max_features} 个要素，已按上限截取")
     effective_max = min(payload.max_features or max_features, max_features)
-    batch_size = max(1, settings.s57_waterway_snapshot_batch_size)
+    _apply_statement_timeout(db)
 
-    extracted, truncated = _extract_features(
-        db, usable, payload, effective_max, batch_size
+    class_order = [
+        code
+        for code in WATERWAY_CLASS_RULES
+        if code in selected and any(layer.object_class == code for layer in usable)
+    ]
+    class_order.extend(
+        sorted({layer.object_class for layer in usable} - set(class_order))
     )
+    class_layers = {
+        code: [layer for layer in usable if layer.object_class == code]
+        for code in class_order
+    }
+
+    requested_cursors = dict(getattr(payload, "class_cursors", None) or {})
+    unknown_cursor_classes = sorted(set(requested_cursors) - set(class_layers))
+    if unknown_cursor_classes:
+        raise AppError(
+            "S57_WATERWAY_CURSOR_INVALID",
+            "预览游标对应的对象类别已不可用，请重新加载",
+            409,
+        )
+
+    class_matched_totals: dict[str, int | None] = {}
+    count_complete = True
+    for code in class_order:
+        total = _class_matched_total(
+            db, class_layers[code], payload, code, warnings
+        )
+        class_matched_totals[code] = total
+        if total is None:
+            count_complete = False
+
+    cursors: dict[str, str | None] = {
+        code: requested_cursors.get(code) for code in class_order
+    }
+    class_has_more = {code: False for code in class_order}
+    exhausted = {code: False for code in class_order}
+    processed: set[str] = set()
+    collected: dict[str, list[tuple[WaterwayLayerRef, dict[str, Any]]]] = {
+        code: [] for code in class_order
+    }
+
+    remaining = effective_max
+    rounds = 0
+    while remaining > 0 and rounds < 2:
+        active = [code for code in class_order if not exhausted[code]]
+        if not active:
+            break
+        share = max(1, remaining // len(active))
+        progressed = False
+        for code in active:
+            if remaining <= 0:
+                break
+            take = min(share, remaining)
+            page, next_cursor, has_more = _extract_class_page(
+                db,
+                class_layers[code],
+                payload,
+                take,
+                cursors.get(code),
+            )
+            processed.add(code)
+            cursors[code] = next_cursor
+            class_has_more[code] = has_more
+            if not has_more:
+                exhausted[code] = True
+            if page:
+                collected[code].extend(page)
+                remaining -= len(page)
+                progressed = True
+        rounds += 1
+        if not progressed:
+            break
+
+    # Classes skipped entirely because the budget was exhausted still need a
+    # truthful "more" signal; they were not loaded, so the client may request
+    # them from the start on the next call.
+    for code in class_order:
+        if code in processed:
+            continue
+        matched = class_matched_totals.get(code)
+        class_has_more[code] = matched is None or matched != 0
+
+    extracted: list[tuple[WaterwayLayerRef, dict[str, Any]]] = []
+    for code in class_order:
+        extracted.extend(collected[code])
     items = [_preview_item(layer, feature) for layer, feature in extracted]
     group_counts: dict[str, int] = {}
     class_counts: dict[str, int] = {}
     for item in items:
         group_counts[item["group"]] = group_counts.get(item["group"], 0) + 1
         class_counts[item["objectClass"]] = class_counts.get(item["objectClass"], 0) + 1
+
+    matched_total = (
+        sum(value for value in class_matched_totals.values() if value is not None)
+        if count_complete
+        else None
+    )
+    has_more = any(class_has_more.values())
     return {
         "items": items,
-        "total": len(items),
-        "truncated": truncated,
+        "total": matched_total if matched_total is not None else len(items),
+        "truncated": has_more,
+        "matchedTotal": matched_total,
+        "returnedCount": len(items),
+        "hasMore": has_more,
+        "classHasMore": class_has_more,
+        "nextCursors": {
+            code: cursor for code, cursor in cursors.items() if cursor
+        },
+        "classMatchedTotals": class_matched_totals,
+        "countComplete": count_complete,
+        "truncatedLayers": False,
         "groupCounts": group_counts,
         "objectClassCounts": class_counts,
         "warnings": warnings,

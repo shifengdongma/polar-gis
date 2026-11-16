@@ -1718,6 +1718,63 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .waterway-snapshot-stale { padding: 1px 5px; color: #8a5300; border: 1px solid #e7c27a; border-radius: 999px; background: #fff1d8; font-size: 8px; font-weight: 600; }
 .waterway-snapshot-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: #5f7b85; font-size: 9px; }
 .waterway-snapshot-item > .el-button { align-self: flex-start; padding: 2px 4px; font-size: 9px; }
+.waterway-stats { display: flex; flex-wrap: wrap; gap: 3px 9px; padding: 5px 6px; border: 1px solid rgba(104, 193, 207, .20); border-radius: 4px; background: rgba(4, 20, 29, .35); color: #9fbcc6; font-size: 8px; }
+.waterway-stats b { color: #d9f4f8; font-size: 9px; }
+.waterway-coverage-warning { padding: 6px 8px; border: 1px solid rgba(239, 139, 96, .38); border-radius: 4px; background: rgba(120, 45, 30, .25); color: #ffd7c7; font-size: 8px; line-height: 1.5; }
+.waterway-cell-filter { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 6px; border: 1px dashed rgba(104, 193, 207, .30); border-radius: 4px; color: #b9dce4; font-size: 8px; }
+.waterway-legend-actions { display: flex; align-items: center; gap: 3px; }
+.waterway-group-toggles { display: flex; flex-wrap: wrap; gap: 2px 8px; padding-top: 3px; border-top: 1px dashed rgba(151, 190, 201, .18); }
+.waterway-group-toggles .el-checkbox { margin-right: 0; font-size: 8px; }
+.waterway-detail-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.waterway-detail-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 9px; }
+.waterway-diagnostic-summary { display: flex; flex-wrap: wrap; gap: 5px 14px; padding: 7px 9px; border: 1px solid #dce8ed; border-radius: 5px; background: #f7fafb; color: #315d6b; font-size: 10px; }
+.waterway-diagnostic-summary b { color: #1f4754; }
+.waterway-diagnostic-regions { display: flex; flex-direction: column; gap: 6px; }
+.waterway-diagnostic-region { padding: 7px 9px; border: 1px solid #dce8ed; border-radius: 6px; background: #f8fbfc; }
+.waterway-diagnostic-region-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #1f4754; font-size: 11px; }
+.waterway-diagnostic-region-meta { margin-top: 3px; color: #5f7b85; font-size: 9px; line-height: 1.45; }
+.waterway-diagnostic-region-note { margin-top: 2px; color: #7897a3; font-size: 8px; line-height: 1.45; }
+.waterway-diagnostic-notes { display: flex; flex-direction: column; gap: 2px; color: #5f7b85; font-size: 9px; line-height: 1.5; }
+.waterway-diagnostic-references { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; color: #5f7b85; font-size: 9px; line-height: 1.5; }
+.waterway-diagnostic-references a { color: #1a6f8c; font-weight: 600; }
+.waterway-diagnostics-drawer .waterway-detail-section-title { color: #234e5c; }
+
+/* ── S-57 thematic extraction dialog ───────────────────────────────── */
+.thematic-disclaimer { margin-bottom: 8px; padding: 7px 9px; border: 1px solid #f0d49d; border-radius: 5px; background: #fff8e8; color: #8a5300; font-size: 10px; line-height: 1.5; }
+.thematic-disclaimer b { color: #6d3f00; }
+.thematic-empty, .thematic-error { padding: 8px 0; color: #6a7f87; font-size: 11px; line-height: 1.5; }
+.thematic-error { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid #efc4b6; border-radius: 5px; background: #fff3ef; color: #9b3f24; }
+.thematic-warning { margin-bottom: 8px; padding: 7px 9px; border: 1px solid #f0d49d; border-radius: 5px; background: #fff8e8; color: #8a5300; font-size: 10px; line-height: 1.5; }
+.thematic-section-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 10px 0 5px; color: #1f4754; font-size: 11px; font-weight: 700; }
+.thematic-source-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.thematic-source-note { color: #6a7f87; font-size: 9px; line-height: 1.45; }
+.thematic-select-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 6px; }
+.thematic-category { margin-top: 7px; padding: 7px 8px; border: 1px solid #dce8ed; border-radius: 6px; background: #f8fbfc; }
+.thematic-category-head { color: #315d6b; font-size: 10px; font-weight: 700; }
+.thematic-class-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 8px; margin-top: 3px; }
+.thematic-class-item { display: flex; align-items: center; margin-right: 0 !important; color: #315d6b; font-size: 10px; }
+.thematic-class-item code { margin-left: 5px; color: #6a7f87; font-size: 8px; }
+.thematic-class-item b { margin-left: auto; padding-left: 6px; color: #1a6f8c; font-size: 9px; }
+.thematic-class-item em { margin-left: 5px; color: #a06a20; font-size: 8px; font-style: normal; }
+.thematic-class-desc { margin-top: 2px; color: #7897a3; font-size: 8px; line-height: 1.4; }
+.thematic-summary { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; padding: 6px 8px; border: 1px solid #dce8ed; border-radius: 5px; background: #f7fafb; color: #315d6b; font-size: 10px; }
+.thematic-summary b { color: #1f4754; }
+.thematic-summary-note { color: #7897a3; font-size: 8px; }
+.thematic-form-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 7px; color: #315d6b; font-size: 10px; }
+.thematic-form-row label { min-width: 64px; font-weight: 700; }
+.thematic-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.thematic-semantics { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; color: #6a7f87; font-size: 9px; line-height: 1.5; }
+.thematic-export-list { display: flex; flex-direction: column; gap: 8px; }
+.thematic-export-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid #dce8ed; border-radius: 6px; background: #f8fbfc; }
+.thematic-export-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; color: #1f4754; font-size: 11px; }
+.thematic-export-head strong { font-size: 12px; }
+.thematic-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.thematic-export-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: #5f7b85; font-size: 9px; }
+.thematic-export-warning { color: #9b3f24; font-size: 9px; }
+.thematic-export-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.thematic-export-actions .el-button { margin-left: 0; padding: 2px 4px; font-size: 9px; }
+.thematic-manifest-details { margin-top: 3px; color: #5f7b85; font-size: 9px; line-height: 1.5; }
+.thematic-manifest-details summary { color: #1a6f8c; cursor: pointer; }
 
 /* ── S-57 inline layer legend ───────────────────────────────────────── */
 .s57-layer-legend { margin: 2px 0 4px 19px; padding: 7px 8px; border: 1px solid rgba(151, 190, 201, .18); border-left: 2px solid rgba(104, 193, 207, .45); border-radius: 0 4px 4px 0; background: rgba(4, 20, 29, .55); }
@@ -1733,4 +1790,4 @@ button:focus-visible, a:focus-visible, .el-input__wrapper:focus-within, .el-sele
 .s57-layer-legend-note { margin: 2px 0 0; color: #7897a3; font-size: 8px; line-height: 1.45; }
 .s57-layer-legend-note button { padding: 0 3px; color: #9fe3ee; border: 0; background: none; font-size: 8px; cursor: pointer; text-decoration: underline; }
 .s57-layer-legend-empty { color: #7897a3; font-size: 9px; }
-@media print { .waterway-panel, .waterway-detail-drawer, .waterway-snapshot-drawer, .waterway-snapshot-dialog, .s57-layer-legend { display: none !important; } }
+@media print { .waterway-panel, .waterway-detail-drawer, .waterway-snapshot-drawer, .waterway-snapshot-dialog, .waterway-diagnostics-drawer, .s57-layer-legend { display: none !important; } }

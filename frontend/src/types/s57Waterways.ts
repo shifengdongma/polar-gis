@@ -41,6 +41,10 @@ export interface S57WaterwayCatalog {
   total: number
   countComplete: boolean
   truncated: boolean
+  searchableLayerCount: number
+  linkedCellCount: number
+  candidateLayerCount: number
+  resolvedLayerCount: number
   warnings: string[]
 }
 
@@ -49,6 +53,7 @@ export interface S57WaterwaySearchRequest {
   objectClasses: string[]
   includeAuxiliary?: boolean
   bbox?: [number, number, number, number] | null
+  sourceCells?: string[] | null
   page?: number
   pageSize?: number
 }
@@ -91,16 +96,93 @@ export interface S57WaterwayPreviewRequest {
   objectClasses: string[]
   includeAuxiliary?: boolean
   bbox?: [number, number, number, number] | null
+  sourceCells?: string[] | null
   maxFeatures?: number | null
+  classCursors?: Record<string, string> | null
 }
 
 export interface S57WaterwayPreviewResponse {
   items: S57WaterwaySearchItem[]
   total: number
   truncated: boolean
+  matchedTotal: number | null
+  returnedCount: number
+  hasMore: boolean
+  classHasMore: Record<string, boolean>
+  nextCursors: Record<string, string>
+  classMatchedTotals: Record<string, number | null>
+  countComplete: boolean
+  truncatedLayers: boolean
   groupCounts: Record<string, number>
   objectClassCounts: Record<string, number>
   warnings: string[]
+}
+
+export interface S57WaterwayDiagnosticsCell {
+  sourceCell: string
+  datasetCodes: string[]
+  datasetNames: string[]
+  versionNos: number[]
+  layerCount: number
+  waterwayLayerCount: number
+  searchableLayerCount: number
+  renderableLayerCount: number
+  featureCount: number
+  waterwayFeatureCount: number
+  countComplete: boolean
+  objectClasses: string[]
+  waterwayClasses: string[]
+  bbox: [number, number, number, number] | null
+  coverageSource: string
+  coverageVerified: boolean
+  reasons: string[]
+}
+
+export interface S57WaterwayDiagnosticsRegion {
+  code: string
+  nameZh: string
+  approximateBbox: number[][]
+  status: string
+  cells: string[]
+  waterwayClasses: string[]
+  featureCount: number
+  countComplete: boolean
+  note: string
+}
+
+export interface S57WaterwayDiagnostics {
+  projectId: string
+  generatedAt: string
+  totals: {
+    linkedCellCount: number
+    waterwayLayerCount: number
+    searchableLayerCount: number
+    renderableLayerCount: number
+    featureCount: number
+    countComplete: boolean
+    candidateLayerCount: number
+    resolvedLayerCount: number
+    catalogTruncated: boolean
+    layerWarningThreshold: number
+  }
+  cells: S57WaterwayDiagnosticsCell[]
+  classes: S57WaterwayClass[]
+  regions: S57WaterwayDiagnosticsRegion[]
+  northeastPassage: {
+    hasGap: boolean
+    missingRegions: Array<{ code: string; nameZh: string; status: string }>
+    summary: string
+    definitions?: Record<string, string>
+  }
+  references: Array<{
+    title: string
+    url: string
+    scope: string
+    checkedAt: string
+  }>
+  notes: string[]
+  warnings: string[]
+  checkedAt: string
 }
 
 export interface S57WaterwaySnapshotCreateRequest {
@@ -109,6 +191,7 @@ export interface S57WaterwaySnapshotCreateRequest {
   objectClasses: string[]
   includeAuxiliary?: boolean
   bbox?: [number, number, number, number] | null
+  sourceCells?: string[] | null
   maxFeatures?: number | null
 }
 

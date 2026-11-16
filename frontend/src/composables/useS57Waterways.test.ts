@@ -17,6 +17,7 @@ vi.mock('../api/s57Waterways', () => ({
   createWaterwaySnapshot: vi.fn(),
   listWaterwaySnapshots: vi.fn(),
   downloadWaterwaySnapshot: vi.fn(),
+  fetchWaterwayDiagnostics: vi.fn(),
   previewWaterways: vi.fn(),
 }))
 
@@ -63,6 +64,10 @@ const catalog: S57WaterwayCatalog = {
   total: 3,
   countComplete: true,
   truncated: false,
+  searchableLayerCount: 1,
+  linkedCellCount: 1,
+  candidateLayerCount: 2,
+  resolvedLayerCount: 2,
   warnings: [],
 }
 
@@ -257,6 +262,14 @@ describe('useS57Waterways', () => {
       items: [item('id-1', 'A'), item('id-2', 'B')],
       total: 2,
       truncated: false,
+      matchedTotal: 2,
+      returnedCount: 2,
+      hasMore: false,
+      classHasMore: { FAIRWY: false },
+      nextCursors: {},
+      classMatchedTotals: { FAIRWY: 2 },
+      countComplete: true,
+      truncatedLayers: false,
       groupCounts: { fairway_route: 2 },
       objectClassCounts: { FAIRWY: 2 },
       warnings: [],
@@ -312,6 +325,7 @@ describe('useS57Waterways', () => {
         objectClasses: ['FAIRWY'],
         includeAuxiliary: false,
         bbox: [170, 70, -170, 80],
+        sourceCells: null,
         maxFeatures: 500,
       },
       expect.any(AbortSignal),
@@ -321,5 +335,103 @@ describe('useS57Waterways', () => {
     await waterways.loadSnapshots()
     expect(listWaterwaySnapshots).toHaveBeenCalledWith('project-1', expect.any(AbortSignal))
     expect(waterways.snapshots.value[0].stale).toBe(false)
+  })
+
+  it('appends a later preview page without overwriting earlier features', async () => {
+    vi.mocked(previewWaterways)
+      .mockResolvedValueOnce({
+        items: [item('id-1', 'A')],
+        total: 3,
+        truncated: true,
+        matchedTotal: 3,
+        returnedCount: 1,
+        hasMore: true,
+        classHasMore: { FAIRWY: true },
+        nextCursors: { FAIRWY: 'cursor-1' },
+        classMatchedTotals: { FAIRWY: 3 },
+        countComplete: true,
+        truncatedLayers: false,
+        groupCounts: { fairway_route: 1 },
+        objectClassCounts: { FAIRWY: 1 },
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        items: [item('id-2', 'B')],
+        total: 3,
+        truncated: false,
+        matchedTotal: 3,
+        returnedCount: 1,
+        hasMore: false,
+        classHasMore: { FAIRWY: false },
+        nextCursors: {},
+        classMatchedTotals: { FAIRWY: 3 },
+        countComplete: true,
+        truncatedLayers: false,
+        groupCounts: { fairway_route: 1 },
+        objectClassCounts: { FAIRWY: 1 },
+        warnings: [],
+      })
+    const { map, fit } = fakeMap()
+    const waterways = useS57Waterways({
+      getProjectId: () => 'project-1',
+      getMap: () => map as never,
+      getCrs: () => 'EPSG:3857',
+    })
+    waterways.attach()
+    waterways.setClasses(['FAIRWY'])
+    expect(await waterways.showOverview()).toBe(true)
+    expect(waterways.displayedCount.value).toBe(1)
+    expect(await waterways.loadMoreOverview()).toBe(true)
+    expect(waterways.displayedCount.value).toBe(2)
+    expect(waterways.displayed.value.has('id-1')).toBe(true)
+    expect(waterways.displayed.value.has('id-2')).toBe(true)
+    expect(waterways.overviewHasMore.value).toBe(false)
+    expect(fit).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(previewWaterways).mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        objectClasses: ['FAIRWY'],
+        classCursors: { FAIRWY: 'cursor-1' },
+      }),
+    )
+  })
+
+  it('filters visible groups without dropping loaded features', async () => {
+    vi.mocked(previewWaterways).mockResolvedValue({
+      items: [
+        item('id-1', 'A'),
+        { ...item('id-2', 'B'), group: 'traffic_separation', groupNameZh: '交通分隔制' },
+      ],
+      total: 2,
+      truncated: false,
+      matchedTotal: 2,
+      returnedCount: 2,
+      hasMore: false,
+      classHasMore: { FAIRWY: false },
+      nextCursors: {},
+      classMatchedTotals: { FAIRWY: 2 },
+      countComplete: true,
+      truncatedLayers: false,
+      groupCounts: { fairway_route: 1, traffic_separation: 1 },
+      objectClassCounts: { FAIRWY: 1 },
+      warnings: [],
+    })
+    const { map } = fakeMap()
+    const waterways = useS57Waterways({
+      getProjectId: () => 'project-1',
+      getMap: () => map as never,
+      getCrs: () => 'EPSG:3857',
+    })
+    waterways.attach()
+    waterways.setClasses(['FAIRWY'])
+    await waterways.showOverview()
+    expect(waterways.displayedCount.value).toBe(2)
+    expect(waterways.visibleCount.value).toBe(2)
+    waterways.setVisibleGroup('traffic_separation', false)
+    expect(waterways.displayedCount.value).toBe(2)
+    expect(waterways.visibleCount.value).toBe(1)
+    waterways.showOnlyFairways()
+    expect(waterways.visibleCount.value).toBe(1)
+    waterways.showAllGroups()
+    expect(waterways.visibleCount.value).toBe(2)
   })
 })

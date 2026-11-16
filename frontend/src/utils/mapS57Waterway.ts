@@ -51,32 +51,52 @@ function geometryKind(geometry: Geometry | undefined): 'point' | 'line' | 'area'
   return 'line'
 }
 
+/** Coarse zoom bucket so low-zoom overviews do not become orange confetti. */
+function zoomBucket(resolution?: number): 'far' | 'mid' | 'near' {
+  if (resolution === undefined || !Number.isFinite(resolution)) return 'near'
+  if (resolution > 20_000) return 'far'
+  if (resolution > 4_000) return 'mid'
+  return 'near'
+}
+
+function fillForZoom(color: string, bucket: 'far' | 'mid' | 'near'): string {
+  const match = color.match(/^(rgba\([^)]*,\s*)([\d.]+)\)$/)
+  if (!match) return color
+  const alpha = bucket === 'far' ? 0.06 : bucket === 'mid' ? 0.10 : match[2]
+  return `${match[1]}${alpha})`
+}
+
 export function waterwayStyleForFeature(
   feature: Feature<Geometry>,
   selected: boolean,
   cache?: Map<string, Style>,
+  resolution?: number,
 ): Style {
   const group = (feature.get('group') as WaterwayGroup) ?? 'fairway_route'
   const auxiliary = Boolean(feature.get('auxiliary'))
   const kind = geometryKind(feature.getGeometry())
-  const key = `${group}|${auxiliary ? 'aux' : 'main'}|${kind}|${selected ? 'selected' : 'normal'}`
+  const bucket = zoomBucket(resolution)
+  const key = `${group}|${auxiliary ? 'aux' : 'main'}|${kind}|${bucket}|${selected ? 'selected' : 'normal'}`
   const cached = cache?.get(key)
   if (cached) return cached
 
   const colors = auxiliary ? AUXILIARY_COLOR : GROUP_COLORS[group] ?? GROUP_COLORS.fairway_route
   const stroke = selected ? SELECTED_COLOR : colors.stroke
-  const width = selected ? 3.5 : 2
+  const baseWidth = bucket === 'far' ? 1 : bucket === 'mid' ? 1.6 : 2
+  const width = selected ? baseWidth + 1.5 : baseWidth
+  const baseRadius = bucket === 'far' ? 3.5 : bucket === 'mid' ? 4.5 : 5
+  const fill = fillForZoom(colors.fill, bucket)
   const style =
     kind === 'point'
       ? new Style({
           image: new CircleStyle({
-            radius: selected ? 8 : 5,
-            fill: new Fill({ color: colors.fill }),
+            radius: selected ? baseRadius + 3 : baseRadius,
+            fill: new Fill({ color: fill }),
             stroke: new Stroke({ color: stroke, width }),
           }),
         })
       : new Style({
-          fill: kind === 'area' ? new Fill({ color: colors.fill }) : undefined,
+          fill: kind === 'area' ? new Fill({ color: fill }) : undefined,
           stroke: new Stroke({
             color: stroke,
             width,

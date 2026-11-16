@@ -41,6 +41,8 @@ EXPECTED_NAVIGATION_RECOMMENDED = {
     "RDOSTA",
     "RDOCAL",
     "RETRFL",
+    "DWRTCL",
+    "DWRTPT",
     "RCRTCL",
     "RCTLPT",
     "TSSBND",
@@ -111,6 +113,19 @@ def test_production_catalog_sets_are_exact_and_disjoint() -> None:
             rule = classify_s57_layer(code, "Point", True)
             assert rule.load_profile == profile
             assert rule.object_name_zh.strip()
+
+
+def test_routing_classes_are_not_misclassified_as_radar_aids() -> None:
+    rcr = classify_s57_layer("RCRTCL", "Line String", True)
+    rct = classify_s57_layer("RCTLPT", "Multi Polygon", True)
+    assert rcr.object_name_zh == "推荐航线中心线"
+    assert rct.object_name_zh == "推荐通航车道部分"
+    assert rcr.display_category == "routing"
+    assert rct.display_category == "routing"
+    assert rcr.display_priority == 60
+    assert rct.display_priority == 60
+    assert classify_s57_layer("DWRTCL", "Line String", True).object_name_zh == "深水航道中心线"
+    assert classify_s57_layer("DWRTPT", "Multi Polygon", True).object_name_zh == "深水航道部分"
 
 
 def test_normalizes_codes_and_assigns_display_priorities() -> None:

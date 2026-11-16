@@ -2,6 +2,7 @@ import { api } from './client'
 import type {
   S57WaterwayCatalog,
   S57WaterwayDetail,
+  S57WaterwayDiagnostics,
   S57WaterwayPreviewRequest,
   S57WaterwayPreviewResponse,
   S57WaterwaySearchRequest,
@@ -18,6 +19,17 @@ export async function fetchWaterwayCatalog(
   const response = await api.get<S57WaterwayCatalog>(
     `/projects/${projectId}/s57-waterways/catalog`,
     { signal, timeout: 30_000 },
+  )
+  return response.data
+}
+
+export async function fetchWaterwayDiagnostics(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<S57WaterwayDiagnostics> {
+  const response = await api.get<S57WaterwayDiagnostics>(
+    `/projects/${projectId}/s57-waterways/diagnostics`,
+    { signal, timeout: 60_000 },
   )
   return response.data
 }

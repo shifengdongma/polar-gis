@@ -62,6 +62,8 @@ def payload(**overrides):
         object_classes=overrides.get("object_classes", ["FAIRWY"]),
         name=overrides.get("name"),
         max_features=overrides.get("max_features"),
+        source_cells=overrides.get("source_cells", []),
+        class_cursors=overrides.get("class_cursors"),
     )
 
 
@@ -227,8 +229,44 @@ class FakeDb:
     def get_bind(self):
         return self.binds
 
+    def begin_nested(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
     def execute(self, _sql, params):
         return FakeResult(self.batches.get(params.get("after_key"), []))
+
+
+class FakePreviewDb:
+    """Keyset-aware fake used by the preview cursor/fairness tests."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.binds = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    def get_bind(self):
+        return self.binds
+
+    def begin_nested(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def scalar(self, _sql, _params=None):
+        return len(self.rows)
+
+    def execute(self, _sql, params):
+        after_key = params.get("after_key")
+        limit = int(params.get("limit") or len(self.rows))
+        rows = self.rows
+        if after_key is not None:
+            rows = [
+                row
+                for row in rows
+                if int(row["feature_key"]) > int(after_key)
+            ]
+        return FakeResult(rows[:limit])
 
 
 def test_create_snapshot_extracts_all_keyset_batches(tmp_path, monkeypatch):
@@ -316,12 +354,17 @@ def test_preview_returns_items_counts_and_truncation(tmp_path, monkeypatch):
             },
         }
 
-    db = FakeDb({None: [row(1), row(2)], "2": [row(3)]})
+    db = FakePreviewDb([row(1), row(2), row(3)])
     result = export.preview_waterway_items(
         db, uuid4(), payload(object_classes=["FAIRWY"])
     )
-    assert result["total"] == 2
+    assert result["total"] == 3
+    assert result["matchedTotal"] == 3
+    assert result["returnedCount"] == 2
     assert result["truncated"] is True
+    assert result["hasMore"] is True
+    assert result["classHasMore"] == {"FAIRWY": True}
+    assert result["nextCursors"]["FAIRWY"]
     assert result["groupCounts"] == {"fairway_route": 2}
     assert result["objectClassCounts"] == {"FAIRWY": 2}
     item = result["items"][0]
@@ -331,6 +374,58 @@ def test_preview_returns_items_counts_and_truncation(tmp_path, monkeypatch):
     assert item["status"] == "1"
     assert item["geometryType"] == "MultiLineString"
     assert item["bbox"] is not None
+
+    more = export.preview_waterway_items(
+        db,
+        uuid4(),
+        payload(
+            object_classes=["FAIRWY"],
+            class_cursors={"FAIRWY": result["nextCursors"]["FAIRWY"]},
+        ),
+    )
+    assert more["returnedCount"] == 1
+    assert more["items"][0]["name"] == "航道 3"
+    assert more["hasMore"] is False
+    assert more["nextCursors"] == {}
+
+
+def test_preview_exact_cap_is_not_truncated(tmp_path, monkeypatch):
+    layer = versioned_layer()
+    monkeypatch.setattr(
+        export,
+        "resolve_waterway_layers",
+        lambda _db, _project_id: WaterwayResolution(layers=(layer,), warnings=()),
+    )
+    settings = Settings(
+        storage_root=tmp_path,
+        temp_root=tmp_path / "temp",
+        s57_waterway_preview_max_features=2,
+    )
+    monkeypatch.setattr(export, "get_settings", lambda: settings)
+
+    def row(number: int):
+        return {
+            "feature_key": str(number),
+            "name": f"航道 {number}",
+            "geometry": json.dumps(
+                {
+                    "type": "MultiLineString",
+                    "coordinates": [[[120.0 + number, 75.0], [121.0 + number, 75.5]]],
+                }
+            ),
+            "raw_attributes": {"objnam": f"Fairway {number}"},
+        }
+
+    result = export.preview_waterway_items(
+        FakePreviewDb([row(1), row(2)]),
+        uuid4(),
+        payload(object_classes=["FAIRWY"]),
+    )
+    assert result["matchedTotal"] == 2
+    assert result["returnedCount"] == 2
+    assert result["truncated"] is False
+    assert result["hasMore"] is False
+    assert result["nextCursors"] == {}
 
 
 def test_preview_route_is_not_swallowed_by_feature_route(
