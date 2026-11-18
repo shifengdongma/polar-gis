@@ -14,6 +14,7 @@
 - **修复启动期历史数据**：`ensure_overview_basemap_config()` 将遗留 `REQUEST=GetCapabilities` 的 BaseMap URL 改写为 GetTile 模板，不覆盖管理员自定义 URL。
 - **修正 GeoServer 堆内存**：`deploy/compose.yml` 使用 `EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"`（镜像实际读取该变量；旧 `INITIAL_MEMORY/MAXIMUM_MEMORY` 被忽略，实际一直为 1G）。
 - **前端健壮性**：识别 HTTP 200 的 OWS ExceptionReport；拒绝 >32MB 能力文档；底图配置改为地图创建后异步加载，不再阻塞首屏 loading。
+- **默认底图恢复为原始 OSM 地图**：概览海图底图改为可切换、默认不选中；未显式选择时 3857 显示 OSM，海图只通过左侧图层目录加载；低缩放也不再自动叠加概览海图。下拉仍可手动切换到“全球海图概览底图”，清除后回到 OSM。
 
 ### 达到的效果
 
@@ -26,7 +27,7 @@
 
 - 实测 Capabilities：1G/3G 堆 OOM；4G 堆 728,995,036B / 33.26s —— 证明必须绕开。
 - 修复后经 nginx：3413 z1 瓦片 200/55,916B/0.085s；3857 z1 瓦片 200/14,903B/0.011s；3413 z3 与 3857 z4 各 2×2 瓦片全部 200。
-- 无头 Edge 实测首次进入项目：首屏 9 个 GWC 请求全部为 GetTile、0 个 GetCapabilities，无 console error/page exception；切换北极投影后 6 个 EPSG:3413 GetTile，页面无“底图配置加载失败/暂无可用配置底图”提示。
+- 无头 Edge 实测最终行为：首次进入项目 **0 个概览 WMTS、9 个 OSM 瓦片、0 个 GetCapabilities**，下拉显示“原始底图（OSM）”；手动选择“全球海图概览底图”后加载 9 个 `EPSG:900913` GetTile；切北极投影不自动显示概览，切回 3857 恢复记忆选择；全程无失败提示、无 console error/page exception。
 - 前端 44 文件 / 498 tests passed、`vue-tsc` 通过；后端全量测试 exit 0；新增 6 个 overview/GWC 回归测试。
 
 ---

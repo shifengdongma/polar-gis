@@ -939,6 +939,9 @@ const availableBaseMaps = computed(() => {
   )
 })
 const baseMapConfigErrorCount = computed(() => Object.keys(baseMapConfigErrors.value).length)
+const baseMapPlaceholder = computed(() =>
+  currentCrs.value === 'EPSG:3857' ? '原始底图（OSM）' : '未选择底图',
+)
 const activeBaseMapHealth = computed(() => {
   void baseMapHealthVersion.value
   const id = activeBaseMapId.value
@@ -2371,7 +2374,7 @@ function executeBundlePlan(
   executePerLayerPlan(plan)
 }
 
-function setOverviewVisible(visible: boolean) {
+function setOverviewVisible(_visible: boolean) {
   if (!map) return
   const overview = baseMaps.value.find(
     (baseMap) => baseMap.name.includes('全球海图概览') && baseMap.crs === currentCrs.value,
@@ -2379,17 +2382,11 @@ function setOverviewVisible(visible: boolean) {
   if (!overview) return
   const layer = configuredBaseLayers.get(overview.id)
   if (!layer) return
-  // A user-selected basemap always wins. Never hide the selected overview at
-  // high zoom, and never overlay the overview on a different selected base.
-  if (activeBaseMapId.value === overview.id) {
-    layer.setVisible(true)
-    return
-  }
-  if (activeBaseMapId.value) {
-    layer.setVisible(false)
-    return
-  }
-  layer.setVisible(visible)
+  // The overview chart basemap is opt-in. It must never be auto-shown as a
+  // background at low zoom: chart data is rendered only by the layers the user
+  // loads/toggles in the left panel. Selecting it in the basemap dropdown is
+  // the only way to use it as a basemap.
+  layer.setVisible(activeBaseMapId.value === overview.id)
 }
 
 function runLruEviction() {
@@ -3323,7 +3320,7 @@ onBeforeUnmount(() => {
       <div class="panel-heading"><div><span class="eyebrow">LAYERS</span><h2>图层目录</h2></div><span class="layer-count">{{ runtimeDatasets.length }}</span></div>
       <div class="layer-filters">
         <div class="basemap-row">
-          <el-select v-model="activeBaseMapId" class="full-width" placeholder="当前投影暂无配置底图" clearable @change="selectBaseMap">
+          <el-select v-model="activeBaseMapId" class="full-width" :placeholder="baseMapPlaceholder" clearable @change="selectBaseMap">
             <el-option v-for="baseMap in availableBaseMaps" :key="baseMap.id" :label="`${baseMap.name} · ${baseMap.mapType}`" :value="baseMap.id" />
           </el-select>
           <el-tooltip content="重新加载当前底图" placement="top">

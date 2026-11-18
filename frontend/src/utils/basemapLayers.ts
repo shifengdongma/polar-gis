@@ -243,8 +243,15 @@ export async function fetchWmtsCapabilitiesWithRetry(
   throw lastError instanceof Error ? lastError : new Error('WMTS capabilities unavailable')
 }
 
-/** Keep a per-CRS remembered selection when it is still available. */
+/**
+ * Keep a per-CRS remembered (explicitly selected) basemap only.
+ *
+ * Never auto-selects the first configured basemap: the chart-overview WMTS is
+ * chart data, not a street/base map. Without an explicit choice the workspace
+ * keeps its original OSM fallback (3857), and chart data is rendered only from
+ * layers the user loads in the left panel.
+ */
 export function resolveActiveBaseMapId(availableIds: string[], remembered?: string): string {
   if (remembered && availableIds.includes(remembered)) return remembered
-  return availableIds[0] ?? ''
+  return ''
 }

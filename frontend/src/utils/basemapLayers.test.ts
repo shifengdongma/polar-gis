@@ -197,9 +197,10 @@ describe('direct GWC tile templates', () => {
 })
 
 describe('resolveActiveBaseMapId', () => {
-  it('keeps the remembered id when still available and otherwise picks the first', () => {
+  it('keeps an explicitly remembered id and never auto-selects a chart basemap', () => {
     expect(resolveActiveBaseMapId(['a', 'b'], 'b')).toBe('b')
-    expect(resolveActiveBaseMapId(['a', 'b'], 'missing')).toBe('a')
+    expect(resolveActiveBaseMapId(['a', 'b'], 'missing')).toBe('')
+    expect(resolveActiveBaseMapId(['a', 'b'])).toBe('')
     expect(resolveActiveBaseMapId([], 'missing')).toBe('')
   })
 })

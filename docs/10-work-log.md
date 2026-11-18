@@ -26,13 +26,14 @@
 - `deploy/compose.yml`：`EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"`，移除无效的 `INITIAL_MEMORY/MAXIMUM_MEMORY`。
 - `frontend/src/utils/basemapLayers.ts`：新增 `createGwcTileGrid()`（3857 为 GWC EPSG:900913 31 级；3413 为 ±4194304/32768/22 级）、`isDirectTileTemplate()`、OWS ExceptionReport 识别（不重试）、>32MB Content-Length 拒绝。
 - `frontend/src/views/MapWorkspaceView.vue`：WMTS GetTile 模板直接构建 `XYZ` + 精确 `TileGrid`（北极 `wrapX=false`、限制 `maxZoom`）；新增 `loadConfiguredBaseLayers()`，地图先创建，底图后台加载后挂载，不再阻塞首屏；`baseMapConfigLoading` 抑制加载期间的“暂无可用底图”误报。
+- 底图默认行为调整（用户反馈）：概览海图底图**可切换但默认不选中**。`resolveActiveBaseMapId()` 仅保留显式选择（按 CRS 记忆，可清除），不再自动取第一张配置底图；`setOverviewVisible()` 不再低缩放自动叠加概览。未选择时 3857 显示原始 OSM 底图（占位“原始底图（OSM）”），海图仅通过左侧图层目录加载；下拉仍可手动切换“全球海图概览底图”。
 
 ### 三、验证
 
 - Capabilities 问题复现数据：1G/3G OOM；4G 728,995,036B / 33.26s。
 - 修复后 DB：两张底图 URL 均为 GetTile 模板；GWC 图层组 gridsets=`EPSG:3413/EPSG:4326/EPSG:900913`。
 - 经 nginx：3413 z1 瓦片 200 image/png 55,916B/0.085s；3857 z1 200/14,903B/0.011s；3413 z3、3857 z4 各 2×2 全部 200。
-- 无头 Edge 实测首次进入项目：首屏 9 个 GWC 请求全部 GetTile、0 个 GetCapabilities，无 console error/page exception；切北极投影后 6 个 EPSG:3413 GetTile，页面无失败/不可用提示。
+- 无头 Edge 实测最终行为：首次进入项目 **0 个概览 WMTS、9 个 OSM 瓦片、0 个 GetCapabilities**，下拉显示“原始底图（OSM）”；手动选择“全球海图概览底图”后 9 个 `EPSG:900913` GetTile，切换正常；切北极投影不自动显示概览，切回 3857 恢复“全球海图概览底图 · WMTS”；全程无失败/不可用提示、无 console error/page exception。
 - 前端 `npm test` 44 文件/498 通过，`vue-tsc` 通过；后端全量 exit 0，新增 overview/GWC 回归测试通过。
 
 ---

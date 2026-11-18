@@ -47,9 +47,12 @@ describe('basemap tile recovery', () => {
     expect(source).toContain("currentCrs.value === 'EPSG:3857'")
   })
 
-  it('does not let the overview auto-toggle override a user-selected basemap', () => {
-    expect(source).toContain("activeBaseMapId.value === overview.id")
-    expect(source).toContain('layer.setVisible(false)')
+  it('keeps the chart overview basemap opt-in instead of auto-showing it', () => {
+    // Chart data must come from layers toggled in the left panel; the chart
+    // overview is only visible when explicitly selected in the basemap select.
+    expect(source).toContain('layer.setVisible(activeBaseMapId.value === overview.id)')
+    expect(source).not.toContain('layer.setVisible(visible)')
+    expect(source).toContain('resolveActiveBaseMapId')
   })
 })
 
