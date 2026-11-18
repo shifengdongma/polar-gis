@@ -125,7 +125,9 @@ import {
 import { tileDiagnostics } from '../utils/tileDiagnostics'
 import { BaseMapHealthMonitor } from '../utils/basemapHealth'
 import {
+  createGwcTileGrid,
   fetchWmtsCapabilitiesWithRetry,
+  isDirectTileTemplate,
   normalizeCapabilitiesCrs,
   normalizeCrsName,
   resolveActiveBaseMapId,
@@ -617,6 +619,7 @@ const configuredBaseLayers = new globalThis.Map<string, TileLayer<XYZ | WMTS>>()
 const baseMapLayerVersion = ref(0)
 const activeBaseMapByCrs = ref<Record<string, string>>({})
 const baseMapConfigErrors = ref<Record<string, string>>({})
+const baseMapConfigLoading = ref(false)
 const baseMapHealthVersion = ref(0)
 const baseMapHealth = new globalThis.Map<string, BaseMapHealthMonitor>()
 const baseMapLifecycles = new globalThis.Map<string, TileLoadLifecycle>()
@@ -944,6 +947,7 @@ const activeBaseMapHealth = computed(() => {
 })
 const baseMapUnavailable = computed(
   () =>
+    !baseMapConfigLoading.value &&
     baseMaps.value.some((baseMap) => baseMap.crs === currentCrs.value) &&
     availableBaseMaps.value.length === 0,
 )
@@ -1045,7 +1049,36 @@ async function createBaseMapTileLayer(baseMap: BaseMapRecord): Promise<TileLayer
     onFailure: (caught) => recordBaseMapHealth(baseMap.id, false, caught),
   })
   let tileLayer: TileLayer<XYZ | WMTS>
-  if (baseMap.mapType === 'WMTS') {
+  if (baseMap.mapType === 'WMTS' && isDirectTileTemplate(baseMap.urlTemplate)) {
+    // Direct GWC GetTile template (overview basemaps): build the XYZ source
+    // from the known gridset instead of downloading the instance-wide WMTS
+    // capabilities document, which can be hundreds of MB on large servers.
+    // Known GWC gridsets get their exact resolutions/extent; anything else
+    // falls back to OpenLayers' default grid for the CRS.
+    const tileGrid = createGwcTileGrid(baseMap.crs) ?? undefined
+    const maxZoom = tileGrid
+      ? Math.max(0, (tileGrid.getResolutions()?.length ?? 1) - 1)
+      : undefined
+    tileLayer = new TileLayer({
+      className: 'map-base-layer',
+      opacity: 0.88,
+      zIndex: 0,
+      preload: 0,
+      source: new XYZ({
+        url: baseMap.urlTemplate,
+        projection: baseMap.crs,
+        tileGrid,
+        // Never request levels beyond the gridset; GWC answers 400 for them.
+        maxZoom,
+        // GWC does not wrap the polar gridset at the antimeridian.
+        wrapX: normalizeCrsName(baseMap.crs) === 'EPSG:3857',
+        crossOrigin: 'anonymous',
+        attributions: baseMap.attribution || undefined,
+        transition: 0,
+        tileLoadFunction: load as never,
+      }),
+    })
+  } else if (baseMap.mapType === 'WMTS') {
     const text = await fetchWmtsCapabilitiesWithRetry(baseMap.urlTemplate)
     const capabilities = new WMTSCapabilities().read(text)
     normalizeCapabilitiesCrs(capabilities)
@@ -1129,6 +1162,27 @@ async function createConfiguredBaseLayers() {
     ElMessage.warning(`${failed} 个底图配置加载失败，可选择后手动重试`)
   }
   return layers
+}
+
+/**
+ * Load configured basemaps after the map exists. Kept off the map-build path:
+ * a slow/unreachable capabilities endpoint must never keep the whole workspace
+ * behind the loading overlay (the first-entry "long buffer" report).
+ */
+async function loadConfiguredBaseLayers(): Promise<void> {
+  if (baseMapConfigLoading.value) return
+  baseMapConfigLoading.value = true
+  try {
+    const layers = await createConfiguredBaseLayers()
+    if (!map) {
+      for (const layer of layers) layer.dispose()
+      return
+    }
+    for (const layer of layers) map.addLayer(layer)
+    applyBaseMapVisibility()
+  } finally {
+    baseMapConfigLoading.value = false
+  }
 }
 
 async function retryBaseMapConfigs() {
@@ -1229,7 +1283,7 @@ async function buildMap() {
     }),
     visible: false,
   })
-  const layers: BaseLayer[] = [fallbackBaseLayer, ...(await createConfiguredBaseLayers())]
+  const layers: BaseLayer[] = [fallbackBaseLayer]
   map = new OlMap({ target: mapTarget.value, layers, view: createView(currentCrs.value) })
   if (import.meta.env.DEV) {
     ;(window as unknown as { __polarMapTileQueueStats?: () => unknown }).__polarMapTileQueueStats =
@@ -1260,6 +1314,9 @@ async function buildMap() {
   s57Waterways.attach()
   s57ThematicPreview.attach()
   applyBaseMapVisibility()
+  // Configured basemaps load in the background; the fallback (3857) or a
+  // blank polar view paints immediately instead of blocking on capabilities.
+  void loadConfiguredBaseLayers()
   fitProjectInitialExtent()
   hoverEnabled = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? true
   const viewport = map.getViewport()

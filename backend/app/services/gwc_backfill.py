@@ -11,16 +11,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import Dataset, DatasetType, DatasetVersion, Layer, LayerStatus
+from app.models import BaseMap, Dataset, DatasetType, DatasetVersion, Layer, LayerStatus
 from app.services.geoserver import GeoServerClient
+from app.services.wmts_tiles import (
+    GWC_3413_CRS,
+    GWC_3413_EXTENT,
+    GWC_3413_GRIDSET,
+    GWC_LAYER_GRIDSETS,
+    GWC_LAYER_MIME_FORMATS,
+    OVERVIEW_BASEMAP_NAMES,
+    OVERVIEW_LAYER_GROUP,
+    overview_wmts_tile_template,
+)
 
 logger = logging.getLogger(__name__)
-
-GWC_3413_GRIDSET = "EPSG:3413"
-GWC_3413_CRS = "EPSG:3413"
-GWC_3413_EXTENT = [-4194304.0, -4194304.0, 4194304.0, 4194304.0]
-GWC_LAYER_GRIDSETS = ["EPSG:900913", "EPSG:4326", "EPSG:3413"]
-GWC_LAYER_MIME_FORMATS = ["image/png"]
 
 
 def ensure_gwc_3413_backfill(
@@ -97,3 +101,74 @@ def ensure_gwc_3413_backfill(
                 continue
             updated += 1
     return {"checked": len(layers), "updated": updated, "skipped": False}
+
+
+def ensure_overview_basemap_config(
+    db: Session,
+    geoserver: GeoServerClient | None = None,
+    settings: Settings | None = None,
+) -> dict:
+    """Repair the overview basemap path for existing deployments.
+
+    1. Add EPSG:3413 to the overview layer group's GWC gridSubsets when the
+       group already has a GWC config (the polar WMTS endpoint otherwise
+       rejects tiles with "Unable to match requested TILEMATRIXSET").
+    2. Rewrite legacy GetCapabilities ``url_template`` values to direct GetTile
+       templates. The instance-wide capabilities document is ~729 MB on a
+       ~5.8k-layer workspace, so the frontend must not request it.
+
+    Idempotent; failures are logged and never abort startup.
+    """
+    settings = settings or get_settings()
+    geoserver = geoserver or GeoServerClient(settings)
+
+    group_status = "missing"
+    try:
+        data = geoserver.get_gwc_layer(OVERVIEW_LAYER_GROUP)
+        if data is not None:
+            grid_subsets = (data.get("GeoServerLayer") or {}).get("gridSubsets") or []
+            grid_names = {gs.get("gridSetName") for gs in grid_subsets}
+            if set(GWC_LAYER_GRIDSETS).issubset(grid_names):
+                group_status = "unchanged"
+            else:
+                geoserver.ensure_gridset(GWC_3413_GRIDSET, GWC_3413_CRS, GWC_3413_EXTENT)
+                geoserver.ensure_gwc_layer(
+                    OVERVIEW_LAYER_GROUP,
+                    gridsets=GWC_LAYER_GRIDSETS,
+                    mime_formats=GWC_LAYER_MIME_FORMATS,
+                )
+                group_status = "updated"
+    except Exception as exc:
+        logger.warning("检查概览底图 GWC 配置失败: %s", exc)
+        group_status = "failed"
+
+    templates_updated = 0
+    names = set(OVERVIEW_BASEMAP_NAMES.values())
+    base_maps = db.scalars(
+        select(BaseMap).where(
+            BaseMap.name.in_(names),
+            BaseMap.deleted_at.is_(None),
+        )
+    ).all()
+    for base_map in base_maps:
+        # Only migrate the system-generated legacy value; never clobber an
+        # administrator's custom URL for these rows.
+        if "getcapabilities" not in base_map.url_template.lower():
+            continue
+        try:
+            base_map.url_template = overview_wmts_tile_template(
+                settings.geoserver_public_url,
+                settings.geoserver_workspace,
+                base_map.crs,
+            )
+        except ValueError:
+            continue
+        base_map.map_type = "WMTS"
+        templates_updated += 1
+    if templates_updated:
+        db.commit()
+
+    return {
+        "group": group_status,
+        "templatesUpdated": templates_updated,
+    }

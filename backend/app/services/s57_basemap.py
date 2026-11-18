@@ -27,6 +27,16 @@ from app.models import (
     S57ImportBatchItem,
 )
 from app.services.s57 import GdalInspector, identify_s57_file
+from app.services.wmts_tiles import (
+    GWC_3413_CRS,
+    GWC_3413_EXTENT,
+    GWC_3413_GRIDSET,
+    GWC_LAYER_GRIDSETS,
+    GWC_LAYER_MIME_FORMATS,
+    OVERVIEW_BASEMAP_NAMES,
+    OVERVIEW_LAYER_GROUP,
+    overview_wmts_tile_template,
+)
 
 logger = logging.getLogger("polar_gis.s57_basemap")
 
@@ -52,7 +62,7 @@ ERR_GRIDSET_FAILED = "BASEMAP_GRIDSET_FAILED"
 ERR_WMTS_REGISTRATION_FAILED = "BASEMAP_WMTS_REGISTRATION_FAILED"
 ERR_POSTPROCESS_FAILED = "BASEMAP_POSTPROCESS_FAILED"
 
-LAYER_GROUP_NAME = "polar_global_enc_overview"
+LAYER_GROUP_NAME = OVERVIEW_LAYER_GROUP
 STABLE_LAYER_ORDER: tuple[str, ...] = (
     "SEAARE", "DEPARE", "ICEARE", "LNDARE", "COALNE", "DEPCNT",
     "SOUNDG", "UNSARE", "CTNARE", "UWTROC", "WRECKS", "OBSTRN",
@@ -529,10 +539,26 @@ class BasemapPostProcessor:
             db.commit()
             return
 
+        # 2b. enable GWC tile caching for the layer group itself. The group is
+        # what the overview WMTS GetTile templates address; without an
+        # EPSG:3413 gridSubset the polar basemap returns HTTP 400
+        # "Unable to match requested TILEMATRIXSET".
+        try:
+            geoserver_client.ensure_gridset(GWC_3413_GRIDSET, GWC_3413_CRS, GWC_3413_EXTENT)
+            geoserver_client.ensure_gwc_layer(
+                LAYER_GROUP_NAME,
+                gridsets=GWC_LAYER_GRIDSETS,
+                mime_formats=GWC_LAYER_MIME_FORMATS,
+            )
+            meta["layerGroupGwcStatus"] = "configured"
+        except Exception as exc:
+            meta["layerGroupGwcStatus"] = "failed"
+            meta["warnings"].append(f"Layer group GWC 配置失败: {exc}")
+
         # 3. register base maps
         base_map_ids: list[str] = []
         try:
-            bm_3857 = self._upsert_base_map(db, "EPSG:3857", "全球海图概览底图")
+            bm_3857 = self._upsert_base_map(db, "EPSG:3857", OVERVIEW_BASEMAP_NAMES["EPSG:3857"])
             base_map_ids.append(str(bm_3857.id))
             meta["wmts3857BaseMapId"] = str(bm_3857.id)
             meta["wmts3857Status"] = "registered"
@@ -541,7 +567,7 @@ class BasemapPostProcessor:
             meta["warnings"].append(f"EPSG:3857 底图登记失败: {exc}")
 
         try:
-            bm_3413 = self._upsert_base_map(db, "EPSG:3413", "全球海图概览底图（北极）")
+            bm_3413 = self._upsert_base_map(db, "EPSG:3413", OVERVIEW_BASEMAP_NAMES["EPSG:3413"])
             base_map_ids.append(str(bm_3413.id))
             meta["wmts3413BaseMapId"] = str(bm_3413.id)
             meta["wmts3413Status"] = "registered"
@@ -639,8 +665,14 @@ class BasemapPostProcessor:
                 BaseMap.deleted_at.is_(None),
             )
         )
-        public_url = settings.geoserver_public_url.rstrip("/")
-        url_template = f"{public_url}/gwc/service/wmts?REQUEST=GetCapabilities"
+        # Direct GetTile template: the frontend must never download the
+        # instance-wide GetCapabilities document (hundreds of MB at this
+        # layer count). See app.services.wmts_tiles.
+        url_template = overview_wmts_tile_template(
+            settings.geoserver_public_url,
+            settings.geoserver_workspace,
+            crs,
+        )
 
         if existing is not None:
             existing.url_template = url_template

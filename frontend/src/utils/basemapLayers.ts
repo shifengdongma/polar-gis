@@ -6,11 +6,84 @@
  * could pair a 3413 base map with a 3857 matrix set. These helpers select the
  * first matrix set whose SupportedCRS normalizes to the requested CRS and fail
  * closed when the choice is ambiguous.
+ *
+ * Large GeoServer instances (~5.8k GWC layers) make the instance-wide WMTS
+ * GetCapabilities document unusable: it reaches hundreds of MB (each layer
+ * repeats TileMatrixSetLimits for every zoom level) and OOMs a small heap. The
+ * overview basemaps therefore store a direct GetTile URL template and are
+ * built locally from the GWC grids below, never by fetching GetCapabilities.
  */
+
+import TileGrid from 'ol/tilegrid/TileGrid'
 
 export interface WmtsSelection {
   layer: string
   matrixSet: string
+}
+
+/** GWC gridset definitions used by the overview basemap GetTile templates. */
+interface GwcGridSpec {
+  extent: [number, number, number, number]
+  baseResolution: number
+  levels: number
+}
+
+const GWC_GRIDS: Record<string, GwcGridSpec> = {
+  // GWC's canonical Web Mercator gridset (EPSG:900913), 31 levels.
+  'EPSG:3857': {
+    extent: [-20037508.34, -20037508.34, 20037508.34, 20037508.34],
+    baseResolution: 156543.03390625,
+    levels: 31,
+  },
+  // Custom Arctic gridset created by the backend (`_default_gridset_levels`),
+  // extent from GWC_3413_EXTENT and 22 levels.
+  'EPSG:3413': {
+    extent: [-4194304, -4194304, 4194304, 4194304],
+    baseResolution: 32768,
+    levels: 22,
+  },
+}
+
+/** Build the exact GWC tile grid for a CRS, or null when no grid is known. */
+export function createGwcTileGrid(crs: string): TileGrid | null {
+  const spec = GWC_GRIDS[normalizeCrsName(crs)]
+  if (!spec) return null
+  const resolutions = Array.from(
+    { length: spec.levels },
+    (_, level) => spec.baseResolution / 2 ** level,
+  )
+  return new TileGrid({
+    extent: spec.extent,
+    origin: [spec.extent[0], spec.extent[3]],
+    resolutions,
+    tileSize: 256,
+  })
+}
+
+/** True when a WMTS/XYZ url template can be used without GetCapabilities. */
+export function isDirectTileTemplate(url: string): boolean {
+  return /\{z\}/i.test(url) && /\{x\}/i.test(url) && /\{y\}/i.test(url)
+}
+
+/**
+ * Extract the message from an OWS ExceptionReport body. GeoServer/GWC return
+ * these with HTTP 200, so `response.ok` alone does not mean success.
+ */
+export function extractOwsException(text: string): string | null {
+  if (!/<(?:[\w.-]+:)?ExceptionReport\b/i.test(text)) return null
+  const match =
+    /<(?:[\w.-]+:)?ExceptionText[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?ExceptionText>/i.exec(text)
+  const message = decodeXmlEntities(match?.[1]?.trim() || '')
+  return message || 'WMTS 服务返回异常'
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
 }
 
 export function normalizeCrsName(value: string | null | undefined): string {
@@ -93,6 +166,13 @@ export interface FetchCapabilitiesOptions {
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
+/**
+ * Refuse to download an oversized capabilities document. On ~5.8k GWC layers
+ * the instance-wide document reaches ~700 MB — enough to hang or crash the
+ * browser long before OpenLayers can parse it.
+ */
+const MAX_CAPABILITIES_BYTES = 32 * 1024 * 1024
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -124,7 +204,28 @@ export async function fetchWmtsCapabilitiesWithRetry(
         fetchImpl(url, { signal: controller.signal }),
         timeout,
       ])
-      if (response.ok) return await response.text()
+      if (response.ok) {
+        const declaredLength = Number(response.headers?.get?.('content-length') ?? '')
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_CAPABILITIES_BYTES) {
+          const tooLarge = new Error(
+            `WMTS capabilities 体积过大（${Math.round(declaredLength / 1024 / 1024)} MB），` +
+              '请改用 GetTile 瓦片模板',
+          )
+          ;(tooLarge as Error & { retryable?: boolean }).retryable = false
+          throw tooLarge
+        }
+        const text = await response.text()
+        const owsError = extractOwsException(text)
+        if (owsError) {
+          // GeoServer reports OOM/other server errors inside a 200 OWS
+          // ExceptionReport. Retrying only adds load; fail fast with the
+          // server's message instead of parsing an empty document.
+          const serviceError = new Error(`WMTS 服务异常: ${owsError}`)
+          ;(serviceError as Error & { retryable?: boolean }).retryable = false
+          throw serviceError
+        }
+        return text
+      }
       const statusError = new Error(`WMTS capabilities HTTP ${response.status}`)
       if (!RETRYABLE_STATUS.has(response.status)) {
         ;(statusError as Error & { retryable?: boolean }).retryable = false

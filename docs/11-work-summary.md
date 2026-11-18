@@ -1,7 +1,33 @@
 # 11 — 工作总结 (Work Summary)
 
 > 记录每次开发会话的修改内容、实现效果与达成目标
-> 最后更新: 2026-11-17
+> 最后更新: 2026-11-18
+
+---
+
+## 会话 #40 — 首次进入项目底图加载卡顿与“2 个底图配置加载失败”修复（2026-11-18）
+
+### 修改了什么
+
+- **绕开不可用的全实例 WMTS Capabilities**：新增 `backend/app/services/wmts_tiles.py`，概览底图登记为 GWC GetTile 模板（`TILEMATRIX=<matrixSet>:{z}&TILEROW={y}&TILECOL={x}`），前端用精确瓦片网格直接构建 `XYZ` 源。
+- **补齐概览图层组 GWC 配置**：底图 post-process 与启动回填均为 `polar_global_enc_overview` 增加 `EPSG:3413` gridSubset（原仅 4326/900913），北极底图不再 400。
+- **修复启动期历史数据**：`ensure_overview_basemap_config()` 将遗留 `REQUEST=GetCapabilities` 的 BaseMap URL 改写为 GetTile 模板，不覆盖管理员自定义 URL。
+- **修正 GeoServer 堆内存**：`deploy/compose.yml` 使用 `EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"`（镜像实际读取该变量；旧 `INITIAL_MEMORY/MAXIMUM_MEMORY` 被忽略，实际一直为 1G）。
+- **前端健壮性**：识别 HTTP 200 的 OWS ExceptionReport；拒绝 >32MB 能力文档；底图配置改为地图创建后异步加载，不再阻塞首屏 loading。
+
+### 达到的效果
+
+- 首次进入项目不再因底图配置等待数十秒；地图立即创建并显示，概览底图随后异步挂载。
+- 不再出现“2 个底图配置加载失败”提示；3857/3413 概览底图均可直接出瓦片。
+- 3413 底图 GetTile 从 400 修复为 200 `image/png`。
+- 即使管理员配置了指向超大 Capabilities 的 WMTS，前端也会快速失败并给出明确错误，而不是下载数百 MB 文档。
+
+### 验证结果
+
+- 实测 Capabilities：1G/3G 堆 OOM；4G 堆 728,995,036B / 33.26s —— 证明必须绕开。
+- 修复后经 nginx：3413 z1 瓦片 200/55,916B/0.085s；3857 z1 瓦片 200/14,903B/0.011s；3413 z3 与 3857 z4 各 2×2 瓦片全部 200。
+- 无头 Edge 实测首次进入项目：首屏 9 个 GWC 请求全部为 GetTile、0 个 GetCapabilities，无 console error/page exception；切换北极投影后 6 个 EPSG:3413 GetTile，页面无“底图配置加载失败/暂无可用配置底图”提示。
+- 前端 44 文件 / 498 tests passed、`vue-tsc` 通过；后端全量测试 exit 0；新增 6 个 overview/GWC 回归测试。
 
 ---
 

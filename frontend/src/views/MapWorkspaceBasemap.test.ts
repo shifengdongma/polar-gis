@@ -27,6 +27,13 @@ describe('basemap tile recovery', () => {
     expect(source).not.toContain('TileMatrixSetLink?.[0]?.TileMatrixSet')
   })
 
+  it('uses direct GWC GetTile templates and never blocks map build on capabilities', () => {
+    expect(source).toContain('isDirectTileTemplate')
+    expect(source).toContain('createGwcTileGrid')
+    expect(source).toContain('void loadConfiguredBaseLayers()')
+    expect(source).not.toContain('...(await createConfiguredBaseLayers())')
+  })
+
   it('offers a manual reload and surfaces configuration failures', () => {
     expect(source).toContain('reloadActiveBaseMap')
     expect(source).toContain('retryBaseMapConfigs')

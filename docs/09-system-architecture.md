@@ -94,7 +94,8 @@ backend/
 │   │   ├── s57_thematic_export.py # 专题流式分卷导出 + manifest + ZIP + 样例
 │   │   ├── ice.py              # NetCDF 冰情服务（info/value/PNG XYZ）
 │   │   ├── map_render_plan.py  # 组合图层渲染计划纯函数 (build_bundles)
-│   │   ├── gwc_backfill.py     # GWC EPSG:3413 瓦片缓存回填 (GridSet + 图层)
+│   │   ├── gwc_backfill.py     # GWC EPSG:3413 瓦片缓存回填 (GridSet + 图层 + 概览底图)
+│   │   ├── wmts_tiles.py       # 概览底图 GWC GetTile 模板（绕开全实例 Capabilities）
 │   │   └── audit.py            # 审计日志写入
 │   │
 │   ├── navigation/             # PolarOptionNav V3 业务域（43 个 .py）
@@ -523,7 +524,7 @@ SMART_RECONCILE_DEBOUNCE_MS = 150  (moveend 防抖)
 - **HTTP/2**: nginx listen 80 http2，突破浏览器每源 6 连接限制，实现瓦片请求多路复用
 - **WMS 瓦片缓存**: nginx proxy_cache 缓存 GeoServer 瓦片 1 小时，缓存命中时 0ms 延迟
 - **静态资源缓存**: hashed 资源 Cache-Control: public, immutable (1year)
-- **GeoServer JVM**: INITIAL_MEMORY=2G MAXIMUM_MEMORY=4G + G1GC 减少 GC 停顿
+- **GeoServer JVM**: `EXTRA_JAVA_OPTS=-Xms1g -Xmx4g` + G1GC 减少 GC 停顿（`docker.osgeo.org/geoserver` 不识别 kartoza 的 `INITIAL_MEMORY/MAXIMUM_MEMORY`，旧配置实际一直使用镜像默认 `-Xmx1g`）
 
 ### 后端优化
 - **PostGIS 空间索引**: 导入后自动 CREATE INDEX USING GIST (geom) + ANALYZE，GeoServer WMS 从 Seq Scan 转为 Index Scan
@@ -1404,3 +1405,36 @@ backend/app/navigation/
 - 迁移后约束为 `uq_s57_import_batch_files_batch_storage UNIQUE (batch_id, storage_key)`，Alembic head `0007_s57_batch_file_key_scope`。
 - 临时停止 worker 后执行：preflight `canStart=true`（18 cells/29 files）→ import 200（batch A）→ cancel 200 cancelled → import 200（batch B）→ cancel 200；两批各保留 29 条相同源路径记录，无 500。未实际导入底图数据，worker 已恢复。
 - 全量后端 **335 passed, 1 skipped**；ruff 通过；新增 `_resolve_batch_source` 绝对路径/越界拒绝、模型约束回归测试。
+
+### 8.17 会话 #40：首次进入项目底图加载卡顿与“2 个底图配置加载失败”修复（2026-11-18）
+
+#### 8.17.1 根因（实测）
+
+- **全实例 WMTS Capabilities 不可用**：工作区已有 ~5,781 个 GWC 图层，每个图层在每个 gridset 的每一级都输出 `TileMatrixSetLimits`。实测 `GET /geoserver/gwc/service/wmts?REQUEST=GetCapabilities`：1G 堆 `OutOfMemoryError`；3G 堆仍 OOM；4G 堆返回 **728,995,036 字节 / 33.3s**。该文档无法被浏览器下载/解析。
+- **HTTP 200 掩盖服务错误**：GWC 的 OOM 以 HTTP 200 + `ows:ExceptionReport` 返回。前端 `fetchWmtsCapabilitiesWithRetry` 仅判断 `response.ok`，把异常文档交给 `WMTSCapabilities().read()`，得到空能力文档；两张概览底图（3857/3413）同时失败 → “2 个底图配置加载失败，可选择后手动重试”。
+- **整页缓冲卡顿**：`buildMap()` 在创建地图前 `await createConfiguredBaseLayers()`；Capabilities 请求不受地图生命周期约束，首屏 `v-loading` 必须等底图配置（失败/OOM 时数十秒）结束后才消失。
+- **3413 gridset 缺失**：GWC 中概览图层组 `polar_gis:polar_global_enc_overview` 只有 `EPSG:4326/EPSG:900913` gridSubset；`EPSG:3413` GetTile 返回 400 `Unable to match requested TILEMATRIXSET`（即使 Capabilities 成功，北极底图仍不可用）。
+- **JVM 内存配置无效**：`docker.osgeo.org/geoserver:2.25.3` 只读取 `EXTRA_JAVA_OPTS` 中的 `-Xms/-Xmx`；compose 中的 `INITIAL_MEMORY/MAXIMUM_MEMORY` 属于 kartoza 镜像变量，被静默忽略，实际一直为镜像默认 `-Xms256m -Xmx1g`。
+
+#### 8.17.2 修复
+
+- 后端新增 `services/wmts_tiles.py`：定义概览图层组、基图名称、GWC matrix set（3857→`EPSG:900913`）与 `overview_wmts_tile_template()`；`s57_basemap._upsert_base_map()` 登记的直接 GetTile 模板为
+  `/geoserver/gwc/service/wmts?...&TILEMATRIXSET=<id>&TILEMATRIX=<id>:{z}&TILEROW={y}&TILECOL={x}`。
+- `BasemapPostProcessor.post_process()` 在发布 Layer Group 后调用 `ensure_gridset(EPSG:3413)` + `ensure_gwc_layer(polar_global_enc_overview, gridsets=900913/4326/3413)`，保证图层组本身可出 3857/3413 瓦片。
+- 启动回填新增 `ensure_overview_basemap_config()`：①GWC 中已存在概览图层组时补齐 `EPSG:3413` gridSubset；②仅把遗留 `REQUEST=GetCapabilities` 的 BaseMap URL 改写为 GetTile 模板（不覆盖管理员自定义 URL）。`main._spawn_gwc_3413_backfill()` 先执行该修复，再跑原 5,781 图层回填。
+- `deploy/compose.yml`：改用 `EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"`，删除无效的 `INITIAL_MEMORY/MAXIMUM_MEMORY`。
+- 前端 `basemapLayers.ts`：
+  - `createGwcTileGrid(crs)`：3857 使用 GWC `EPSG:900913` 精确网格（±20037508.34，基准分辨率 156543.03390625，31 级）；3413 使用 ±4194304、基准 32768、22 级，origin 取左上角。
+  - `isDirectTileTemplate()` 识别含 `{z}/{x}/{y}` 的 WMTS GetTile 模板。
+  - `fetchWmtsCapabilitiesWithRetry()` 识别 HTTP 200 的 OWS ExceptionReport（快速失败、不重试），并按 `Content-Length` 拒绝 >32MB 的能力文档。
+- 前端 `MapWorkspaceView.vue`：
+  - WMTS + GetTile 模板走 `XYZ` + 精确 `TileGrid`（`wrapX=false` 用于北极，`maxZoom` 限制在 gridset 级数内），不再请求 Capabilities。
+  - 新增 `loadConfiguredBaseLayers()`：地图先创建并立即解除 loading，配置底图在后台加载后 `map.addLayer()` + `applyBaseMapVisibility()`；`baseMapConfigLoading` 避免加载期间误报“当前投影暂无可用配置底图”。
+
+#### 8.17.3 验证
+
+- Capabilities 实测（修复前问题复现）：1G/3G 堆 OOM；4G 堆 728,995,036 字节、33.26s，证明必须绕开。
+- 修复后 DB 两张底图 URL 均为 GetTile 模板；GWC 图层组 gridsets = `EPSG:3413/EPSG:4326/EPSG:900913`。
+- 经 nginx `/geoserver` 实测：3413 z1 tile **200 image/png 55,916B / 0.085s**；3857 z1 tile **200 image/png 14,903B / 0.011s**；3413 z3 与 3857 z4 各 2×2 瓦片全部 200。
+- 无头 Edge 实测首次进入 `/map/{projectId}`：首屏 **9 个 GWC 请求全部为 GetTile、0 个 GetCapabilities**，无 console error / page exception；页面无“底图配置加载失败/暂无可用配置底图”提示。点击“北极投影”后产生 **6 个 `TILEMATRIXSET=EPSG:3413` GetTile**（如 `TILEMATRIX=EPSG:3413:3&TILEROW=2&TILECOL=5`），提示仍为正常。
+- 前端全量 **44 files / 498 tests passed**、`vue-tsc` 通过；后端全量 exit 0（含新增 6 个 overview/GWC 回归测试）。

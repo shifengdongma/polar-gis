@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  createGwcTileGrid,
+  extractOwsException,
   fetchWmtsCapabilitiesWithRetry,
+  isDirectTileTemplate,
   normalizeCapabilitiesCrs,
   normalizeCrsName,
   resolveActiveBaseMapId,
@@ -112,6 +115,84 @@ describe('fetchWmtsCapabilitiesWithRetry', () => {
       }),
     ).rejects.toThrow(/404/)
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses an oversized capabilities document before reading it', async () => {
+    const text = vi.fn()
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => String(700 * 1024 * 1024) },
+      text,
+    })
+    await expect(
+      fetchWmtsCapabilitiesWithRetry('https://example.test/wmts', {
+        fetchImpl: fetchImpl as never,
+        attempts: 3,
+      }),
+    ).rejects.toThrow(/体积过大/)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(text).not.toHaveBeenCalled()
+  })
+
+  it('rejects an HTTP 200 OWS ExceptionReport without retrying', async () => {
+    const body =
+      '<?xml version="1.0"?><ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">' +
+      '<ows:Exception exceptionCode="NoApplicableCode"><ows:ExceptionText>' +
+      'java.lang.OutOfMemoryError: Java heap space' +
+      '</ows:ExceptionText></ows:Exception></ows:ExceptionReport>'
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => body })
+    await expect(
+      fetchWmtsCapabilitiesWithRetry('https://example.test/wmts', {
+        fetchImpl: fetchImpl as never,
+        attempts: 3,
+      }),
+    ).rejects.toThrow(/OutOfMemoryError/)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('direct GWC tile templates', () => {
+  it('detects GetTile templates and ignores capabilities URLs', () => {
+    expect(
+      isDirectTileTemplate(
+        '/geoserver/gwc/service/wmts?REQUEST=GetTile&TILEMATRIX=EPSG:3413:{z}&TILEROW={y}&TILECOL={x}',
+      ),
+    ).toBe(true)
+    expect(
+      isDirectTileTemplate('/geoserver/gwc/service/wmts?REQUEST=GetCapabilities'),
+    ).toBe(false)
+  })
+
+  it('builds the GWC EPSG:3413 grid with top-left origin and 22 levels', () => {
+    const grid = createGwcTileGrid('EPSG:3413')
+    expect(grid).not.toBeNull()
+    expect(grid!.getOrigin(0)).toEqual([-4194304, 4194304])
+    expect(grid!.getResolutions()?.[0]).toBe(32768)
+    expect(grid!.getResolutions()?.[1]).toBe(16384)
+    expect(grid!.getResolutions()).toHaveLength(22)
+    expect(grid!.getExtent()).toEqual([-4194304, -4194304, 4194304, 4194304])
+  })
+
+  it('builds the GWC EPSG:900913 grid for 3857 basemaps', () => {
+    const grid = createGwcTileGrid('EPSG:3857')
+    expect(grid).not.toBeNull()
+    expect(grid!.getOrigin(0)).toEqual([-20037508.34, 20037508.34])
+    expect(grid!.getResolutions()?.[0]).toBeCloseTo(156543.03390625)
+    expect(grid!.getResolutions()).toHaveLength(31)
+  })
+
+  it('returns null for unknown CRS values', () => {
+    expect(createGwcTileGrid('EPSG:4326')).toBeNull()
+  })
+
+  it('extracts OWS exception text and returns null for valid documents', () => {
+    expect(extractOwsException('<Capabilities><Contents/></Capabilities>')).toBeNull()
+    expect(
+      extractOwsException(
+        '<ows:ExceptionReport><ows:Exception><ows:ExceptionText>boom &amp; bust</ows:ExceptionText></ows:Exception></ows:ExceptionReport>',
+      ),
+    ).toBe('boom & bust')
   })
 })
 

@@ -30,8 +30,11 @@ services:
       GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
       GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
       GEOSERVER_PROXY_BASE_URL: ${GEOSERVER_PUBLIC_URL:-/geoserver}
-      INITIAL_MEMORY: "2G"
-      MAXIMUM_MEMORY: "4G"
+      # docker.osgeo.org/geoserver only honours EXTRA_JAVA_OPTS for -Xms/-Xmx;
+      # INITIAL_MEMORY/MAXIMUM_MEMORY are kartoza-image variables and were
+      # silently ignored, leaving the image default (-Xmx1g).  With ~5.8k GWC
+      # tile layers, WMTS GetCapabilities OOMs in a 1g heap.
+      EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"
       JAVA_OPTS: "-server -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200 -XX:+ParallelRefProcEnabled -DGEOSERVER_CSRF_DISABLED=true"
     volumes:
       - geoserver-data:/opt/geoserver_data

@@ -1,7 +1,39 @@
 # 10 — 工作日志 (Work Log)
 
 > 记录每次开发会话的任务计划、修改内容与决策过程
-> 最后更新: 2026-11-17
+> 最后更新: 2026-11-18
+
+---
+
+## 会话 #40 — 首次进入项目底图加载卡顿与“2 个底图配置加载失败”修复（2026-11-18）
+
+**日期**: 2026-11-18
+**背景**: 首次进入项目地图时长时间缓冲，弹出“2 个底图配置加载失败，可选择后手动重试”；进入项目后海图业务图层可正常加载。
+
+### 一、复现与根因
+
+- 运行中的 GeoServer 实际 JVM 参数为 `-Xms256m -Xmx1g`：compose 使用的 `INITIAL_MEMORY/MAXIMUM_MEMORY` 是 kartoza 镜像变量，`docker.osgeo.org/geoserver` 只认 `EXTRA_JAVA_OPTS`。
+- 工作区约 5,781 个 GWC 图层。实测 `GET /geoserver/gwc/service/wmts?REQUEST=GetCapabilities`：1G 堆 `OutOfMemoryError`；3G 堆仍 OOM；4G 堆返回 **728,995,036 字节、33.3s**。GWC 将 OOM 以 **HTTP 200 + ows:ExceptionReport** 返回。
+- 前端 `fetchWmtsCapabilitiesWithRetry` 只看 `response.ok`，把 ExceptionReport 当能力文档解析 → 无 `Contents` → 3857/3413 两张概览底图 `selectWmtsLayerAndMatrix` 均返回 null → 2 个配置失败提示。
+- `buildMap()` 在创建地图前 `await createConfiguredBaseLayers()`，Capabilities 慢/OOM 时整个工作区卡在 `v-loading`，即“长时间缓冲”。
+- 概览图层组 `polar_gis:polar_global_enc_overview` 的 GWC 配置只有 `EPSG:4326/EPSG:900913`，3413 GetTile 返回 400 `Unable to match requested TILEMATRIXSET`。
+
+### 二、修改
+
+- 新增 `backend/app/services/wmts_tiles.py`：概览图层组/matrix set 常量 + `overview_wmts_tile_template()`（`TILEMATRIX=<id>:{z}&TILEROW={y}&TILECOL={x}`）。
+- `s57_basemap.py`：`_upsert_base_map()` 改为登记 GetTile 模板；post-process 发布图层组后调用 `ensure_gridset(EPSG:3413)` + `ensure_gwc_layer(图层组, 900913/4326/3413)`。
+- `gwc_backfill.py`：新增 `ensure_overview_basemap_config()`，启动时补齐图层组 3413 gridSubset，并把遗留 `REQUEST=GetCapabilities` 的底图 URL 改写为 GetTile 模板（不覆盖管理员自定义 URL）；`main.py` 启动线程先跑该修复。
+- `deploy/compose.yml`：`EXTRA_JAVA_OPTS: "-Xms1g -Xmx4g"`，移除无效的 `INITIAL_MEMORY/MAXIMUM_MEMORY`。
+- `frontend/src/utils/basemapLayers.ts`：新增 `createGwcTileGrid()`（3857 为 GWC EPSG:900913 31 级；3413 为 ±4194304/32768/22 级）、`isDirectTileTemplate()`、OWS ExceptionReport 识别（不重试）、>32MB Content-Length 拒绝。
+- `frontend/src/views/MapWorkspaceView.vue`：WMTS GetTile 模板直接构建 `XYZ` + 精确 `TileGrid`（北极 `wrapX=false`、限制 `maxZoom`）；新增 `loadConfiguredBaseLayers()`，地图先创建，底图后台加载后挂载，不再阻塞首屏；`baseMapConfigLoading` 抑制加载期间的“暂无可用底图”误报。
+
+### 三、验证
+
+- Capabilities 问题复现数据：1G/3G OOM；4G 728,995,036B / 33.26s。
+- 修复后 DB：两张底图 URL 均为 GetTile 模板；GWC 图层组 gridsets=`EPSG:3413/EPSG:4326/EPSG:900913`。
+- 经 nginx：3413 z1 瓦片 200 image/png 55,916B/0.085s；3857 z1 200/14,903B/0.011s；3413 z3、3857 z4 各 2×2 全部 200。
+- 无头 Edge 实测首次进入项目：首屏 9 个 GWC 请求全部 GetTile、0 个 GetCapabilities，无 console error/page exception；切北极投影后 6 个 EPSG:3413 GetTile，页面无失败/不可用提示。
+- 前端 `npm test` 44 文件/498 通过，`vue-tsc` 通过；后端全量 exit 0，新增 overview/GWC 回归测试通过。
 
 ---
 

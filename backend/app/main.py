@@ -68,10 +68,19 @@ def _spawn_gwc_3413_backfill() -> None:
     def _run() -> None:
         try:
             from app.core.database import SessionLocal
-            from app.services.gwc_backfill import ensure_gwc_3413_backfill
+            from app.services.geoserver import GeoServerClient
+            from app.services.gwc_backfill import (
+                ensure_gwc_3413_backfill,
+                ensure_overview_basemap_config,
+            )
 
             with SessionLocal() as db:
-                result = ensure_gwc_3413_backfill(db)
+                client = GeoServerClient(settings)
+                # Repair the overview basemaps first: the direct-tile rewrite
+                # is what removes the first-entry WMTS capabilities stall.
+                overview = ensure_overview_basemap_config(db, geoserver=client)
+                logger.info("概览底图 GWC/URL 回填完成: %s", overview)
+                result = ensure_gwc_3413_backfill(db, geoserver=client)
                 logger.info("GWC EPSG:3413 回填完成: %s", result)
         except Exception as exc:
             logger.warning("GWC EPSG:3413 回填失败: %s", exc)
